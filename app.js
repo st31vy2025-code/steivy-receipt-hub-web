@@ -64,7 +64,72 @@ function filterRows(){const q=($('#receiptSearch')?.value||'').toLowerCase(),s=$
 async function submitShift(e){e.preventDefault();const f=new FormData(e.currentTarget),account=data.accounts.find(a=>a.id===f.get('accountId'));const count=Math.max(0,parseInt(f.get('receiptCount')||'0',10)),rate=Number(data.settings.grossRateCents||100),gross=count*rate,ded=Math.round(gross*Number(data.settings.deductionPercent||10)/100);const item={workerId:currentUser.uid,workerName:profile.displayName,workerEmail:currentUser.email,accountId:account?.id||'',accountName:account?.name||'Unassigned',shiftDate:f.get('shiftDate'),shiftType:f.get('shiftType'),startTime:f.get('startTime'),endTime:f.get('endTime'),receiptCount:count,status:'pending',rejectionReason:'',grossCents:gross,deductionCents:ded,netCents:gross-ded,createdAt:new Date(),updatedAt:new Date()};if(!configured){item.id='local-'+Date.now();data.submissions.unshift(item);toast('Demo submission added (not saved online).');renderPage();return}try{await fb.addDoc(fb.collection(db,'submissions'),{...item,createdAt:fb.serverTimestamp(),updatedAt:fb.serverTimestamp()});toast('Shift submitted for review.');renderPage()}catch(err){console.error(err);toast('Submission failed. Check Firestore permissions and assigned account.') }}
 function viewSubmission(id){const s=visibleSubmissions().find(x=>x.id===id);if(!s)return;const actions=isAdmin()&&s.status==='pending'?`<button class="btn btn-primary" id="approveOne">Approve</button><button class="btn btn-danger" id="rejectOne">Reject</button>`:'';const reason=s.rejectionReason?`<div class="notice warn">Rejection reason: ${esc(s.rejectionReason)}</div>`:'';const html=`<div class="panel"><div class="panel-head"><div><h3>Submission details</h3><p>${esc(s.id)}</p></div><button class="btn btn-ghost" id="closeDetails">Close</button></div><div class="form-grid"><div><p class="muted">Worker</p><b>${esc(s.workerName)}</b></div><div><p class="muted">Status</p>${status(s.status)}</div><div><p class="muted">Account</p><b>${esc(s.accountName)}</b></div><div><p class="muted">Shift date</p><b>${esc(date(s.shiftDate))}</b></div><div><p class="muted">Shift hours</p><b>${esc(s.startTime)} – ${esc(s.endTime)}</b></div><div><p class="muted">Receipts</p><b>${Number(s.receiptCount||0)}</b></div><div><p class="muted">Gross pay</p><b>${money(s.grossCents)}</b></div><div><p class="muted">Deductions</p><b>${money(s.deductionCents)}</b></div><div><p class="muted">Net pay</p><b>${money(s.netCents)}</b></div></div>${reason}<div class="right" style="justify-content:flex-end;margin-top:20px">${actions}</div></div>`;const old=$('#detailsPanel');old?.remove();$('#pageContent').insertAdjacentHTML('afterbegin',`<div id="detailsPanel">${html}</div>`);$('#closeDetails').onclick=()=>$('#detailsPanel').remove();$('#approveOne')?.addEventListener('click',()=>reviewSubmission(s,'approved'));$('#rejectOne')?.addEventListener('click',()=>{const reason=prompt('Reason for rejection:');if(reason===null)return;reviewSubmission(s,'rejected',reason)});$('#detailsPanel').scrollIntoView({behavior:'smooth'});}
 async function reviewSubmission(s,statusValue,reason=''){if(!isAdmin())return;if(!configured){s.status=statusValue;s.rejectionReason=reason;toast('Demo record updated only.');renderPage();return}try{await fb.updateDoc(fb.doc(db,'submissions',s.id),{status:statusValue,rejectionReason:reason,reviewedBy:currentUser.uid,reviewedAt:fb.serverTimestamp(),updatedAt:fb.serverTimestamp()});toast('Submission '+statusValue+'.');$('#detailsPanel')?.remove()}catch(e){console.error(e);toast('Could not update submission. Check Firestore rules.')}}
-function addAccount(){const name=prompt('Account name (e.g. Abukai Team Alpha):');if(!name?.trim())return;const code=prompt('Account code (e.g. ABK-01):')||'';const item={name:name.trim(),code:code.trim(),assignedWorkerIds:[],assignedWorkerNames:[],notes:'',isActive:true,createdAt:new Date(),updatedAt:new Date()};if(!configured){item.id='local-'+Date.now();data.accounts.push(item);toast('Demo account added.');renderPage();return}fb.addDoc(fb.collection(db,'accounts'),{...item,createdAt:fb.serverTimestamp(),updatedAt:fb.serverTimestamp()}).then(()=>toast('Account created.')).catch(e=>{console.error(e);toast('Could not create account. Check Firestore rules.')})}
+
+function addAccount(){
+  const name = prompt('Account name (e.g. Abukai Team Alpha):');
+  if (!name?.trim()) return;
+
+  const code = prompt('Account code (e.g. ABK-01):') || '';
+
+  const workers = (data.users || []).filter(
+    u => u.role === 'worker' && u.isActive !== false && u.status === 'approved'
+  );
+
+  if (!workers.length) {
+    alert('No approved workers found. Create and approve a worker first.');
+    return;
+  }
+
+  const workerList = workers.map(
+    (w, i) => `${i + 1}. ${w.displayName || w.email || w.id}`
+  ).join('\n');
+
+  const choice = prompt(
+    'Choose the worker to assign:\n' + workerList +
+    '\n\nEnter the worker number:'
+  );
+
+  if (choice === null) return;
+
+  const index = Number(choice) - 1;
+  if (!Number.isInteger(index) || index < 0 || index >= workers.length) {
+    alert('Invalid worker number.');
+    return;
+  }
+
+  const worker = workers[index];
+
+  const item = {
+    name: name.trim(),
+    code: code.trim(),
+    assignedWorkerIds: [worker.id],
+    assignedWorkerNames: [worker.displayName || worker.email || 'Worker'],
+    notes: '',
+    isActive: true,
+    createdAt: new Date(),
+    updatedAt: new Date()
+  };
+
+  if (!configured) {
+    item.id = 'local-' + Date.now();
+    data.accounts.push(item);
+    toast('Demo account added.');
+    renderPage();
+    return;
+  }
+
+  fb.addDoc(fb.collection(db, 'accounts'), {
+    ...item,
+    createdAt: fb.serverTimestamp(),
+    updatedAt: fb.serverTimestamp()
+  }).then(() => {
+    toast('Account created and worker assigned.');
+  }).catch(e => {
+    console.error(e);
+    toast('Could not create account. Check Firestore rules.');
+  });
+}
+
 function saveSettings(e){e.preventDefault();const f=new FormData(e.currentTarget),gross=Math.round(Number(f.get('rate'))*100),deduction=Number(f.get('deduction'));if(deduction<0||deduction>100)return toast('Deduction must be between 0 and 100.');if(!configured){data.settings={grossRateCents:gross,deductionPercent:deduction};toast('Demo settings updated only.');renderPage();return}fb.setDoc(fb.doc(db,'settings','paySettings'),{id:'paySettings',grossRateCents:gross,deductionPercent:deduction,updatedBy:currentUser.uid,updatedAt:fb.serverTimestamp()},{merge:true}).then(()=>toast('Pay settings saved.')).catch(e=>{console.error(e);toast('Could not save settings. Check Firestore rules.')})}
 async function sendMessage(e){e.preventDefault();const input=e.currentTarget.elements.message,text=input.value.trim();if(!text)return;const item={senderId:currentUser.uid,senderName:profile.displayName,text,createdAt:new Date()};if(!configured){data.messages.push({...item,id:'m'+Date.now()});renderPage();return}try{await fb.addDoc(fb.collection(db,'conversations','company_group','messages'),{...item,createdAt:fb.serverTimestamp()});input.value=''}catch(err){console.error(err);toast('Could not send message. Check Firestore rules.')}}
 function exportCsv(){const rows=visibleSubmissions();const cols=['workerName','accountName','shiftDate','shiftType','startTime','endTime','receiptCount','status','grossCents','deductionCents','netCents'];const csv=[cols.join(','),...rows.map(r=>cols.map(c=>'"'+String(r[c]??'').replace(/"/g,'""')+'"').join(','))].join('\r\n');const url=URL.createObjectURL(new Blob([csv],{type:'text/csv;charset=utf-8;'}));const a=document.createElement('a');a.href=url;a.download='steivy-receipt-report.csv';a.click();URL.revokeObjectURL(url)}
