@@ -21,7 +21,7 @@ let pendingRender = false;
 let detailId = null;
 const filters = { q: '', status: 'all' };
 const DEFAULT_SETTINGS = { grossRateCents: 100, deductionPercent: 10 };
-const data = { submissions: [], accounts: [], users: [], messages: [], settings: { ...DEFAULT_SETTINGS } };
+const data = { submissions: [], accounts: [], users: [], messages: [], presence: [], settings: { ...DEFAULT_SETTINGS } };
 
 /* ───────────────────────── Helpers ───────────────────────── */
 const $ = s => document.querySelector(s);
@@ -90,10 +90,77 @@ button:disabled{opacity:.6;cursor:not-allowed}
 .sh-modal-card textarea{width:100%;min-height:90px;box-sizing:border-box}
 .sh-modal-actions{display:flex;justify-content:flex-end;gap:8px;margin-top:18px}
 .sh-check{display:flex;align-items:center;gap:10px;padding:8px 0;border-bottom:1px solid #eee;cursor:pointer}
-.sh-row-actions{display:flex;gap:6px;flex-wrap:wrap}`;
+.sh-row-actions{display:flex;gap:6px;flex-wrap:wrap}
+.online-panel{padding:14px 18px;margin-bottom:16px}
+.online-head{display:flex;align-items:center;gap:8px;margin-bottom:10px;font-size:14px}
+.online-count{background:#e6f6ec;color:#1e8449;border-radius:999px;padding:2px 10px;font-size:12px;font-weight:700}
+.online-empty{color:#8a958e;font-size:13px}
+.online-marquee{overflow:hidden;white-space:nowrap;-webkit-mask-image:linear-gradient(90deg,transparent,#000 24px,#000 calc(100% - 24px),transparent);mask-image:linear-gradient(90deg,transparent,#000 24px,#000 calc(100% - 24px),transparent)}
+.online-track{display:flex;width:max-content;animation:onlineScroll 20s linear infinite}
+.online-marquee:hover .online-track{animation-play-state:paused}
+.online-set{display:flex;gap:10px;padding-right:10px;min-width:600px}
+.online-chip{display:inline-flex;align-items:center;gap:8px;background:#f1f8f4;border:1px solid #d5ecdd;border-radius:999px;padding:6px 14px;font-size:13px;font-weight:600;color:#1a2420}
+.online-dot{width:9px;height:9px;border-radius:50%;background:#2ecc71;box-shadow:0 0 0 0 rgba(46,204,113,.6);animation:onlinePulse 1.8s infinite}
+@keyframes onlineScroll{from{transform:translateX(0)}to{transform:translateX(-50%)}}
+@keyframes onlinePulse{0%{box-shadow:0 0 0 0 rgba(46,204,113,.6)}70%{box-shadow:0 0 0 8px rgba(46,204,113,0)}100%{box-shadow:0 0 0 0 rgba(46,204,113,0)}}
+@media (prefers-reduced-motion:reduce){.online-track{animation:none}.online-marquee{overflow-x:auto}}`;
 document.head.appendChild(extraStyle);
 
 /* ───────────────────────── Modal ───────────────────────── */
+/* ───────────────────────── Presence (who is online) ───────────────────────── */
+const ONLINE_WINDOW_MS = 150000; // a worker counts as online if seen in the last 2.5 minutes
+let heartbeatTimer = null, onlineTimer = null;
+
+const isOnlineEntry = p => !!p && (p.demo || (p.online !== false && Date.now() - timeVal(p.lastSeen) < ONLINE_WINDOW_MS));
+const onlineWorkers = () => data.presence
+  .filter(p => p.role === 'worker' && isOnlineEntry(p))
+  .sort((a, b) => (a.displayName || '').localeCompare(b.displayName || ''));
+
+function onlineInner() {
+  const list = onlineWorkers();
+  const head = `<div class="online-head"><span class="online-dot"></span><b>Workers online</b><span class="online-count">${list.length}</span></div>`;
+  if (!list.length) return head + `<div class="online-empty">No workers online right now.</div>`;
+  const row = list.map(p => `<span class="online-chip"><i class="online-dot"></i>${esc(p.displayName || 'Worker')}${p.id === currentUser?.uid ? ' (you)' : ''}</span>`).join('');
+  const dur = Math.max(15, list.length * 5);
+  return head + `<div class="online-marquee"><div class="online-track" style="animation-duration:${dur}s"><div class="online-set">${row}</div><div class="online-set" aria-hidden="true">${row}</div></div></div>`;
+}
+const onlineKey = () => onlineWorkers().map(p => p.id).join('|');
+const onlineStrip = () => `<div class="panel online-panel" id="onlineStrip" data-key="${esc(onlineKey())}">${onlineInner()}</div>`;
+
+// Updates only the online strip (no full re-render), and only when the set of online workers changed.
+function updateOnline() {
+  const el = $('#onlineStrip');
+  if (!el) return;
+  const key = onlineKey();
+  if (el.dataset.key === key) return;
+  el.dataset.key = key;
+  el.innerHTML = onlineInner();
+}
+
+async function beat(online = true) {
+  if (!configured || !db || !currentUser || !profile) return;
+  try {
+    await fb.setDoc(fb.doc(db, 'presence', currentUser.uid), {
+      uid: currentUser.uid, displayName: profile.displayName, role: profile.role,
+      online, lastSeen: fb.serverTimestamp()
+    }, { merge: true });
+  } catch (e) { console.warn('presence write failed (check Firestore rules for /presence)', e); }
+}
+function startPresence() {
+  clearInterval(heartbeatTimer); clearInterval(onlineTimer);
+  if (!configured) return;
+  beat(true);
+  heartbeatTimer = setInterval(() => { if (!document.hidden) beat(true); }, 45000);
+  onlineTimer = setInterval(updateOnline, 30000);
+}
+async function stopPresence() {
+  clearInterval(heartbeatTimer); clearInterval(onlineTimer);
+  heartbeatTimer = onlineTimer = null;
+  await beat(false);
+}
+document.addEventListener('visibilitychange', () => { if (!document.hidden && heartbeatTimer) beat(true); });
+window.addEventListener('pagehide', () => { if (heartbeatTimer) beat(false); });
+
 function closeModal() { $('#shModal')?.remove(); }
 document.addEventListener('keydown', e => { if (e.key === 'Escape') closeModal(); });
 
@@ -203,6 +270,11 @@ async function loadData() {
     requestRender();
   }, () => {}));
 
+  unsubs.push(onSnapshot(collection(db, 'presence'), s => {
+    data.presence = s.docs.map(d => ({ id: d.id, ...d.data() }));
+    updateOnline();
+  }, err => console.warn('presence listener', err)));
+
   const msgQuery = query(collection(db, 'conversations', 'company_group', 'messages'), orderBy('createdAt', 'desc'), limit(150));
   unsubs.push(onSnapshot(msgQuery, s => {
     data.messages = s.docs.map(d => ({ id: d.id, ...d.data() })).sort((a, b) => timeVal(a.createdAt) - timeVal(b.createdAt));
@@ -226,6 +298,7 @@ function demoSignIn(role) {
     { id: 'demo-1', workerId: 'demo-worker', workerName: 'Demo Worker', accountId: 'abk-01', accountName: 'Abukai Team Alpha', shiftDate: t, shiftType: 'Morning', startTime: '06:00', endTime: '14:00', receiptCount: 125, errorCount: 4, errorNote: 'Blurry images', status: 'approved', rateCents: 100, deductionPercent: 10, grossCents: 12500, deductionCents: 1250, netCents: 11250, createdAt: new Date() },
     { id: 'demo-2', workerId: 'worker-2', workerName: 'Jamie Santos', accountId: 'abk-01', accountName: 'Abukai Team Alpha', shiftDate: t, shiftType: 'Afternoon', startTime: '14:00', endTime: '22:00', receiptCount: 96, errorCount: 0, errorNote: '', status: 'pending', rateCents: 100, deductionPercent: 10, grossCents: 9600, deductionCents: 960, netCents: 8640, createdAt: new Date() }];
   data.messages = [{ id: 'm1', senderId: 'worker-2', senderName: 'Jamie Santos', text: 'Hi team, my shift submission is ready for review.', createdAt: new Date() }];
+  data.presence = [{ id: 'demo-worker', displayName: 'Demo Worker', role: 'worker', demo: true }, { id: 'worker-2', displayName: 'Jamie Santos', role: 'worker', demo: true }];
   data.settings = { ...DEFAULT_SETTINGS };
   page = 'dashboard';
   renderPage();
@@ -300,7 +373,7 @@ function dashboard() {
   const earned = approved.reduce((n, s) => n + num(s.netCents), 0);
   const recent = rows.slice().sort((a, b) => timeVal(b.createdAt) - timeVal(a.createdAt)).slice(0, 5);
   const first = esc((profile.displayName || 'there').split(' ')[0]);
-  return `<div class="welcome"><div><h2>${isAdmin() ? 'Good day, Administrator' : 'Welcome back, ' + first + ' 👋'}</h2><p>Here’s what’s happening with ${isAdmin() ? 'your team' : 'your shifts'} today.</p></div>${!isAdmin() ? '<button class="btn btn-primary" data-page="receipts">＋ Submit shift</button>' : '<button class="btn btn-primary" data-page="receipts">Review submissions →</button>'}</div><div class="stats">${stat(isAdmin() ? 'Total submissions' : 'My submissions', rows.length, isAdmin() ? 'All recorded shifts' : 'Your recorded shifts', '▤')}${stat('Receipts processed', total.toLocaleString(), `${errTotal.toLocaleString()} error(s) recorded`, '▧')}${stat('Pending review', pending.length, 'Awaiting a decision', '◷')}${stat(isAdmin() ? 'Approved net pay' : 'Approved earnings', money(earned), 'After configured deductions', '₱')}</div><div class="grid-2"><div class="panel"><div class="panel-head"><div><h3>Recent submissions</h3><p>Latest shift records and review status</p></div><button class="small-btn" data-page="receipts">View all →</button></div><div class="table-wrap"><table><thead><tr><th>Worker / account</th><th>Shift date</th><th>Shift</th><th>Processed</th><th>Errors</th><th>Net pay</th><th>Status</th><th></th></tr></thead><tbody>${submissionRows(recent)}</tbody></table></div></div><div class="panel"><div class="panel-head"><div><h3>Quick actions</h3><p>Common tasks, one click away</p></div></div><div class="quick-grid"><button class="quick" data-page="receipts"><span>🧾</span><strong>Submit shift</strong><small>Record receipt count</small></button><button class="quick" data-page="errors"><span>⚠️</span><strong>Error processed</strong><small>Review error receipts</small></button><button class="quick" data-page="reports"><span>📊</span><strong>View reports</strong><small>Track your totals</small></button><button class="quick" data-page="chat"><span>💬</span><strong>Team chat</strong><small>Message your team</small></button>${isAdmin() ? '<button class="quick" data-page="workers"><span>👥</span><strong>Manage workers</strong><small>Review team accounts</small></button>' : ''}</div><div class="notice">${isAdmin() ? `You have <b>${pending.length}</b> submission(s) waiting for review.` : `Your approved submissions show in earnings. If a shift is rejected, check the reason and submit a correction.`}</div></div></div>`;
+  return `<div class="welcome"><div><h2>${isAdmin() ? 'Good day, Administrator' : 'Welcome back, ' + first + ' 👋'}</h2><p>Here’s what’s happening with ${isAdmin() ? 'your team' : 'your shifts'} today.</p></div>${!isAdmin() ? '<button class="btn btn-primary" data-page="receipts">＋ Submit shift</button>' : '<button class="btn btn-primary" data-page="receipts">Review submissions →</button>'}</div>${onlineStrip()}<div class="stats">${stat(isAdmin() ? 'Total submissions' : 'My submissions', rows.length, isAdmin() ? 'All recorded shifts' : 'Your recorded shifts', '▤')}${stat('Receipts processed', total.toLocaleString(), `${errTotal.toLocaleString()} error(s) recorded`, '▧')}${stat('Pending review', pending.length, 'Awaiting a decision', '◷')}${stat(isAdmin() ? 'Approved net pay' : 'Approved earnings', money(earned), 'After configured deductions', '₱')}</div><div class="grid-2"><div class="panel"><div class="panel-head"><div><h3>Recent submissions</h3><p>Latest shift records and review status</p></div><button class="small-btn" data-page="receipts">View all →</button></div><div class="table-wrap"><table><thead><tr><th>Worker / account</th><th>Shift date</th><th>Shift</th><th>Processed</th><th>Errors</th><th>Net pay</th><th>Status</th><th></th></tr></thead><tbody>${submissionRows(recent)}</tbody></table></div></div><div class="panel"><div class="panel-head"><div><h3>Quick actions</h3><p>Common tasks, one click away</p></div></div><div class="quick-grid"><button class="quick" data-page="receipts"><span>🧾</span><strong>Submit shift</strong><small>Record receipt count</small></button><button class="quick" data-page="errors"><span>⚠️</span><strong>Error processed</strong><small>Review error receipts</small></button><button class="quick" data-page="reports"><span>📊</span><strong>View reports</strong><small>Track your totals</small></button><button class="quick" data-page="chat"><span>💬</span><strong>Team chat</strong><small>Message your team</small></button>${isAdmin() ? '<button class="quick" data-page="workers"><span>👥</span><strong>Manage workers</strong><small>Review team accounts</small></button>' : ''}</div><div class="notice">${isAdmin() ? `You have <b>${pending.length}</b> submission(s) waiting for review.` : `Your approved submissions show in earnings. If a shift is rejected, check the reason and submit a correction.`}</div></div></div>`;
 }
 
 function filteredSubmissions() {
@@ -433,6 +506,7 @@ function go(p) {
 function wireShell() {
   $$('.nav button').forEach(b => b.addEventListener('click', () => go(b.dataset.nav)));
   $('#logout')?.addEventListener('click', async () => {
+    await stopPresence();
     unlisten();
     if (configured && auth) { try { await fb.signOut(auth); } catch {} }
     currentUser = null; profile = null; page = 'dashboard'; detailId = null;
@@ -884,7 +958,7 @@ async function boot() {
     const token = ++authToken;
     unlisten();
     closeModal();
-    if (!user) { currentUser = null; profile = null; renderLogin(); return; }
+    if (!user) { stopPresence(); currentUser = null; profile = null; renderLogin(); return; }
 
     try {
       const snap = await fb.getDoc(fb.doc(db, 'users', user.uid));
@@ -912,6 +986,7 @@ async function boot() {
       detailId = null;
       await loadData();
       if (token !== authToken) return;
+      startPresence();
       renderPage();
     } catch (e) {
       console.error(e);
