@@ -112,19 +112,21 @@ const ONLINE_WINDOW_MS = 150000; // a worker counts as online if seen in the las
 let heartbeatTimer = null, onlineTimer = null;
 
 const isOnlineEntry = p => !!p && (p.demo || (p.online !== false && Date.now() - timeVal(p.lastSeen) < ONLINE_WINDOW_MS));
+let presenceReadErr = false, presenceWriteErr = false;
 const onlineWorkers = () => data.presence
-  .filter(p => p.role === 'worker' && isOnlineEntry(p))
+  .filter(p => isOnlineEntry(p))
   .sort((a, b) => (a.displayName || '').localeCompare(b.displayName || ''));
 
 function onlineInner() {
   const list = onlineWorkers();
-  const head = `<div class="online-head"><span class="online-dot"></span><b>Workers online</b><span class="online-count">${list.length}</span></div>`;
-  if (!list.length) return head + `<div class="online-empty">No workers online right now.</div>`;
-  const row = list.map(p => `<span class="online-chip"><i class="online-dot"></i>${esc(p.displayName || 'Worker')}${p.id === currentUser?.uid ? ' (you)' : ''}</span>`).join('');
+  const head = `<div class="online-head"><span class="online-dot"></span><b>Online now</b><span class="online-count">${list.length}</span></div>`;
+  const warn = presenceReadErr ? `<div class="notice warn" style="margin-bottom:10px">Cannot read online status. Update your Firestore rules for the "presence" collection.</div>` : presenceWriteErr ? `<div class="notice warn" style="margin-bottom:10px">Your online status could not be saved. Update your Firestore rules for the "presence" collection.</div>` : '';
+  if (!list.length) return head + warn + `<div class="online-empty">No one online right now.</div>`;
+  const row = list.map(p => `<span class="online-chip"><i class="online-dot"></i>${esc(p.displayName || 'Worker')}${p.role === 'admin' ? ' · Admin' : ''}${p.id === currentUser?.uid ? ' (you)' : ''}</span>`).join('');
   const dur = Math.max(15, list.length * 5);
-  return head + `<div class="online-marquee"><div class="online-track" style="animation-duration:${dur}s"><div class="online-set">${row}</div><div class="online-set" aria-hidden="true">${row}</div></div></div>`;
+  return head + warn + `<div class="online-marquee"><div class="online-track" style="animation-duration:${dur}s"><div class="online-set">${row}</div><div class="online-set" aria-hidden="true">${row}</div></div></div>`;
 }
-const onlineKey = () => onlineWorkers().map(p => p.id).join('|');
+const onlineKey = () => `${presenceReadErr ? 'R' : ''}${presenceWriteErr ? 'W' : ''}:` + onlineWorkers().map(p => p.id).join('|');
 const onlineStrip = () => `<div class="panel online-panel" id="onlineStrip" data-key="${esc(onlineKey())}">${onlineInner()}</div>`;
 
 // Updates only the online strip (no full re-render), and only when the set of online workers changed.
@@ -144,7 +146,11 @@ async function beat(online = true) {
       uid: currentUser.uid, displayName: profile.displayName, role: profile.role,
       online, lastSeen: fb.serverTimestamp()
     }, { merge: true });
-  } catch (e) { console.warn('presence write failed (check Firestore rules for /presence)', e); }
+    if (presenceWriteErr) { presenceWriteErr = false; updateOnline(); }
+  } catch (e) {
+    console.warn('presence write failed (check Firestore rules for /presence)', e);
+    if (!presenceWriteErr) { presenceWriteErr = true; updateOnline(); }
+  }
 }
 function startPresence() {
   clearInterval(heartbeatTimer); clearInterval(onlineTimer);
@@ -271,9 +277,14 @@ async function loadData() {
   }, () => {}));
 
   unsubs.push(onSnapshot(collection(db, 'presence'), s => {
+    presenceReadErr = false;
     data.presence = s.docs.map(d => ({ id: d.id, ...d.data() }));
     updateOnline();
-  }, err => console.warn('presence listener', err)));
+  }, err => {
+    console.warn('presence listener (check Firestore rules for /presence)', err);
+    presenceReadErr = true;
+    updateOnline();
+  }));
 
   const msgQuery = query(collection(db, 'conversations', 'company_group', 'messages'), orderBy('createdAt', 'desc'), limit(150));
   unsubs.push(onSnapshot(msgQuery, s => {
@@ -400,8 +411,45 @@ function workerNamesFor(a) {
   return names.length ? names.join(', ') : 'Not assigned';
 }
 
+/* Monthly receipt/error totals per account (rejected submissions are excluded) */
+function monthKeyOf(offset = 0) {
+  const n = new Date();
+  const d = new Date(n.getFullYear(), n.getMonth() + offset, 1);
+  return `${d.getFullYear()}-${String(d.getMonth() + 1).padStart(2, '0')}`;
+}
+const monthLabel = k => {
+  const [y, m] = k.split('-').map(Number);
+  return new Date(y, m - 1, 1).toLocaleDateString('en-PH', { month: 'long', year: 'numeric' });
+};
+function accountStats(accountId) {
+  const cur = monthKeyOf(0), prev = monthKeyOf(-1);
+  const r = { cur: { receipts: 0, errors: 0 }, prev: { receipts: 0, errors: 0 } };
+  data.submissions.forEach(s => {
+    if (s.accountId !== accountId || s.status === 'rejected') return;
+    const k = String(s.shiftDate || '').slice(0, 7);
+    const b = k === cur ? r.cur : k === prev ? r.prev : null;
+    if (!b) return;
+    b.receipts += num(s.receiptCount);
+    b.errors += num(s.errorCount);
+  });
+  return r;
+}
+
 function accounts() {
-  return `<div class="welcome"><div><h2>Accounts</h2><p>Abukai accounts and worker assignments.</p></div>${isAdmin() ? '<button class="btn btn-primary" id="addAccount">＋ Add account</button>' : ''}</div><div class="panel">${data.accounts.length ? `<div class="table-wrap"><table><thead><tr><th>Account</th><th>Code</th><th>Assigned workers</th><th>Status</th><th>Notes</th><th>Action</th></tr></thead><tbody>${data.accounts.map(a => `<tr><td><strong>${esc(a.name)}</strong></td><td>${esc(a.code || '—')}</td><td>${esc(workerNamesFor(a))}</td><td>${status(a.isActive === false ? 'inactive' : 'active')}</td><td>${esc(a.notes || '—')}</td><td>${isAdmin() ? `<div class="sh-row-actions"><button class="btn btn-secondary" data-assign="${esc(a.id)}">Assign workers</button><button class="small-btn" data-toggle-account="${esc(a.id)}">${a.isActive === false ? 'Activate' : 'Deactivate'}</button></div>` : '—'}</td></tr>`).join('')}</tbody></table></div>` : `<div class="empty">▦<b>No accounts available</b>Ask an administrator to create an account and assign workers.</div>`}</div>`;
+  const curLabel = monthLabel(monthKeyOf(0)), prevLabel = monthLabel(monthKeyOf(-1));
+  const rows = data.accounts.map(a => ({ a, st: accountStats(a.id) }));
+  const tot = rows.reduce((t, x) => {
+    t.pr += x.st.prev.receipts; t.pe += x.st.prev.errors;
+    t.cr += x.st.cur.receipts; t.ce += x.st.cur.errors;
+    return t;
+  }, { pr: 0, pe: 0, cr: 0, ce: 0 });
+  const errCell = n => `<td${n > 0 ? ' style="color:#c0392b;font-weight:600"' : ''}>${n.toLocaleString()}</td>`;
+
+  const body = rows.map(({ a, st }) => `<tr><td><strong>${esc(a.name)}</strong></td><td>${esc(a.code || '—')}</td><td>${esc(workerNamesFor(a))}</td><td>${st.prev.receipts.toLocaleString()}</td>${errCell(st.prev.errors)}<td>${st.cur.receipts.toLocaleString()}</td>${errCell(st.cur.errors)}<td>${status(a.isActive === false ? 'inactive' : 'active')}</td><td>${esc(a.notes || '—')}</td><td>${isAdmin() ? `<div class="sh-row-actions"><button class="btn btn-secondary" data-assign="${esc(a.id)}">Assign workers</button><button class="small-btn" data-toggle-account="${esc(a.id)}">${a.isActive === false ? 'Activate' : 'Deactivate'}</button></div>` : '—'}</td></tr>`).join('');
+
+  const foot = `<tr style="font-weight:700;background:rgba(0,0,0,.03)"><td colspan="3">Total (all accounts)</td><td>${tot.pr.toLocaleString()}</td>${errCell(tot.pe)}<td>${tot.cr.toLocaleString()}</td>${errCell(tot.ce)}<td colspan="3"></td></tr>`;
+
+  return `<div class="welcome"><div><h2>Accounts</h2><p>Abukai accounts, worker assignments, and monthly receipt totals.</p></div>${isAdmin() ? '<button class="btn btn-primary" id="addAccount">＋ Add account</button>' : ''}</div><div class="panel">${data.accounts.length ? `<div class="table-wrap"><table><thead><tr><th colspan="3"></th><th colspan="2" style="text-align:center">Last month · ${esc(prevLabel)}</th><th colspan="2" style="text-align:center">This month · ${esc(curLabel)}</th><th colspan="3"></th></tr><tr><th>Account</th><th>Code</th><th>Assigned workers</th><th>Receipts</th><th>Errors</th><th>Receipts</th><th>Errors</th><th>Status</th><th>Notes</th><th>Action</th></tr></thead><tbody>${body}</tbody><tfoot>${foot}</tfoot></table></div><div class="notice" style="margin-top:12px">Totals use the shift date and count processed receipts and errors from pending and approved submissions. Rejected submissions are not counted.</div>` : `<div class="empty">▦<b>No accounts available</b>Ask an administrator to create an account and assign workers.</div>`}</div>`;
 }
 
 /* ───────────────────────── Error processed ───────────────────────── */
