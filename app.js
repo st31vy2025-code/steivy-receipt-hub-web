@@ -1,4 +1,4 @@
-// Steivy Receipt Hub — app.js (fixed)
+// Steivy Receipt Hub — app.js (with Create worker + Delete worker)
 // Load with: <script type="module" src="app.js"></script>
 
 let firebaseConfig = {};
@@ -115,6 +115,7 @@ function openModal(title, bodyHtml, onSubmit, submitLabel = 'Save') {
     try {
       const r = await onSubmit(new FormData(form), form);
       if (r !== false) closeModal();
+      else btn.disabled = false;
     } catch (err) {
       console.error(err);
       toast('Something went wrong. Check Firestore rules and try again.');
@@ -134,7 +135,8 @@ async function initFirebase() {
       import(base + 'firebase-auth.js'),
       import(base + 'firebase-firestore.js')
     ]);
-    fb = { ...authmod, ...fsmod };
+    // initializeApp is kept so we can create a secondary app when an admin creates a worker.
+    fb = { ...authmod, ...fsmod, initializeApp: appmod.initializeApp };
     const app = appmod.initializeApp(firebaseConfig);
     auth = authmod.getAuth(app);
     db = fsmod.getFirestore(app);
@@ -360,9 +362,10 @@ function workers() {
     if (st === 'approved') b.push(u.isActive === false
       ? `<button class="small-btn" data-worker-action="activate" data-id="${esc(u.id)}">Activate</button>`
       : `<button class="small-btn" data-worker-action="deactivate" data-id="${esc(u.id)}">Deactivate</button>`);
+    b.push(`<button class="btn btn-danger" data-worker-action="delete" data-id="${esc(u.id)}">Delete</button>`);
     return `<div class="sh-row-actions">${b.join('')}</div>`;
   };
-  return `<div class="welcome"><div><h2>Worker management</h2><p>Review worker profiles and account status.</p></div></div><div class="panel"><div class="toolbar"><input id="workerSearch" placeholder="Search name or email…"><span class="spacer"></span><span class="muted">${users.length} worker(s)</span></div><div class="table-wrap"><table><thead><tr><th>Worker</th><th>Email</th><th>Status</th><th>Assigned accounts</th><th>Action</th></tr></thead><tbody>${users.map(u => `<tr><td><div class="person"><div class="avatar">${esc(initials(u.displayName))}</div><strong>${esc(u.displayName || 'Unnamed')}</strong></div></td><td>${esc(u.email)}</td><td>${status(u.isActive === false ? 'inactive' : (u.status || 'approved'))}</td><td>${(u.assignedAccountIds || []).length}</td><td>${actions(u)}</td></tr>`).join('') || '<tr><td colspan="5"><div class="empty">No worker profiles found.</div></td></tr>'}</tbody></table></div></div>`;
+  return `<div class="welcome"><div><h2>Worker management</h2><p>Review worker profiles and account status.</p></div><button class="btn btn-primary" id="addWorker">＋ Create worker</button></div><div class="panel"><div class="toolbar"><input id="workerSearch" placeholder="Search name or email…"><span class="spacer"></span><span class="muted">${users.length} worker(s)</span></div><div class="table-wrap"><table><thead><tr><th>Worker</th><th>Email</th><th>Status</th><th>Assigned accounts</th><th>Action</th></tr></thead><tbody>${users.map(u => `<tr><td><div class="person"><div class="avatar">${esc(initials(u.displayName))}</div><strong>${esc(u.displayName || 'Unnamed')}</strong></div></td><td>${esc(u.email)}</td><td>${status(u.isActive === false ? 'inactive' : (u.status || 'approved'))}</td><td>${(u.assignedAccountIds || []).length}</td><td>${actions(u)}</td></tr>`).join('') || '<tr><td colspan="5"><div class="empty">No worker profiles found.</div></td></tr>'}</tbody></table></div></div>`;
 }
 
 function settings() {
@@ -433,6 +436,7 @@ function wirePage() {
   $('#receiptSearch')?.addEventListener('input', e => { filters.q = e.target.value; filterRows(); });
   $('#statusFilter')?.addEventListener('change', e => { filters.status = e.target.value; filterRows(); });
   $('#addAccount')?.addEventListener('click', addAccount);
+  $('#addWorker')?.addEventListener('click', addWorker);
   $('#settingsForm')?.addEventListener('submit', saveSettings);
   $('#chatForm')?.addEventListener('submit', sendMessage);
   $('#exportCsv')?.addEventListener('click', exportCsv);
@@ -634,10 +638,86 @@ function viewWorker(id) {
     <div><p class="muted">Assigned accounts</p><b>${esc(accts.join(', ') || 'None')}</b></div></div>`, null);
 }
 
+/* CREATE WORKER — admin creates a login + profile without being signed out */
+function addWorker() {
+  if (!isAdmin()) return;
+  openModal('Create worker',
+    `<div class="field"><label>FULL NAME</label><input name="name" required maxlength="80" placeholder="e.g. Juan Dela Cruz"></div>
+     <div class="field"><label>EMAIL</label><input name="email" type="email" required placeholder="worker@company.com"></div>
+     <div class="field"><label>TEMPORARY PASSWORD</label><input name="password" type="password" required minlength="6" autocomplete="new-password" placeholder="At least 6 characters"></div>`,
+    async fd => {
+      const name = String(fd.get('name') || '').trim();
+      const email = String(fd.get('email') || '').trim().toLowerCase();
+      const password = String(fd.get('password') || '');
+      if (!name || !email || password.length < 6) { toast('Fill in all fields (password min 6 characters).'); return false; }
+      if (data.users.some(u => (u.email || '').toLowerCase() === email)) { toast('A worker with that email already exists.'); return false; }
+
+      const profileDoc = { displayName: name, email, role: 'worker', status: 'approved', isActive: true, assignedAccountIds: [] };
+
+      if (!configured) {
+        data.users.push({ ...profileDoc, id: 'local-' + Date.now() });
+        toast('Demo worker added (not saved online).');
+        renderPage();
+        return;
+      }
+
+      // A second Firebase app is used so the admin stays signed in on the main app.
+      const secondary = fb.initializeApp(firebaseConfig, 'worker-creator-' + Date.now());
+      const secAuth = fb.getAuth(secondary);
+      try {
+        const cred = await fb.createUserWithEmailAndPassword(secAuth, email, password);
+        await fb.setDoc(fb.doc(db, 'users', cred.user.uid), {
+          ...profileDoc, createdBy: currentUser.uid,
+          createdAt: fb.serverTimestamp(), updatedAt: fb.serverTimestamp()
+        });
+        toast('Worker created.');
+      } catch (err) {
+        console.error(err);
+        toast(err.code === 'auth/email-already-in-use' ? 'That email already has a login.'
+          : err.code === 'auth/weak-password' ? 'Password is too weak.'
+          : err.code === 'auth/invalid-email' ? 'Please enter a valid email address.'
+          : 'Could not create worker. Check Firestore rules.');
+        return false;
+      } finally {
+        try { await fb.signOut(secAuth); } catch {}
+      }
+    }, 'Create worker');
+}
+
+/* DELETE WORKER — removes the profile + account assignments (Auth login itself can only be removed from the Firebase console / Admin SDK) */
+async function deleteWorker(u) {
+  if (!isAdmin()) return;
+  if (u.id === currentUser.uid) return toast('You cannot delete yourself.');
+  if (!confirm(`Delete ${u.displayName || u.email}? Their profile will be removed and they will lose access. Past submissions are kept.`)) return;
+
+  if (!configured) {
+    data.users = data.users.filter(x => x.id !== u.id);
+    data.accounts.forEach(a => {
+      a.assignedWorkerIds = (a.assignedWorkerIds || []).filter(id => id !== u.id);
+    });
+    toast('Demo worker deleted.');
+    renderPage();
+    return;
+  }
+  try {
+    const batch = fb.writeBatch(db);
+    batch.delete(fb.doc(db, 'users', u.id));
+    data.accounts.filter(a => (a.assignedWorkerIds || []).includes(u.id)).forEach(a => {
+      batch.update(fb.doc(db, 'accounts', a.id), {
+        assignedWorkerIds: fb.arrayRemove(u.id),
+        updatedAt: fb.serverTimestamp()
+      });
+    });
+    await batch.commit();
+    toast('Worker deleted.');
+  } catch (e) { console.error(e); toast('Could not delete worker. Check Firestore rules.'); }
+}
+
 async function workerAction(id, action) {
   if (!isAdmin()) return;
   const u = data.users.find(x => x.id === id);
   if (!u) return;
+  if (action === 'delete') return deleteWorker(u);
   const changes = ({
     approve: { status: 'approved', isActive: true },
     reject: { status: 'rejected', isActive: false },
