@@ -49,8 +49,23 @@ function settings(){return `<div class="welcome"><div><h2>Pay settings</h2><p>Co
 function chat(){const messages=data.messages||[];return `<div class="welcome"><div><h2>Team conversation</h2><p>Share updates with your team.</p></div></div><div class="chat-layout"><div class="chat-list"><button class="active"><div class="avatar">👥</div><div><strong>Company group</strong><small>Team-wide conversation</small></div></button></div><div class="chat-window"><div class="chat-messages" id="chatMessages">${messages.map(m=>`<div class="bubble ${m.senderId===currentUser?.uid?'mine':''}">${m.senderId!==currentUser?.uid?`<b>${esc(m.senderName||'Team member')}</b><br>`:''}${esc(m.text||m.message||'')}<small>${esc(fmtTime(m.createdAt))}</small></div>`).join('')||'<div class="empty">💬<b>No messages yet</b>Start the conversation with your team.</div>'}</div><form class="chat-compose" id="chatForm"><input name="message" placeholder="Write a message…" maxlength="2000" autocomplete="off" required><button class="btn btn-primary" type="submit">Send ↗</button></form></div></div>`}
 function renderPage(){if(!currentUser||!profile){renderLogin();return}if(!isAdmin()&&!['dashboard','receipts','accounts','reports','chat'].includes(page))page='dashboard';$('#app').innerHTML=shell();const target=$('#pageContent');target.innerHTML=({dashboard,receipts,accounts,reports,chat,workers,settings})[page]?.()||dashboard();wireShell();wirePage();}
 function render(){if(!currentUser||!profile){renderLogin();return}renderPage()}
-function wireShell(){$$('.nav button').forEach(b=>b.addEventListener('click',()=>go(b.dataset.page)));$('#logout')?.addEventListener('click',async()=>{unlisten();if(configured&&auth){try{await fb.signOut(auth)}catch{}}currentUser=null;profile=null;page='dashboard';renderLogin()});$('#menuBtn')?.addEventListener('click',()=>$('#sidebar').classList.toggle('open'));$('#pageContent')?.addEventListener('click',e=>{const b=e.target.closest('[data-page]');if(b)go(b.dataset.page);const v=e.target.closest('[data-view]');if(v)viewSubmission(v.dataset.view);const w=e.target.closest('[data-worker]');if(w)viewWorker(w.dataset.worker)});}
-function $$(s){return [...document.querySelectorAll(s)]}
+function wireShell(){$$('.nav button').forEach(b=>b.addEventListener('click',()=>go(b.dataset.page)));$('#logout')?.addEventListener('click',async()=>{unlisten();if(configured&&auth){try{await fb.signOut(auth)}catch{}}currentUser=null;profile=null;page='dashboard';renderLogin()});$('#menuBtn')?.addEventListener('click',()=>$('#sidebar').classList.toggle('open'));$('#pageContent')?.addEventListener('click',e=>{
+  const b=e.target.closest('[data-page]');
+  if(b)go(b.dataset.page);
+
+  const v=e.target.closest('[data-view]');
+  if(v)viewSubmission(v.dataset.view);
+
+  const w=e.target.closest('[data-worker]');
+  if(w)viewWorker(w.dataset.worker);
+
+  const a=e.target.closest('[onclick*="assignWorker"]');
+  if(a){
+    e.preventDefault();
+    const match=a.getAttribute('onclick').match(/assignWorker\('([^']+)'\)/);
+    if(match)assignWorker(match[1]);
+  }
+});
 function go(p){page=p;renderPage();$('#sidebar')?.classList.remove('open')}
 function wirePage(){
   $('#newSubmission')?.addEventListener('click',()=>$('#submissionFormPanel')?.scrollIntoView({behavior:'smooth',block:'start'}));
