@@ -66,6 +66,7 @@ function wireShell(){$$('.nav button').forEach(b=>b.addEventListener('click',()=
     if(match)assignWorker(match[1]);
   }
 });
+}                  
 function go(p){page=p;renderPage();$('#sidebar')?.classList.remove('open')}
 function wirePage(){
   $('#newSubmission')?.addEventListener('click',()=>$('#submissionFormPanel')?.scrollIntoView({behavior:'smooth',block:'start'}));
