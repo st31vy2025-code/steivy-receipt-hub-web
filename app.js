@@ -1,134 +1,768 @@
-import { firebaseConfig } from './firebase-config.js';
+// Steivy Receipt Hub — app.js (fixed)
+// Load with: <script type="module" src="app.js"></script>
 
-const configured = firebaseConfig.apiKey && !firebaseConfig.apiKey.startsWith('YOUR_') && firebaseConfig.projectId && !firebaseConfig.projectId.startsWith('YOUR_');
-let auth, db, fb = {}, currentUser = null, profile = null, page = 'dashboard', data = {submissions:[],accounts:[],users:[],messages:[],settings:{grossRateCents:100,deductionPercent:10}}, unsubs = [], activeChat = 'company_group', chatDocs = [];
+let firebaseConfig = {};
+try {
+  ({ firebaseConfig } = await import('./firebase-config.js'));
+} catch (e) {
+  console.warn('firebase-config.js not found or invalid; running in demo mode.', e);
+}
+
+const isSet = v => !!v && !String(v).startsWith('YOUR_');
+const configured = isSet(firebaseConfig?.apiKey) && isSet(firebaseConfig?.projectId);
+
+/* ───────────────────────── State ───────────────────────── */
+let auth, db, fb = {};
+let currentUser = null, profile = null;
+let page = 'dashboard';
+let unsubs = [];
+let authToken = 0;
+let pendingRender = false;
+let detailId = null;
+const filters = { q: '', status: 'all' };
+const DEFAULT_SETTINGS = { grossRateCents: 100, deductionPercent: 10 };
+const data = { submissions: [], accounts: [], users: [], messages: [], settings: { ...DEFAULT_SETTINGS } };
+
+/* ───────────────────────── Helpers ───────────────────────── */
 const $ = s => document.querySelector(s);
-const esc = v => String(v ?? '').replace(/[&<>"']/g, c=>({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[c]));
-const initials = n => (n||'U').split(/\s+/).slice(0,2).map(x=>x[0]||'').join('').toUpperCase();
-const money = cents => new Intl.NumberFormat('en-PH',{style:'currency',currency:'PHP',maximumFractionDigits:2}).format((Number(cents)||0)/100);
-const date = d => {if(!d)return '—'; try {const x=typeof d==='string'?new Date(d):d.toDate?d.toDate():new Date(d);return x.toLocaleDateString('en-PH',{year:'numeric',month:'short',day:'numeric'});}catch{return '—'}};
-const fmtTime = d => {try{return (d?.toDate?d.toDate():new Date(d)).toLocaleTimeString([],{hour:'2-digit',minute:'2-digit'})}catch{return ''}};
-function toast(msg){const el=$('#toast');if(!el)return;el.textContent=msg;el.classList.add('show');setTimeout(()=>el.classList.remove('show'),3000)}
-function unlisten(){unsubs.forEach(fn=>{try{fn()}catch{}});unsubs=[]}
-async function initFirebase(){
-  if(!configured)return false;
-  try{
-    const appmod=await import('https://www.gstatic.com/firebasejs/10.12.5/firebase-app.js');
-    const authmod=await import('https://www.gstatic.com/firebasejs/10.12.5/firebase-auth.js');
-    const fsmod=await import('https://www.gstatic.com/firebasejs/10.12.5/firebase-firestore.js');
-    fb={...authmod,...fsmod}; const app=appmod.initializeApp(firebaseConfig);auth=authmod.getAuth(app);db=fsmod.getFirestore(app);return true;
-  }catch(e){console.error(e);toast('Firebase could not initialize. Check your web config and internet connection.');return false}
-}
-function demoSignIn(role){unlisten();currentUser={uid:role==='admin'?'demo-admin':'demo-worker',email:role==='admin'?'admin@demo.local':'worker@demo.local',displayName:role==='admin'?'Demo Administrator':'Demo Worker'};profile={id:currentUser.uid,email:currentUser.email,displayName:currentUser.displayName,role,isActive:true,status:'approved',assignedAccountIds:['abk-01']};data.accounts=[{id:'abk-01',name:'Abukai Team Alpha',code:'ABK-01',isActive:true,assignedWorkerIds:['demo-worker']}];data.users=[profile,{id:'worker-2',displayName:'Jamie Santos',email:'jamie@example.com',role:'worker',isActive:true,status:'approved'}];data.submissions=[{id:'demo-1',workerId:'demo-worker',workerName:'Demo Worker',accountId:'abk-01',accountName:'Abukai Team Alpha',shiftDate:new Date().toISOString().slice(0,10),shiftType:'Morning',startTime:'06:00',endTime:'14:00',receiptCount:125,status:'approved',grossCents:12500,deductionCents:1250,netCents:11250,createdAt:new Date()},{id:'demo-2',workerId:'worker-2',workerName:'Jamie Santos',accountId:'abk-01',accountName:'Abukai Team Alpha',shiftDate:new Date().toISOString().slice(0,10),shiftType:'Afternoon',startTime:'14:00',endTime:'22:00',receiptCount:96,status:'pending',grossCents:9600,deductionCents:960,netCents:8640,createdAt:new Date()}];data.messages=[{id:'m1',senderId:'worker-2',senderName:'Jamie Santos',text:'Hi team, my shift submission is ready for review.',createdAt:new Date()}];data.settings={grossRateCents:100,deductionPercent:10};page='dashboard';render();toast('Demo mode: changes are not saved online.');}
-function renderLogin(){unlisten();$('#app').innerHTML=`<main class="login-wrap"><section class="login-art"><div class="brand"><img src="assets/logo.jpg" alt=""><div><strong>STEIVY</strong><small>RECEIPT HUB</small></div></div><div><h1>Keep every shift<br>in good order.</h1><p>Manage receipt submissions, track shift totals, review reports, and stay connected with your team.</p></div><div class="art-foot"><p>One hub for your team's daily operations.</p></div></section><section class="login-form-side"><form id="loginForm" class="login-form"><div class="brand-mark">S</div><h2>Welcome back</h2><p class="muted">Sign in to continue to your workspace.</p>${!configured?`<div class="demo-note"><b>Firebase setup required</b><br>This copy has no Firebase web credentials yet. You can preview the interface with demo accounts below; demo changes are not saved online.</div>`:''}<div class="field"><label for="email">EMAIL ADDRESS</label><input id="email" type="email" placeholder="you@company.com" autocomplete="username" required></div><div class="field"><label for="password">PASSWORD</label><input id="password" type="password" placeholder="Enter your password" autocomplete="current-password" required></div><button class="btn btn-primary btn-block" type="submit">Sign in <span>→</span></button><p class="muted" style="font-size:12px;text-align:center;margin:18px 0">Need an account? Ask your administrator to create or approve it.</p>${!configured?`<div class="field"><label>PREVIEW WITHOUT FIREBASE</label><button class="btn btn-light btn-block" type="button" id="demoWorker">Continue as demo worker</button><button class="btn btn-ghost btn-block" style="margin-top:8px" type="button" id="demoAdmin">Preview admin dashboard</button></div>`:''}<div class="footer-note">Steivy Receipt Hub · Web edition</div></form></section></main>`;
-  $('#loginForm').addEventListener('submit',async e=>{e.preventDefault();if(!configured){toast('Add Firebase web configuration to enable sign-in.');return}try{await fb.signInWithEmailAndPassword(auth,$('#email').value.trim(),$('#password').value); }catch(err){toast(authError(err.code))}});
-  $('#demoWorker')?.addEventListener('click',()=>demoSignIn('worker'));$('#demoAdmin')?.addEventListener('click',()=>demoSignIn('admin'));
-}
-function authError(code){return ({'auth/invalid-credential':'Email or password is incorrect.','auth/user-not-found':'No account found for this email.','auth/wrong-password':'Email or password is incorrect.','auth/too-many-requests':'Too many attempts. Try again later.','auth/network-request-failed':'Network error. Check your connection.'})[code]||'Could not sign in: '+(code||'unknown error')}
-function listen(path, key, queryFn){const {collection,onSnapshot,query,where,orderBy,limit}=fb;let ref=collection(db,path);if(queryFn)ref=queryFn(ref,{query,where,orderBy,limit});const stop=onSnapshot(ref,s=>{data[key]=s.docs.map(d=>({id:d.id,...d.data()}));if(page!=='login')renderPage()},err=>{console.error(path,err);toast('Could not load '+path+'. Check Firestore rules.')});unsubs.push(stop)}
-async function loadData(){unlisten();if(!db||!profile)return;const {collection,doc,onSnapshot}=fb;
-  listen('accounts','accounts');listen('submissions','submissions');if(isAdmin())listen('users','users');else data.users=[];
-  const settingsStop=onSnapshot(doc(db,'settings','paySettings'),s=>{if(s.exists())data.settings={...data.settings,...s.data()};if(page!=='login')renderPage()},()=>{});unsubs.push(settingsStop);
-  const messagesStop=onSnapshot(collection(db,'conversations','company_group','messages'),s=>{data.messages=s.docs.map(d=>({id:d.id,...d.data()})).sort((a,b)=>timeVal(a.createdAt)-timeVal(b.createdAt));if(page==='chat')renderPage()},()=>{});unsubs.push(messagesStop);
-}
-function timeVal(v){try{return v?.toMillis?v.toMillis():new Date(v).getTime()||0}catch{return 0}}
-function isAdmin(){return profile?.role==='admin'}
-function visibleSubmissions(){return isAdmin()?data.submissions:data.submissions.filter(s=>s.workerId===currentUser?.uid)}
-const navItems=[['dashboard','⌂','Dashboard','MAIN'],['receipts','▤','Submissions'],['accounts','▦','Accounts'],['reports','▥','Reports'],['chat','☏','Team chat']];
-function shell(){const title=({dashboard:'Dashboard',receipts:'Receipt submissions',accounts:'Account management',reports:'Reports & earnings',chat:'Team chat',workers:'Worker management',settings:'Pay settings'})[page]||'Dashboard';const items=navItems.filter(n=>!['accounts'].includes(n[0])||isAdmin());if(isAdmin())items.push(['workers','♙','Workers'],['settings','⚙','Pay settings']);return `<div class="shell"><aside class="sidebar" id="sidebar"><div class="brand"><img src="assets/logo.jpg" alt=""><div><strong>STEIVY</strong><small>RECEIPT HUB</small></div></div><div class="nav-label">WORKSPACE</div><nav class="nav">${items.map(n=>`<button data-page="${n[0]}" class="${page===n[0]?'active':''}"><span class="ico">${n[1]}</span>${n[2]}</button>`).join('')}</nav><div class="sidebar-bottom"><div class="user-mini"><div class="avatar">${esc(initials(profile?.displayName))}</div><div><strong>${esc(profile?.displayName||'User')}</strong><small>${isAdmin()?'Administrator':'Worker'}</small></div></div><button class="btn btn-ghost btn-block" id="logout">↪ Sign out</button></div></aside><main class="main"><header class="topbar"><div class="right"><button class="btn btn-ghost mobile-menu" id="menuBtn">☰</button><div><div class="crumb">WORKSPACE / ${title.toUpperCase()}</div><h1>${title}</h1></div></div><div class="top-actions"><span class="mode-pill">${configured?'● Connected app':'◉ Demo preview'}</span><div class="avatar">${esc(initials(profile?.displayName))}</div></div></header>${!configured?'<div class="demo-banner">Demo preview — data is sample-only and will reset when you leave. Configure Firebase to use real accounts and save changes.</div>':''}<section class="content" id="pageContent"></section></main></div>`}
-function stat(label,value,sub,ico){return `<div class="stat"><div class="stat-head">${label}<span class="stat-icon">${ico}</span></div><strong>${value}</strong><small>${sub}</small></div>`}
-function status(s){return `<span class="status ${esc(String(s||'pending').toLowerCase())}">${esc(s||'pending')}</span>`}
-function submissionRows(rows){if(!rows.length)return `<tr><td colspan="7"><div class="empty">▤<b>No submissions yet</b>Shift submissions will appear here.</div></td></tr>`;return rows.slice().sort((a,b)=>timeVal(b.createdAt)-timeVal(a.createdAt)).map(s=>`<tr><td><div class="person"><div class="avatar">${esc(initials(s.workerName))}</div><div><strong>${esc(s.workerName||'Worker')}</strong><small>${esc(s.accountName||'No account')}</small></div></div></td><td>${esc(date(s.shiftDate))}</td><td>${esc(s.shiftType||'—')}<small style="display:block;color:#8a958e;margin-top:4px">${esc(s.startTime||'')} – ${esc(s.endTime||'')}</small></td><td>${Number(s.receiptCount||0).toLocaleString()}</td><td>${money(s.netCents||0)}</td><td>${status(s.status)}</td><td><button class="small-btn" data-view="${esc(s.id)}">View</button></td></tr>`).join('')}
-function dashboard(){const rows=visibleSubmissions();const approved=rows.filter(s=>s.status==='approved');const pending=rows.filter(s=>s.status==='pending');const total=rows.reduce((n,s)=>n+Number(s.receiptCount||0),0);const earned=approved.reduce((n,s)=>n+Number(s.netCents||0),0);const recent=rows.slice().sort((a,b)=>timeVal(b.createdAt)-timeVal(a.createdAt)).slice(0,5);return `<div class="welcome"><div><h2>${isAdmin()?'Good day, Administrator':'Welcome back, '+esc(profile.displayName.split(' ')[0])} 👋</h2><p>Here’s what’s happening with ${isAdmin()?'your team':'your shifts'} today.</p></div>${!isAdmin()?'<button class="btn btn-primary" data-page="receipts">＋ Submit shift</button>':'<button class="btn btn-primary" data-page="receipts">Review submissions →</button>'}</div><div class="stats">${stat(isAdmin()?'Total submissions':'My submissions',rows.length,isAdmin()?'All recorded shifts':'Your recorded shifts','▤')}${stat('Receipts processed',total,'Across listed submissions','▧')}${stat('Pending review',pending.length,'Awaiting a decision','◷')}${stat(isAdmin()?'Approved net pay':'Approved earnings',money(earned),'After configured deductions','₱')}</div><div class="grid-2"><div class="panel"><div class="panel-head"><div><h3>Recent submissions</h3><p>Latest shift records and review status</p></div><button class="small-btn" data-page="receipts">View all →</button></div><div class="table-wrap"><table><thead><tr><th>${isAdmin()?'Worker':'Account'}</th><th>Shift date</th><th>Shift</th><th>Receipts</th><th>Net pay</th><th>Status</th><th></th></tr></thead><tbody>${submissionRows(recent)}</tbody></table></div></div><div class="panel"><div class="panel-head"><div><h3>Quick actions</h3><p>Common tasks, one click away</p></div></div><div class="quick-grid"><button class="quick" data-page="receipts"><span>🧾</span><strong>Submit shift</strong><small>Record receipt count</small></button><button class="quick" data-page="reports"><span>📊</span><strong>View reports</strong><small>Track your totals</small></button><button class="quick" data-page="chat"><span>💬</span><strong>Team chat</strong><small>Message your team</small></button>${isAdmin()?'<button class="quick" data-page="workers"><span>👥</span><strong>Manage workers</strong><small>Review team accounts</small></button>':''}</div><div class="notice">${isAdmin()?`You have <b>${pending.length}</b> submission(s) waiting for review.`:`Your approved submissions show in earnings. If a shift is rejected, check the reason and submit a correction.`}</div></div></div>`}
-function receipts(){const rows=visibleSubmissions();return `<div class="welcome"><div><h2>${isAdmin()?'Review submissions':'My shift submissions'}</h2><p>${isAdmin()?'Review worker activity and approve or reject shift records.':'Record a completed shift and track its status.'}</p></div>${!isAdmin()?'<button class="btn btn-primary" id="newSubmission">＋ New submission</button>':''}</div>${!isAdmin()?submissionForm():''}<div class="panel"><div class="toolbar"><input id="receiptSearch" placeholder="Search worker or account…"><select id="statusFilter"><option value="all">All statuses</option><option>pending</option><option>approved</option><option>rejected</option></select><span class="spacer"></span><span class="muted">${rows.length} record(s)</span></div><div class="table-wrap"><table><thead><tr><th>Worker / account</th><th>Shift date</th><th>Shift</th><th>Receipts</th><th>Net pay</th><th>Status</th><th>Action</th></tr></thead><tbody id="submissionRows">${submissionRows(rows)}</tbody></table></div></div>`}
-function submissionForm(){const accts=data.accounts.filter(a=>a.isActive!==false&&(!profile.assignedAccountIds?.length||profile.assignedAccountIds.includes(a.id)||!configured));return `<div class="panel" id="submissionFormPanel"><div class="panel-head"><div><h3>Submit completed shift</h3><p>Enter your shift details. Pay is calculated using current settings.</p></div></div><form id="submissionForm"><div class="form-grid"><div class="field"><label>ACCOUNT</label><select name="accountId" required>${accts.map(a=>`<option value="${esc(a.id)}">${esc(a.name)} (${esc(a.code||'')})</option>`).join('')||'<option value="">No active accounts assigned</option>'}</select></div><div class="field"><label>SHIFT DATE</label><input name="shiftDate" type="date" value="${new Date().toISOString().slice(0,10)}" required></div><div class="field"><label>SHIFT</label><select name="shiftType"><option>Morning</option><option>Afternoon</option><option>Night</option><option>Custom</option></select></div><div class="field"><label>RECEIPT COUNT</label><input name="receiptCount" type="number" min="0" step="1" placeholder="e.g. 125" required></div><div class="field"><label>START TIME</label><input name="startTime" type="time" value="06:00" required></div><div class="field"><label>END TIME</label><input name="endTime" type="time" value="14:00" required></div><div class="full right" style="justify-content:flex-end;margin:0 0 8px"><button class="btn btn-primary" type="submit">Submit for review →</button></div></div></form></div>`}
-function accounts(){return `<div class="welcome"><div><h2>Accounts</h2><p>Abukai accounts and worker assignments.</p></div>${isAdmin()?'<button class="btn btn-primary" id="addAccount">＋ Add account</button>':''}</div><div class="panel">${data.accounts.length?`<div class="table-wrap"><table><thead><tr><th>Account</th><th>Code</th><th>Assigned workers</th><th>Status</th><th>Notes</th><th>Action</th></tr></thead><tbody>${data.accounts.map(a=>`<tr><td><strong>${esc(a.name)}</strong></td><td>${esc(a.code||'—')}</td><td>${esc((a.assignedWorkerNames||[]).join(', ')||'Not assigned')}</td><td>${status(a.isActive===false?'inactive':'active')}</td><td>${esc(a.notes||'—')}</td><td>${isAdmin()?`<button class="btn btn-secondary" onclick="assignWorker('${esc(a.id)}')">Assign Worker</button>`:'—'}</td></tr>`).join('')}</tbody></table></div>`:`<div class="empty">▦<b>No accounts available</b>Ask an administrator to create an account and assign workers.</div>`}</div>`}
-function reports(){const rows=visibleSubmissions();const approved=rows.filter(s=>s.status==='approved');const gross=approved.reduce((n,s)=>n+Number(s.grossCents||0),0),deduct=approved.reduce((n,s)=>n+Number(s.deductionCents||0),0),net=approved.reduce((n,s)=>n+Number(s.netCents||0),0);const months={};approved.forEach(s=>{const k=(s.shiftDate||'Unknown').slice(0,7);months[k]=(months[k]||0)+Number(s.netCents||0)});const max=Math.max(1,...Object.values(months));return `<div class="welcome"><div><h2>${isAdmin()?'Team reports':'My earnings'}</h2><p>Approved submissions only are included in pay totals.</p></div><button class="btn btn-ghost" id="exportCsv">↓ Export CSV</button></div><div class="stats">${stat('Gross pay',money(gross),'Before deductions','₱')}${stat('Deductions',money(deduct),`${Number(data.settings.deductionPercent||10)}% configured rate`,'−')}${stat('Net payable',money(net),'Approved records','✓')}${stat('Approved shifts',approved.length,'Completed and approved','▤')}</div><div class="grid-2"><div class="panel"><div class="panel-head"><div><h3>Monthly net pay</h3><p>By shift date, approved submissions</p></div></div><div class="report-bars">${Object.entries(months).sort((a,b)=>a[0].localeCompare(b[0])).slice(-8).map(([m,v])=>`<div class="bar-line"><span>${esc(m)}</span><div class="bar-track"><div class="bar-fill" style="width:${v/max*100}%"></div></div><b>${money(v)}</b></div>`).join('')||'<div class="empty">No approved earnings to chart yet.</div>'}</div></div><div class="panel"><div class="panel-head"><div><h3>Calculation details</h3><p>Based on current pay settings</p></div></div><div class="right" style="justify-content:space-between;padding:14px 0;border-bottom:1px solid var(--line)"><span class="muted">Rate per receipt</span><b>${money(data.settings.grossRateCents||100)}</b></div><div class="right" style="justify-content:space-between;padding:14px 0;border-bottom:1px solid var(--line)"><span class="muted">Deduction rate</span><b>${Number(data.settings.deductionPercent||10)}%</b></div><div class="right" style="justify-content:space-between;padding:14px 0"><span class="muted">Net after deductions</span><b>${money(net)}</b></div><div class="notice">Totals update from Firestore when Firebase is configured. Demo data is illustrative only.</div></div></div>`}
-function workers(){const users=data.users.filter(u=>u.role!=='admin');return `<div class="welcome"><div><h2>Worker management</h2><p>Review worker profiles and account status.</p></div></div><div class="panel"><div class="toolbar"><input id="workerSearch" placeholder="Search name or email…"><span class="spacer"></span><span class="muted">${users.length} worker(s)</span></div><div class="table-wrap"><table><thead><tr><th>Worker</th><th>Email</th><th>Status</th><th>Assigned accounts</th><th>Action</th></tr></thead><tbody>${users.map(u=>`<tr><td><div class="person"><div class="avatar">${esc(initials(u.displayName))}</div><strong>${esc(u.displayName||'Unnamed')}</strong></div></td><td>${esc(u.email)}</td><td>${status(u.isActive===false?'inactive':(u.status||'approved'))}</td><td>${(u.assignedAccountIds||[]).length}</td><td><button class="small-btn" data-worker="${esc(u.id)}">View</button></td></tr>`).join('')||'<tr><td colspan="5"><div class="empty">No worker profiles found.</div></td></tr>'}</tbody></table></div></div>`}
-function settings(){return `<div class="welcome"><div><h2>Pay settings</h2><p>Configure receipt rate and deductions for future submissions.</p></div></div><div class="panel" style="max-width:650px"><form id="settingsForm"><div class="field"><label>GROSS RATE PER RECEIPT (PHP)</label><input name="rate" type="number" min="0" step="0.01" value="${(Number(data.settings.grossRateCents||100)/100).toFixed(2)}" required></div><div class="field"><label>DEDUCTION PERCENT (%)</label><input name="deduction" type="number" min="0" max="100" step="0.1" value="${Number(data.settings.deductionPercent||10)}" required></div><div class="notice">These values are used for new submissions. Updating settings does not automatically recalculate historical submissions.</div><button class="btn btn-primary" type="submit">Save settings</button></form></div>`}
-function chat(){const messages=data.messages||[];return `<div class="welcome"><div><h2>Team conversation</h2><p>Share updates with your team.</p></div></div><div class="chat-layout"><div class="chat-list"><button class="active"><div class="avatar">👥</div><div><strong>Company group</strong><small>Team-wide conversation</small></div></button></div><div class="chat-window"><div class="chat-messages" id="chatMessages">${messages.map(m=>`<div class="bubble ${m.senderId===currentUser?.uid?'mine':''}">${m.senderId!==currentUser?.uid?`<b>${esc(m.senderName||'Team member')}</b><br>`:''}${esc(m.text||m.message||'')}<small>${esc(fmtTime(m.createdAt))}</small></div>`).join('')||'<div class="empty">💬<b>No messages yet</b>Start the conversation with your team.</div>'}</div><form class="chat-compose" id="chatForm"><input name="message" placeholder="Write a message…" maxlength="2000" autocomplete="off" required><button class="btn btn-primary" type="submit">Send ↗</button></form></div></div>`}
-function renderPage(){if(!currentUser||!profile){renderLogin();return}if(!isAdmin()&&!['dashboard','receipts','accounts','reports','chat'].includes(page))page='dashboard';$('#app').innerHTML=shell();const target=$('#pageContent');target.innerHTML=({dashboard,receipts,accounts,reports,chat,workers,settings})[page]?.()||dashboard();wireShell();wirePage();}
-function render(){if(!currentUser||!profile){renderLogin();return}renderPage()}
-function wireShell(){$$('.nav button').forEach(b=>b.addEventListener('click',()=>go(b.dataset.page)));$('#logout')?.addEventListener('click',async()=>{unlisten();if(configured&&auth){try{await fb.signOut(auth)}catch{}}currentUser=null;profile=null;page='dashboard';renderLogin()});$('#menuBtn')?.addEventListener('click',()=>$('#sidebar').classList.toggle('open'));$('#pageContent')?.addEventListener('click',e=>{
-  const b=e.target.closest('[data-page]');
-  if(b)go(b.dataset.page);
+const $$ = s => Array.from(document.querySelectorAll(s));
+const esc = v => String(v ?? '').replace(/[&<>"']/g, c => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' }[c]));
+const initials = n => (n || 'U').trim().split(/\s+/).slice(0, 2).map(x => x[0] || '').join('').toUpperCase();
+const pesoFmt = new Intl.NumberFormat('en-PH', { style: 'currency', currency: 'PHP', maximumFractionDigits: 2 });
+const money = cents => pesoFmt.format((Number(cents) || 0) / 100);
+const num = v => Number(v) || 0;
 
-  const v=e.target.closest('[data-view]');
-  if(v)viewSubmission(v.dataset.view);
+function toDate(d) {
+  if (!d) return null;
+  if (d.toDate) return d.toDate();
+  if (d instanceof Date) return isNaN(d) ? null : d;
+  if (typeof d === 'string' && /^\d{4}-\d{2}-\d{2}$/.test(d)) {
+    const [y, m, day] = d.split('-').map(Number);
+    return new Date(y, m - 1, day); // local date, avoids UTC day shift
+  }
+  const x = new Date(d);
+  return isNaN(x) ? null : x;
+}
+const date = d => {
+  const x = toDate(d);
+  return x ? x.toLocaleDateString('en-PH', { year: 'numeric', month: 'short', day: 'numeric' }) : '—';
+};
+const fmtTime = d => {
+  const x = toDate(d);
+  return x ? x.toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' }) : '';
+};
+const todayStr = () => {
+  const n = new Date();
+  return `${n.getFullYear()}-${String(n.getMonth() + 1).padStart(2, '0')}-${String(n.getDate()).padStart(2, '0')}`;
+};
+// Pending serverTimestamp() values are null locally: treat them as "now".
+const timeVal = v => {
+  if (!v) return Date.now();
+  if (v.toMillis) return v.toMillis();
+  const t = new Date(v).getTime();
+  return isNaN(t) ? 0 : t;
+};
+const rate = () => num(data.settings.grossRateCents ?? DEFAULT_SETTINGS.grossRateCents);
+const dedPct = () => num(data.settings.deductionPercent ?? DEFAULT_SETTINGS.deductionPercent);
 
-  const w=e.target.closest('[data-worker]');
-  if(w)viewWorker(w.dataset.worker);
+let toastTimer;
+function toast(msg) {
+  let el = $('#toast');
+  if (!el) { el = document.createElement('div'); el.id = 'toast'; el.className = 'toast'; document.body.appendChild(el); }
+  el.textContent = msg;
+  el.classList.add('show');
+  clearTimeout(toastTimer);
+  toastTimer = setTimeout(() => el.classList.remove('show'), 3500);
+}
+function unlisten() { unsubs.forEach(fn => { try { fn(); } catch {} }); unsubs = []; }
 
-  const a=e.target.closest('[onclick*="assignWorker"]');
-  if(a){
+const isAdmin = () => profile?.role === 'admin';
+const visibleSubmissions = () => isAdmin() ? data.submissions : data.submissions.filter(s => s.workerId === currentUser?.uid);
+
+/* Small extra styles (modal, hidden, disabled) so no CSS file change is needed */
+const extraStyle = document.createElement('style');
+extraStyle.textContent = `
+.hidden{display:none!important}
+button:disabled{opacity:.6;cursor:not-allowed}
+.sh-modal{position:fixed;inset:0;background:rgba(15,23,20,.5);display:flex;align-items:center;justify-content:center;padding:16px;z-index:1000}
+.sh-modal-card{background:#fff;color:#1a2420;border-radius:16px;padding:24px;width:100%;max-width:480px;max-height:90vh;overflow:auto;box-shadow:0 20px 60px rgba(0,0,0,.25)}
+.sh-modal-card h3{margin:0 0 14px}
+.sh-modal-card textarea{width:100%;min-height:90px;box-sizing:border-box}
+.sh-modal-actions{display:flex;justify-content:flex-end;gap:8px;margin-top:18px}
+.sh-check{display:flex;align-items:center;gap:10px;padding:8px 0;border-bottom:1px solid #eee;cursor:pointer}
+.sh-row-actions{display:flex;gap:6px;flex-wrap:wrap}`;
+document.head.appendChild(extraStyle);
+
+/* ───────────────────────── Modal ───────────────────────── */
+function closeModal() { $('#shModal')?.remove(); }
+document.addEventListener('keydown', e => { if (e.key === 'Escape') closeModal(); });
+
+function openModal(title, bodyHtml, onSubmit, submitLabel = 'Save') {
+  closeModal();
+  const wrap = document.createElement('div');
+  wrap.className = 'sh-modal';
+  wrap.id = 'shModal';
+  wrap.innerHTML = `<div class="sh-modal-card" role="dialog" aria-modal="true"><h3>${esc(title)}</h3><form>${bodyHtml}<div class="sh-modal-actions"><button type="button" class="btn btn-ghost" data-close>Cancel</button>${onSubmit ? `<button type="submit" class="btn btn-primary">${esc(submitLabel)}</button>` : ''}</div></form></div>`;
+  document.body.appendChild(wrap);
+  wrap.addEventListener('mousedown', e => { if (e.target === wrap) closeModal(); });
+  wrap.addEventListener('click', e => { if (e.target.closest('[data-close]')) closeModal(); });
+  const form = wrap.querySelector('form');
+  form.addEventListener('submit', async e => {
     e.preventDefault();
-    const match=a.getAttribute('onclick').match(/assignWorker\('([^']+)'\)/);
-    if(match)assignWorker(match[1]);
-  }
-});
-}                  
-function go(p){page=p;renderPage();$('#sidebar')?.classList.remove('open')}
-function wirePage(){
-  $('#newSubmission')?.addEventListener('click',()=>$('#submissionFormPanel')?.scrollIntoView({behavior:'smooth',block:'start'}));
-  $('#submissionForm')?.addEventListener('submit',submitShift);
-  $('#receiptSearch')?.addEventListener('input',filterRows);$('#statusFilter')?.addEventListener('change',filterRows);
-  $('#addAccount')?.addEventListener('click',addAccount);$('#settingsForm')?.addEventListener('submit',saveSettings);$('#chatForm')?.addEventListener('submit',sendMessage);$('#exportCsv')?.addEventListener('click',exportCsv);
-  $('#workerSearch')?.addEventListener('input',e=>$$('tbody tr').forEach(r=>r.classList.toggle('hidden',!r.textContent.toLowerCase().includes(e.target.value.toLowerCase()))));
-  const cm=$('#chatMessages');if(cm)cm.scrollTop=cm.scrollHeight;
+    if (!onSubmit) return;
+    const btn = form.querySelector('[type=submit]');
+    btn.disabled = true;
+    try {
+      const r = await onSubmit(new FormData(form), form);
+      if (r !== false) closeModal();
+    } catch (err) {
+      console.error(err);
+      toast('Something went wrong. Check Firestore rules and try again.');
+      btn.disabled = false;
+    }
+  });
+  form.querySelector('input:not([type=checkbox]),select,textarea')?.focus();
 }
-function filterRows(){const q=($('#receiptSearch')?.value||'').toLowerCase(),s=$('#statusFilter')?.value||'all';const rows=visibleSubmissions().filter(x=>(s==='all'||x.status===s)&&`${x.workerName} ${x.accountName} ${x.shiftDate}`.toLowerCase().includes(q));$('#submissionRows').innerHTML=submissionRows(rows)}
-async function submitShift(e){e.preventDefault();const f=new FormData(e.currentTarget),account=data.accounts.find(a=>a.id===f.get('accountId'));const count=Math.max(0,parseInt(f.get('receiptCount')||'0',10)),rate=Number(data.settings.grossRateCents||100),gross=count*rate,ded=Math.round(gross*Number(data.settings.deductionPercent||10)/100);const item={workerId:currentUser.uid,workerName:profile.displayName,workerEmail:currentUser.email,accountId:account?.id||'',accountName:account?.name||'Unassigned',shiftDate:f.get('shiftDate'),shiftType:f.get('shiftType'),startTime:f.get('startTime'),endTime:f.get('endTime'),receiptCount:count,status:'pending',rejectionReason:'',grossCents:gross,deductionCents:ded,netCents:gross-ded,createdAt:new Date(),updatedAt:new Date()};if(!configured){item.id='local-'+Date.now();data.submissions.unshift(item);toast('Demo submission added (not saved online).');renderPage();return}try{await fb.addDoc(fb.collection(db,'submissions'),{...item,createdAt:fb.serverTimestamp(),updatedAt:fb.serverTimestamp()});toast('Shift submitted for review.');renderPage()}catch(err){console.error(err);toast('Submission failed. Check Firestore permissions and assigned account.') }}
-function viewSubmission(id){const s=visibleSubmissions().find(x=>x.id===id);if(!s)return;const actions=isAdmin()&&s.status==='pending'?`<button class="btn btn-primary" id="approveOne">Approve</button><button class="btn btn-danger" id="rejectOne">Reject</button>`:'';const reason=s.rejectionReason?`<div class="notice warn">Rejection reason: ${esc(s.rejectionReason)}</div>`:'';const html=`<div class="panel"><div class="panel-head"><div><h3>Submission details</h3><p>${esc(s.id)}</p></div><button class="btn btn-ghost" id="closeDetails">Close</button></div><div class="form-grid"><div><p class="muted">Worker</p><b>${esc(s.workerName)}</b></div><div><p class="muted">Status</p>${status(s.status)}</div><div><p class="muted">Account</p><b>${esc(s.accountName)}</b></div><div><p class="muted">Shift date</p><b>${esc(date(s.shiftDate))}</b></div><div><p class="muted">Shift hours</p><b>${esc(s.startTime)} – ${esc(s.endTime)}</b></div><div><p class="muted">Receipts</p><b>${Number(s.receiptCount||0)}</b></div><div><p class="muted">Gross pay</p><b>${money(s.grossCents)}</b></div><div><p class="muted">Deductions</p><b>${money(s.deductionCents)}</b></div><div><p class="muted">Net pay</p><b>${money(s.netCents)}</b></div></div>${reason}<div class="right" style="justify-content:flex-end;margin-top:20px">${actions}</div></div>`;const old=$('#detailsPanel');old?.remove();$('#pageContent').insertAdjacentHTML('afterbegin',`<div id="detailsPanel">${html}</div>`);$('#closeDetails').onclick=()=>$('#detailsPanel').remove();$('#approveOne')?.addEventListener('click',()=>reviewSubmission(s,'approved'));$('#rejectOne')?.addEventListener('click',()=>{const reason=prompt('Reason for rejection:');if(reason===null)return;reviewSubmission(s,'rejected',reason)});$('#detailsPanel').scrollIntoView({behavior:'smooth'});}
-async function reviewSubmission(s,statusValue,reason=''){if(!isAdmin())return;if(!configured){s.status=statusValue;s.rejectionReason=reason;toast('Demo record updated only.');renderPage();return}try{await fb.updateDoc(fb.doc(db,'submissions',s.id),{status:statusValue,rejectionReason:reason,reviewedBy:currentUser.uid,reviewedAt:fb.serverTimestamp(),updatedAt:fb.serverTimestamp()});toast('Submission '+statusValue+'.');$('#detailsPanel')?.remove()}catch(e){console.error(e);toast('Could not update submission. Check Firestore rules.')}}
-function addAccount(){const name=prompt('Account name (e.g. Abukai Team Alpha):');if(!name?.trim())return;const code=prompt('Account code (e.g. ABK-01):')||'';const item={name:name.trim(),code:code.trim(),assignedWorkerIds:[],assignedWorkerNames:[],notes:'',isActive:true,createdAt:new Date(),updatedAt:new Date()};if(!configured){item.id='local-'+Date.now();data.accounts.push(item);toast('Demo account added.');renderPage();return}fb.addDoc(fb.collection(db,'accounts'),{...item,createdAt:fb.serverTimestamp(),updatedAt:fb.serverTimestamp()}).then(()=>toast('Account created.')).catch(e=>{console.error(e);toast('Could not create account. Check Firestore rules.')})} async function assignWorker(accountId){
-  const account = data.accounts.find(a => a.id === accountId);
-  if (!account) return alert('Account not found.');
 
-  const workers = (data.users || []).filter(
-    u => u.role === 'worker' &&
-         u.isActive !== false &&
-         u.status === 'approved'
-  );
-
-  if (!workers.length) {
-    return alert('No approved workers found.');
-  }
-
-  const list = workers.map(
-    (w, i) => `${i + 1}. ${w.displayName || w.email || w.id}`
-  ).join('\n');
-
-  const choice = prompt(
-    'Choose worker for ' + account.name + ':\n' +
-    list + '\n\nEnter worker number:'
-  );
-
-  if (choice === null) return;
-
-  const index = Number(choice) - 1;
-  if (!Number.isInteger(index) || index < 0 || index >= workers.length) {
-    return alert('Invalid worker number.');
-  }
-
-  const worker = workers[index];
-
+/* ───────────────────────── Firebase ───────────────────────── */
+async function initFirebase() {
+  if (!configured) return false;
   try {
-    await fb.updateDoc(fb.doc(db, 'accounts', accountId), {
-      assignedWorkerIds: [worker.id],
-      assignedWorkerNames: [
-        worker.displayName || worker.email || 'Worker'
-      ],
-      updatedAt: fb.serverTimestamp()
-    });
-    toast('Worker assigned successfully.');
+    const base = 'https://www.gstatic.com/firebasejs/10.12.5/';
+    const [appmod, authmod, fsmod] = await Promise.all([
+      import(base + 'firebase-app.js'),
+      import(base + 'firebase-auth.js'),
+      import(base + 'firebase-firestore.js')
+    ]);
+    fb = { ...authmod, ...fsmod };
+    const app = appmod.initializeApp(firebaseConfig);
+    auth = authmod.getAuth(app);
+    db = fsmod.getFirestore(app);
+    return true;
   } catch (e) {
     console.error(e);
-    alert('Could not assign worker. Please check Firestore rules.');
+    toast('Firebase could not initialize. Check your web config and internet connection.');
+    return false;
   }
 }
-function saveSettings(e){e.preventDefault();const f=new FormData(e.currentTarget),gross=Math.round(Number(f.get('rate'))*100),deduction=Number(f.get('deduction'));if(deduction<0||deduction>100)return toast('Deduction must be between 0 and 100.');if(!configured){data.settings={grossRateCents:gross,deductionPercent:deduction};toast('Demo settings updated only.');renderPage();return}fb.setDoc(fb.doc(db,'settings','paySettings'),{id:'paySettings',grossRateCents:gross,deductionPercent:deduction,updatedBy:currentUser.uid,updatedAt:fb.serverTimestamp()},{merge:true}).then(()=>toast('Pay settings saved.')).catch(e=>{console.error(e);toast('Could not save settings. Check Firestore rules.')})}
-async function sendMessage(e){e.preventDefault();const input=e.currentTarget.elements.message,text=input.value.trim();if(!text)return;const item={senderId:currentUser.uid,senderName:profile.displayName,text,createdAt:new Date()};if(!configured){data.messages.push({...item,id:'m'+Date.now()});renderPage();return}try{await fb.addDoc(fb.collection(db,'conversations','company_group','messages'),{...item,createdAt:fb.serverTimestamp()});input.value=''}catch(err){console.error(err);toast('Could not send message. Check Firestore rules.')}}
-function exportCsv(){const rows=visibleSubmissions();const cols=['workerName','accountName','shiftDate','shiftType','startTime','endTime','receiptCount','status','grossCents','deductionCents','netCents'];const csv=[cols.join(','),...rows.map(r=>cols.map(c=>'"'+String(r[c]??'').replace(/"/g,'""')+'"').join(','))].join('\r\n');const url=URL.createObjectURL(new Blob([csv],{type:'text/csv;charset=utf-8;'}));const a=document.createElement('a');a.href=url;a.download='steivy-receipt-report.csv';a.click();URL.revokeObjectURL(url)}
-function viewWorker(id){const u=data.users.find(x=>x.id===id);if(!u)return;alert(`Worker: ${u.displayName||'Unnamed'}\nEmail: ${u.email||'—'}\nRole: ${u.role||'worker'}\nStatus: ${u.status||'approved'}\nActive: ${u.isActive===false?'No':'Yes'}\nAssigned account IDs: ${(u.assignedAccountIds||[]).join(', ')||'None'}`)}
-async function boot(){const ok=await initFirebase();if(!ok){renderLogin();return}fb.onAuthStateChanged(auth,async user=>{unlisten();if(!user){currentUser=null;profile=null;renderLogin();return}currentUser={uid:user.uid,email:user.email||'',displayName:user.displayName||user.email||'User'};try{const snap=await fb.getDoc(fb.doc(db,'users',user.uid));if(!snap.exists()){toast('Your sign-in worked, but no approved user profile exists. Ask an administrator for access.');await fb.signOut(auth);return}profile={id:snap.id,...snap.data()};if(profile.isActive===false||profile.status==='rejected'||profile.status==='pending'){toast(profile.status==='pending'?'Your account is awaiting approval.':'Your account is not active.');await fb.signOut(auth);return}if(!['admin','worker'].includes(profile.role)){toast('Your account has no valid role. Contact an administrator.');await fb.signOut(auth);return}page='dashboard';await loadData();renderPage()}catch(e){console.error(e);toast('Could not load your profile. Check Firestore rules.')}})}
+
+/* ───────────────────────── Rendering control ───────────────────────── */
+function isEditing() {
+  const el = document.activeElement;
+  return !!el && !!el.closest?.('#pageContent') && /^(INPUT|TEXTAREA|SELECT)$/.test(el.tagName) && el.type !== 'checkbox';
+}
+// Snapshot-driven refresh: never wipe what the user is typing.
+function requestRender(kind) {
+  if (!currentUser || !profile) return;
+  if (kind === 'chat') { if (page === 'chat') updateChat(); return; }
+  if (isEditing()) { pendingRender = true; return; }
+  renderPage();
+}
+document.addEventListener('focusout', () => {
+  if (!pendingRender) return;
+  setTimeout(() => {
+    if (pendingRender && !isEditing()) { pendingRender = false; renderPage(); }
+  }, 150);
+});
+
+function listen(path, key, queryFn) {
+  const { collection, onSnapshot, query, where, orderBy, limit } = fb;
+  let ref = collection(db, path);
+  if (queryFn) ref = queryFn(ref, { query, where, orderBy, limit });
+  const stop = onSnapshot(ref, s => {
+    data[key] = s.docs.map(d => ({ id: d.id, ...d.data() }));
+    requestRender();
+  }, err => {
+    console.error(path, err);
+    toast('Could not load ' + path + '. Check Firestore rules.');
+  });
+  unsubs.push(stop);
+}
+
+async function loadData() {
+  unlisten();
+  if (!db || !profile) return;
+  const { collection, doc, onSnapshot, query, where, orderBy, limit } = fb;
+  const uid = currentUser.uid;
+
+  if (isAdmin()) {
+    listen('accounts', 'accounts');
+    listen('submissions', 'submissions');
+    listen('users', 'users');
+  } else {
+    // Workers only query what they are allowed to read.
+    listen('accounts', 'accounts', (ref, q) => q.query(ref, q.where('assignedWorkerIds', 'array-contains', uid)));
+    listen('submissions', 'submissions', (ref, q) => q.query(ref, q.where('workerId', '==', uid)));
+    data.users = [];
+  }
+
+  unsubs.push(onSnapshot(doc(db, 'settings', 'paySettings'), s => {
+    data.settings = { ...DEFAULT_SETTINGS, ...(s.exists() ? s.data() : {}) };
+    requestRender();
+  }, () => {}));
+
+  const msgQuery = query(collection(db, 'conversations', 'company_group', 'messages'), orderBy('createdAt', 'desc'), limit(150));
+  unsubs.push(onSnapshot(msgQuery, s => {
+    data.messages = s.docs.map(d => ({ id: d.id, ...d.data() })).sort((a, b) => timeVal(a.createdAt) - timeVal(b.createdAt));
+    requestRender('chat');
+  }, err => { console.error('messages', err); toast('Could not load chat.'); }));
+}
+
+/* ───────────────────────── Demo mode ───────────────────────── */
+function demoSignIn(role) {
+  unlisten();
+  const admin = role === 'admin';
+  currentUser = { uid: admin ? 'demo-admin' : 'demo-worker', email: admin ? 'admin@demo.local' : 'worker@demo.local', displayName: admin ? 'Demo Administrator' : 'Demo Worker' };
+  profile = { id: currentUser.uid, email: currentUser.email, displayName: currentUser.displayName, role, isActive: true, status: 'approved', assignedAccountIds: ['abk-01'] };
+  data.accounts = [{ id: 'abk-01', name: 'Abukai Team Alpha', code: 'ABK-01', isActive: true, assignedWorkerIds: ['demo-worker'], assignedWorkerNames: ['Demo Worker'] }];
+  data.users = [profile,
+    { id: 'demo-worker', displayName: 'Demo Worker', email: 'worker@demo.local', role: 'worker', isActive: true, status: 'approved', assignedAccountIds: ['abk-01'] },
+    { id: 'worker-2', displayName: 'Jamie Santos', email: 'jamie@example.com', role: 'worker', isActive: true, status: 'approved', assignedAccountIds: [] },
+    { id: 'worker-3', displayName: 'Pat Reyes', email: 'pat@example.com', role: 'worker', isActive: true, status: 'pending', assignedAccountIds: [] }];
+  const t = todayStr();
+  data.submissions = [
+    { id: 'demo-1', workerId: 'demo-worker', workerName: 'Demo Worker', accountId: 'abk-01', accountName: 'Abukai Team Alpha', shiftDate: t, shiftType: 'Morning', startTime: '06:00', endTime: '14:00', receiptCount: 125, status: 'approved', grossCents: 12500, deductionCents: 1250, netCents: 11250, createdAt: new Date() },
+    { id: 'demo-2', workerId: 'worker-2', workerName: 'Jamie Santos', accountId: 'abk-01', accountName: 'Abukai Team Alpha', shiftDate: t, shiftType: 'Afternoon', startTime: '14:00', endTime: '22:00', receiptCount: 96, status: 'pending', grossCents: 9600, deductionCents: 960, netCents: 8640, createdAt: new Date() }];
+  data.messages = [{ id: 'm1', senderId: 'worker-2', senderName: 'Jamie Santos', text: 'Hi team, my shift submission is ready for review.', createdAt: new Date() }];
+  data.settings = { ...DEFAULT_SETTINGS };
+  page = 'dashboard';
+  renderPage();
+  toast('Demo mode: changes are not saved online.');
+}
+
+/* ───────────────────────── Login ───────────────────────── */
+function authError(code) {
+  return ({
+    'auth/invalid-credential': 'Email or password is incorrect.',
+    'auth/invalid-email': 'Please enter a valid email address.',
+    'auth/user-not-found': 'No account found for this email.',
+    'auth/wrong-password': 'Email or password is incorrect.',
+    'auth/user-disabled': 'This account has been disabled.',
+    'auth/too-many-requests': 'Too many attempts. Try again later.',
+    'auth/network-request-failed': 'Network error. Check your connection.'
+  })[code] || 'Could not sign in: ' + (code || 'unknown error');
+}
+
+function renderLogin() {
+  unlisten();
+  closeModal();
+  $('#app').innerHTML = `<main class="login-wrap"><section class="login-art"><div class="brand"><img src="assets/logo.jpg" alt=""><div><strong>STEIVY</strong><small>RECEIPT HUB</small></div></div><div><h1>Keep every shift<br>in good order.</h1><p>Manage receipt submissions, track shift totals, review reports, and stay connected with your team.</p></div><div class="art-foot"><p>One hub for your team's daily operations.</p></div></section><section class="login-form-side"><form id="loginForm" class="login-form"><div class="brand-mark">S</div><h2>Welcome back</h2><p class="muted">Sign in to continue to your workspace.</p>${!configured ? `<div class="demo-note"><b>Firebase setup required</b><br>This copy has no Firebase web credentials yet. You can preview the interface with demo accounts below; demo changes are not saved online.</div>` : ''}<div class="field"><label for="email">EMAIL ADDRESS</label><input id="email" type="email" placeholder="you@company.com" autocomplete="username" required></div><div class="field"><label for="password">PASSWORD</label><input id="password" type="password" placeholder="Enter your password" autocomplete="current-password" required></div><button class="btn btn-primary btn-block" type="submit">Sign in <span>→</span></button><p class="muted" style="font-size:12px;text-align:center;margin:18px 0">Need an account? Ask your administrator to create or approve it.</p>${!configured ? `<div class="field"><label>PREVIEW WITHOUT FIREBASE</label><button class="btn btn-light btn-block" type="button" id="demoWorker">Continue as demo worker</button><button class="btn btn-ghost btn-block" style="margin-top:8px" type="button" id="demoAdmin">Preview admin dashboard</button></div>` : ''}<div class="footer-note">Steivy Receipt Hub · Web edition</div></form></section></main>`;
+
+  $('#loginForm').addEventListener('submit', async e => {
+    e.preventDefault();
+    if (!configured) { toast('Add Firebase web configuration to enable sign-in.'); return; }
+    const btn = e.currentTarget.querySelector('[type=submit]');
+    btn.disabled = true;
+    try {
+      await fb.signInWithEmailAndPassword(auth, $('#email').value.trim(), $('#password').value);
+    } catch (err) {
+      toast(authError(err.code));
+      btn.disabled = false;
+    }
+  });
+  $('#demoWorker')?.addEventListener('click', () => demoSignIn('worker'));
+  $('#demoAdmin')?.addEventListener('click', () => demoSignIn('admin'));
+}
+
+/* ───────────────────────── Layout ───────────────────────── */
+const PAGE_TITLES = { dashboard: 'Dashboard', receipts: 'Receipt submissions', accounts: 'Account management', reports: 'Reports & earnings', chat: 'Team chat', workers: 'Worker management', settings: 'Pay settings' };
+const allowedPages = () => isAdmin() ? ['dashboard', 'receipts', 'accounts', 'reports', 'chat', 'workers', 'settings'] : ['dashboard', 'receipts', 'reports', 'chat'];
+
+function shell() {
+  const items = [['dashboard', '⌂', 'Dashboard'], ['receipts', '▤', 'Submissions']];
+  if (isAdmin()) items.push(['accounts', '▦', 'Accounts']);
+  items.push(['reports', '▥', 'Reports'], ['chat', '☏', 'Team chat']);
+  if (isAdmin()) items.push(['workers', '♙', 'Workers'], ['settings', '⚙', 'Pay settings']);
+  const title = PAGE_TITLES[page] || 'Dashboard';
+  return `<div class="shell"><aside class="sidebar" id="sidebar"><div class="brand"><img src="assets/logo.jpg" alt=""><div><strong>STEIVY</strong><small>RECEIPT HUB</small></div></div><div class="nav-label">WORKSPACE</div><nav class="nav">${items.map(n => `<button data-nav="${n[0]}" class="${page === n[0] ? 'active' : ''}"><span class="ico">${n[1]}</span>${n[2]}</button>`).join('')}</nav><div class="sidebar-bottom"><div class="user-mini"><div class="avatar">${esc(initials(profile?.displayName))}</div><div><strong>${esc(profile?.displayName || 'User')}</strong><small>${isAdmin() ? 'Administrator' : 'Worker'}</small></div></div><button class="btn btn-ghost btn-block" id="logout">↪ Sign out</button></div></aside><main class="main"><header class="topbar"><div class="right"><button class="btn btn-ghost mobile-menu" id="menuBtn">☰</button><div><div class="crumb">WORKSPACE / ${esc(title.toUpperCase())}</div><h1>${esc(title)}</h1></div></div><div class="top-actions"><span class="mode-pill">${configured ? '● Connected app' : '◉ Demo preview'}</span><div class="avatar">${esc(initials(profile?.displayName))}</div></div></header>${!configured ? '<div class="demo-banner">Demo preview — data is sample-only and will reset when you leave. Configure Firebase to use real accounts and save changes.</div>' : ''}<section class="content" id="pageContent"></section></main></div>`;
+}
+
+const stat = (label, value, sub, ico) => `<div class="stat"><div class="stat-head">${label}<span class="stat-icon">${ico}</span></div><strong>${value}</strong><small>${sub}</small></div>`;
+const status = s => `<span class="status ${esc(String(s || 'pending').toLowerCase())}">${esc(s || 'pending')}</span>`;
+
+/* ───────────────────────── Pages ───────────────────────── */
+function submissionRows(rows) {
+  if (!rows.length) return `<tr><td colspan="7"><div class="empty">▤<b>No submissions yet</b>Shift submissions will appear here.</div></td></tr>`;
+  return rows.slice().sort((a, b) => timeVal(b.createdAt) - timeVal(a.createdAt)).map(s => `<tr><td><div class="person"><div class="avatar">${esc(initials(s.workerName))}</div><div><strong>${esc(s.workerName || 'Worker')}</strong><small>${esc(s.accountName || 'No account')}</small></div></div></td><td>${esc(date(s.shiftDate))}</td><td>${esc(s.shiftType || '—')}<small style="display:block;color:#8a958e;margin-top:4px">${esc(s.startTime || '')} – ${esc(s.endTime || '')}</small></td><td>${num(s.receiptCount).toLocaleString()}</td><td>${money(s.netCents)}</td><td>${status(s.status)}</td><td><button class="small-btn" data-view="${esc(s.id)}">View</button></td></tr>`).join('');
+}
+
+function dashboard() {
+  const rows = visibleSubmissions();
+  const approved = rows.filter(s => s.status === 'approved');
+  const pending = rows.filter(s => s.status === 'pending');
+  const total = rows.reduce((n, s) => n + num(s.receiptCount), 0);
+  const earned = approved.reduce((n, s) => n + num(s.netCents), 0);
+  const recent = rows.slice().sort((a, b) => timeVal(b.createdAt) - timeVal(a.createdAt)).slice(0, 5);
+  const first = esc((profile.displayName || 'there').split(' ')[0]);
+  return `<div class="welcome"><div><h2>${isAdmin() ? 'Good day, Administrator' : 'Welcome back, ' + first + ' 👋'}</h2><p>Here’s what’s happening with ${isAdmin() ? 'your team' : 'your shifts'} today.</p></div>${!isAdmin() ? '<button class="btn btn-primary" data-page="receipts">＋ Submit shift</button>' : '<button class="btn btn-primary" data-page="receipts">Review submissions →</button>'}</div><div class="stats">${stat(isAdmin() ? 'Total submissions' : 'My submissions', rows.length, isAdmin() ? 'All recorded shifts' : 'Your recorded shifts', '▤')}${stat('Receipts processed', total.toLocaleString(), 'Across listed submissions', '▧')}${stat('Pending review', pending.length, 'Awaiting a decision', '◷')}${stat(isAdmin() ? 'Approved net pay' : 'Approved earnings', money(earned), 'After configured deductions', '₱')}</div><div class="grid-2"><div class="panel"><div class="panel-head"><div><h3>Recent submissions</h3><p>Latest shift records and review status</p></div><button class="small-btn" data-page="receipts">View all →</button></div><div class="table-wrap"><table><thead><tr><th>Worker / account</th><th>Shift date</th><th>Shift</th><th>Receipts</th><th>Net pay</th><th>Status</th><th></th></tr></thead><tbody>${submissionRows(recent)}</tbody></table></div></div><div class="panel"><div class="panel-head"><div><h3>Quick actions</h3><p>Common tasks, one click away</p></div></div><div class="quick-grid"><button class="quick" data-page="receipts"><span>🧾</span><strong>Submit shift</strong><small>Record receipt count</small></button><button class="quick" data-page="reports"><span>📊</span><strong>View reports</strong><small>Track your totals</small></button><button class="quick" data-page="chat"><span>💬</span><strong>Team chat</strong><small>Message your team</small></button>${isAdmin() ? '<button class="quick" data-page="workers"><span>👥</span><strong>Manage workers</strong><small>Review team accounts</small></button>' : ''}</div><div class="notice">${isAdmin() ? `You have <b>${pending.length}</b> submission(s) waiting for review.` : `Your approved submissions show in earnings. If a shift is rejected, check the reason and submit a correction.`}</div></div></div>`;
+}
+
+function filteredSubmissions() {
+  const q = filters.q.trim().toLowerCase();
+  return visibleSubmissions().filter(x => (filters.status === 'all' || x.status === filters.status) &&
+    (!q || `${x.workerName || ''} ${x.accountName || ''} ${x.shiftDate || ''}`.toLowerCase().includes(q)));
+}
+
+function submissionForm() {
+  const uid = currentUser.uid;
+  const accts = data.accounts.filter(a => a.isActive !== false && (!a.assignedWorkerIds || a.assignedWorkerIds.includes(uid)));
+  return `<div class="panel" id="submissionFormPanel"><div class="panel-head"><div><h3>Submit completed shift</h3><p>Enter your shift details. Pay is calculated using current settings.</p></div></div><form id="submissionForm"><div class="form-grid"><div class="field"><label>ACCOUNT</label><select name="accountId" required>${accts.map(a => `<option value="${esc(a.id)}">${esc(a.name)} (${esc(a.code || '')})</option>`).join('') || '<option value="">No active accounts assigned</option>'}</select></div><div class="field"><label>SHIFT DATE</label><input name="shiftDate" type="date" value="${todayStr()}" max="${todayStr()}" required></div><div class="field"><label>SHIFT</label><select name="shiftType"><option>Morning</option><option>Afternoon</option><option>Night</option><option>Custom</option></select></div><div class="field"><label>RECEIPT COUNT</label><input name="receiptCount" type="number" min="0" step="1" placeholder="e.g. 125" required></div><div class="field"><label>START TIME</label><input name="startTime" type="time" value="06:00" required></div><div class="field"><label>END TIME</label><input name="endTime" type="time" value="14:00" required></div><div class="full right" style="justify-content:flex-end;margin:0 0 8px"><button class="btn btn-primary" type="submit" ${accts.length ? '' : 'disabled'}>Submit for review →</button></div></div></form></div>`;
+}
+
+function receipts() {
+  const rows = filteredSubmissions();
+  const sel = v => filters.status === v ? 'selected' : '';
+  return `<div class="welcome"><div><h2>${isAdmin() ? 'Review submissions' : 'My shift submissions'}</h2><p>${isAdmin() ? 'Review worker activity and approve or reject shift records.' : 'Record a completed shift and track its status.'}</p></div>${!isAdmin() ? '<button class="btn btn-primary" id="newSubmission">＋ New submission</button>' : ''}</div>${!isAdmin() ? submissionForm() : ''}<div class="panel"><div class="toolbar"><input id="receiptSearch" placeholder="Search worker or account…" value="${esc(filters.q)}"><select id="statusFilter"><option value="all">All statuses</option><option ${sel('pending')}>pending</option><option ${sel('approved')}>approved</option><option ${sel('rejected')}>rejected</option></select><span class="spacer"></span><span class="muted" id="recordCount">${rows.length} record(s)</span></div><div class="table-wrap"><table><thead><tr><th>Worker / account</th><th>Shift date</th><th>Shift</th><th>Receipts</th><th>Net pay</th><th>Status</th><th>Action</th></tr></thead><tbody id="submissionRows">${submissionRows(rows)}</tbody></table></div></div>`;
+}
+
+function workerNamesFor(a) {
+  const byId = new Map(data.users.map(u => [u.id, u.displayName || u.email]));
+  const names = (a.assignedWorkerIds || []).map((id, i) => byId.get(id) || a.assignedWorkerNames?.[i]).filter(Boolean);
+  return names.length ? names.join(', ') : 'Not assigned';
+}
+
+function accounts() {
+  return `<div class="welcome"><div><h2>Accounts</h2><p>Abukai accounts and worker assignments.</p></div>${isAdmin() ? '<button class="btn btn-primary" id="addAccount">＋ Add account</button>' : ''}</div><div class="panel">${data.accounts.length ? `<div class="table-wrap"><table><thead><tr><th>Account</th><th>Code</th><th>Assigned workers</th><th>Status</th><th>Notes</th><th>Action</th></tr></thead><tbody>${data.accounts.map(a => `<tr><td><strong>${esc(a.name)}</strong></td><td>${esc(a.code || '—')}</td><td>${esc(workerNamesFor(a))}</td><td>${status(a.isActive === false ? 'inactive' : 'active')}</td><td>${esc(a.notes || '—')}</td><td>${isAdmin() ? `<div class="sh-row-actions"><button class="btn btn-secondary" data-assign="${esc(a.id)}">Assign workers</button><button class="small-btn" data-toggle-account="${esc(a.id)}">${a.isActive === false ? 'Activate' : 'Deactivate'}</button></div>` : '—'}</td></tr>`).join('')}</tbody></table></div>` : `<div class="empty">▦<b>No accounts available</b>Ask an administrator to create an account and assign workers.</div>`}</div>`;
+}
+
+function reports() {
+  const rows = visibleSubmissions();
+  const approved = rows.filter(s => s.status === 'approved');
+  const gross = approved.reduce((n, s) => n + num(s.grossCents), 0);
+  const deduct = approved.reduce((n, s) => n + num(s.deductionCents), 0);
+  const net = approved.reduce((n, s) => n + num(s.netCents), 0);
+  const months = {};
+  approved.forEach(s => { const k = String(s.shiftDate || 'Unknown').slice(0, 7); months[k] = (months[k] || 0) + num(s.netCents); });
+  const max = Math.max(1, ...Object.values(months));
+
+  let perWorker = '';
+  if (isAdmin()) {
+    const g = {};
+    approved.forEach(s => {
+      const k = s.workerId || s.workerName || 'unknown';
+      g[k] ||= { name: s.workerName || 'Worker', shifts: 0, receipts: 0, net: 0 };
+      g[k].shifts++; g[k].receipts += num(s.receiptCount); g[k].net += num(s.netCents);
+    });
+    const list = Object.values(g).sort((a, b) => b.net - a.net);
+    perWorker = `<div class="panel"><div class="panel-head"><div><h3>By worker</h3><p>Approved shifts only</p></div></div><div class="table-wrap"><table><thead><tr><th>Worker</th><th>Shifts</th><th>Receipts</th><th>Net pay</th></tr></thead><tbody>${list.map(w => `<tr><td><strong>${esc(w.name)}</strong></td><td>${w.shifts}</td><td>${w.receipts.toLocaleString()}</td><td>${money(w.net)}</td></tr>`).join('') || '<tr><td colspan="4"><div class="empty">No approved shifts yet.</div></td></tr>'}</tbody></table></div></div>`;
+  }
+
+  return `<div class="welcome"><div><h2>${isAdmin() ? 'Team reports' : 'My earnings'}</h2><p>Approved submissions only are included in pay totals.</p></div><button class="btn btn-ghost" id="exportCsv">↓ Export CSV</button></div><div class="stats">${stat('Gross pay', money(gross), 'Before deductions', '₱')}${stat('Deductions', money(deduct), `${dedPct()}% configured rate`, '−')}${stat('Net payable', money(net), 'Approved records', '✓')}${stat('Approved shifts', approved.length, 'Completed and approved', '▤')}</div><div class="grid-2"><div class="panel"><div class="panel-head"><div><h3>Monthly net pay</h3><p>By shift date, approved submissions</p></div></div><div class="report-bars">${Object.entries(months).sort((a, b) => a[0].localeCompare(b[0])).slice(-8).map(([m, v]) => `<div class="bar-line"><span>${esc(m)}</span><div class="bar-track"><div class="bar-fill" style="width:${(v / max * 100).toFixed(1)}%"></div></div><b>${money(v)}</b></div>`).join('') || '<div class="empty">No approved earnings to chart yet.</div>'}</div></div><div class="panel"><div class="panel-head"><div><h3>Calculation details</h3><p>Based on current pay settings</p></div></div><div class="right" style="justify-content:space-between;padding:14px 0;border-bottom:1px solid var(--line)"><span class="muted">Rate per receipt</span><b>${money(rate())}</b></div><div class="right" style="justify-content:space-between;padding:14px 0;border-bottom:1px solid var(--line)"><span class="muted">Deduction rate</span><b>${dedPct()}%</b></div><div class="right" style="justify-content:space-between;padding:14px 0"><span class="muted">Net after deductions</span><b>${money(net)}</b></div><div class="notice">Totals update from Firestore when Firebase is configured. Demo data is illustrative only.</div></div></div>${perWorker}`;
+}
+
+function workers() {
+  const users = data.users.filter(u => u.role !== 'admin');
+  const actions = u => {
+    const st = u.status || 'approved';
+    const b = [`<button class="small-btn" data-worker="${esc(u.id)}">View</button>`];
+    if (st === 'pending' || st === 'rejected') b.push(`<button class="small-btn" data-worker-action="approve" data-id="${esc(u.id)}">Approve</button>`);
+    if (st === 'pending') b.push(`<button class="small-btn" data-worker-action="reject" data-id="${esc(u.id)}">Reject</button>`);
+    if (st === 'approved') b.push(u.isActive === false
+      ? `<button class="small-btn" data-worker-action="activate" data-id="${esc(u.id)}">Activate</button>`
+      : `<button class="small-btn" data-worker-action="deactivate" data-id="${esc(u.id)}">Deactivate</button>`);
+    return `<div class="sh-row-actions">${b.join('')}</div>`;
+  };
+  return `<div class="welcome"><div><h2>Worker management</h2><p>Review worker profiles and account status.</p></div></div><div class="panel"><div class="toolbar"><input id="workerSearch" placeholder="Search name or email…"><span class="spacer"></span><span class="muted">${users.length} worker(s)</span></div><div class="table-wrap"><table><thead><tr><th>Worker</th><th>Email</th><th>Status</th><th>Assigned accounts</th><th>Action</th></tr></thead><tbody>${users.map(u => `<tr><td><div class="person"><div class="avatar">${esc(initials(u.displayName))}</div><strong>${esc(u.displayName || 'Unnamed')}</strong></div></td><td>${esc(u.email)}</td><td>${status(u.isActive === false ? 'inactive' : (u.status || 'approved'))}</td><td>${(u.assignedAccountIds || []).length}</td><td>${actions(u)}</td></tr>`).join('') || '<tr><td colspan="5"><div class="empty">No worker profiles found.</div></td></tr>'}</tbody></table></div></div>`;
+}
+
+function settings() {
+  return `<div class="welcome"><div><h2>Pay settings</h2><p>Configure receipt rate and deductions for future submissions.</p></div></div><div class="panel" style="max-width:650px"><form id="settingsForm"><div class="field"><label>GROSS RATE PER RECEIPT (PHP)</label><input name="rate" type="number" min="0" step="0.01" value="${(rate() / 100).toFixed(2)}" required></div><div class="field"><label>DEDUCTION PERCENT (%)</label><input name="deduction" type="number" min="0" max="100" step="0.1" value="${dedPct()}" required></div><div class="notice">These values are used for new submissions. Updating settings does not automatically recalculate historical submissions.</div><button class="btn btn-primary" type="submit">Save settings</button></form></div>`;
+}
+
+function chatBubbles() {
+  const messages = data.messages || [];
+  return messages.map(m => {
+    const mine = m.senderId === currentUser?.uid;
+    return `<div class="bubble ${mine ? 'mine' : ''}">${!mine ? `<b>${esc(m.senderName || 'Team member')}</b><br>` : ''}${esc(m.text || m.message || '')}<small>${esc(fmtTime(m.createdAt))}</small></div>`;
+  }).join('') || '<div class="empty">💬<b>No messages yet</b>Start the conversation with your team.</div>';
+}
+function updateChat() {
+  const box = $('#chatMessages');
+  if (!box) return;
+  const nearBottom = box.scrollHeight - box.scrollTop - box.clientHeight < 80;
+  box.innerHTML = chatBubbles();
+  if (nearBottom) box.scrollTop = box.scrollHeight;
+}
+function chat() {
+  return `<div class="welcome"><div><h2>Team conversation</h2><p>Share updates with your team.</p></div></div><div class="chat-layout"><div class="chat-list"><button class="active"><div class="avatar">👥</div><div><strong>Company group</strong><small>Team-wide conversation</small></div></button></div><div class="chat-window"><div class="chat-messages" id="chatMessages">${chatBubbles()}</div><form class="chat-compose" id="chatForm"><input name="message" placeholder="Write a message…" maxlength="2000" autocomplete="off" required><button class="btn btn-primary" type="submit">Send ↗</button></form></div></div>`;
+}
+
+/* ───────────────────────── Render + wiring ───────────────────────── */
+function renderPage() {
+  if (!currentUser || !profile) { renderLogin(); return; }
+  pendingRender = false;
+  if (!allowedPages().includes(page)) page = 'dashboard';
+  $('#app').innerHTML = shell();
+  $('#pageContent').innerHTML = ({ dashboard, receipts, accounts, reports, chat, workers, settings })[page]();
+  wireShell();
+  wirePage();
+  if (detailId) { const s = visibleSubmissions().find(x => x.id === detailId); if (s) viewSubmission(s.id, false); else detailId = null; }
+}
+
+function go(p) {
+  page = p;
+  detailId = null;
+  renderPage();
+  window.scrollTo(0, 0);
+}
+
+function wireShell() {
+  $$('.nav button').forEach(b => b.addEventListener('click', () => go(b.dataset.nav)));
+  $('#logout')?.addEventListener('click', async () => {
+    unlisten();
+    if (configured && auth) { try { await fb.signOut(auth); } catch {} }
+    currentUser = null; profile = null; page = 'dashboard'; detailId = null;
+    renderLogin();
+  });
+  $('#menuBtn')?.addEventListener('click', () => $('#sidebar').classList.toggle('open'));
+  $('#pageContent').addEventListener('click', e => {
+    const t = e.target;
+    let el;
+    if ((el = t.closest('[data-page]'))) return go(el.dataset.page);
+    if ((el = t.closest('[data-view]'))) return viewSubmission(el.dataset.view);
+    if ((el = t.closest('[data-worker]'))) return viewWorker(el.dataset.worker);
+    if ((el = t.closest('[data-assign]'))) return assignWorker(el.dataset.assign);
+    if ((el = t.closest('[data-toggle-account]'))) return toggleAccount(el.dataset.toggleAccount);
+    if ((el = t.closest('[data-worker-action]'))) return workerAction(el.dataset.id, el.dataset.workerAction);
+  });
+}
+
+function wirePage() {
+  $('#newSubmission')?.addEventListener('click', () => $('#submissionFormPanel')?.scrollIntoView({ behavior: 'smooth', block: 'start' }));
+  $('#submissionForm')?.addEventListener('submit', submitShift);
+  $('#receiptSearch')?.addEventListener('input', e => { filters.q = e.target.value; filterRows(); });
+  $('#statusFilter')?.addEventListener('change', e => { filters.status = e.target.value; filterRows(); });
+  $('#addAccount')?.addEventListener('click', addAccount);
+  $('#settingsForm')?.addEventListener('submit', saveSettings);
+  $('#chatForm')?.addEventListener('submit', sendMessage);
+  $('#exportCsv')?.addEventListener('click', exportCsv);
+  $('#workerSearch')?.addEventListener('input', e => {
+    const q = e.target.value.toLowerCase();
+    $$('#pageContent tbody tr').forEach(r => r.classList.toggle('hidden', !r.textContent.toLowerCase().includes(q)));
+  });
+  const cm = $('#chatMessages');
+  if (cm) cm.scrollTop = cm.scrollHeight;
+}
+
+function filterRows() {
+  const rows = filteredSubmissions();
+  const body = $('#submissionRows');
+  if (body) body.innerHTML = submissionRows(rows);
+  const c = $('#recordCount');
+  if (c) c.textContent = rows.length + ' record(s)';
+}
+
+/* ───────────────────────── Submissions ───────────────────────── */
+async function submitShift(e) {
+  e.preventDefault();
+  const form = e.currentTarget;
+  const btn = form.querySelector('[type=submit]');
+  const f = new FormData(form);
+  const account = data.accounts.find(a => a.id === f.get('accountId'));
+  if (!account) return toast('Select an active account first.');
+  const shiftDate = f.get('shiftDate');
+  if (shiftDate > todayStr()) return toast('Shift date cannot be in the future.');
+  const count = parseInt(f.get('receiptCount'), 10);
+  if (!Number.isFinite(count) || count < 0) return toast('Enter a valid receipt count.');
+  const shiftType = f.get('shiftType');
+
+  const dup = visibleSubmissions().find(s => s.accountId === account.id && s.shiftDate === shiftDate && s.shiftType === shiftType && s.status !== 'rejected' && s.workerId === currentUser.uid);
+  if (dup && !confirm('You already submitted a ' + shiftType + ' shift for this account on this date. Submit another anyway?')) return;
+
+  const gross = count * rate();
+  const ded = Math.round(gross * dedPct() / 100);
+  const item = {
+    workerId: currentUser.uid, workerName: profile.displayName, workerEmail: currentUser.email,
+    accountId: account.id, accountName: account.name,
+    shiftDate, shiftType, startTime: f.get('startTime'), endTime: f.get('endTime'),
+    receiptCount: count, status: 'pending', rejectionReason: '',
+    grossCents: gross, deductionCents: ded, netCents: gross - ded
+  };
+
+  btn.disabled = true;
+  if (!configured) {
+    data.submissions.unshift({ ...item, id: 'local-' + Date.now(), createdAt: new Date(), updatedAt: new Date() });
+    toast('Demo submission added (not saved online).');
+    renderPage();
+    return;
+  }
+  try {
+    await fb.addDoc(fb.collection(db, 'submissions'), { ...item, createdAt: fb.serverTimestamp(), updatedAt: fb.serverTimestamp() });
+    toast('Shift submitted for review.');
+    form.reset();
+    renderPage();
+  } catch (err) {
+    console.error(err);
+    toast('Submission failed. Check Firestore permissions and assigned account.');
+    btn.disabled = false;
+  }
+}
+
+function viewSubmission(id, scroll = true) {
+  const s = visibleSubmissions().find(x => x.id === id);
+  if (!s) return;
+  detailId = id;
+  const actions = isAdmin() && s.status === 'pending'
+    ? `<button class="btn btn-primary" id="approveOne">Approve</button><button class="btn btn-danger" id="rejectOne">Reject</button>` : '';
+  const reason = s.rejectionReason ? `<div class="notice warn">Rejection reason: ${esc(s.rejectionReason)}</div>` : '';
+  const html = `<div class="panel"><div class="panel-head"><div><h3>Submission details</h3><p>${esc(s.id)}</p></div><button class="btn btn-ghost" id="closeDetails">Close</button></div><div class="form-grid"><div><p class="muted">Worker</p><b>${esc(s.workerName)}</b></div><div><p class="muted">Status</p>${status(s.status)}</div><div><p class="muted">Account</p><b>${esc(s.accountName)}</b></div><div><p class="muted">Shift date</p><b>${esc(date(s.shiftDate))}</b></div><div><p class="muted">Shift hours</p><b>${esc(s.startTime)} – ${esc(s.endTime)}</b></div><div><p class="muted">Receipts</p><b>${num(s.receiptCount)}</b></div><div><p class="muted">Gross pay</p><b>${money(s.grossCents)}</b></div><div><p class="muted">Deductions</p><b>${money(s.deductionCents)}</b></div><div><p class="muted">Net pay</p><b>${money(s.netCents)}</b></div></div>${reason}<div class="right" style="justify-content:flex-end;margin-top:20px;gap:8px">${actions}</div></div>`;
+  $('#detailsPanel')?.remove();
+  $('#pageContent').insertAdjacentHTML('afterbegin', `<div id="detailsPanel">${html}</div>`);
+  $('#closeDetails').onclick = () => { detailId = null; $('#detailsPanel')?.remove(); };
+  $('#approveOne')?.addEventListener('click', e => { e.currentTarget.disabled = true; reviewSubmission(s, 'approved'); });
+  $('#rejectOne')?.addEventListener('click', () => {
+    openModal('Reject submission',
+      `<div class="field"><label>REASON FOR REJECTION</label><textarea name="reason" required maxlength="500" placeholder="Tell the worker what to correct…"></textarea></div>`,
+      async fd => {
+        const r = String(fd.get('reason') || '').trim();
+        if (!r) { toast('A reason is required.'); return false; }
+        await reviewSubmission(s, 'rejected', r);
+      }, 'Reject');
+  });
+  if (scroll) $('#detailsPanel').scrollIntoView({ behavior: 'smooth' });
+}
+
+async function reviewSubmission(s, statusValue, reason = '') {
+  if (!isAdmin()) return;
+  if (s.status !== 'pending') { toast('This submission was already reviewed.'); return; }
+  if (!configured) {
+    s.status = statusValue; s.rejectionReason = reason;
+    detailId = null;
+    toast('Demo record updated only.');
+    renderPage();
+    return;
+  }
+  try {
+    await fb.updateDoc(fb.doc(db, 'submissions', s.id), {
+      status: statusValue, rejectionReason: reason,
+      reviewedBy: currentUser.uid, reviewedAt: fb.serverTimestamp(), updatedAt: fb.serverTimestamp()
+    });
+    detailId = null;
+    toast('Submission ' + statusValue + '.');
+    $('#detailsPanel')?.remove();
+  } catch (e) {
+    console.error(e);
+    toast('Could not update submission. Check Firestore rules.');
+    throw e;
+  }
+}
+
+/* ───────────────────────── Accounts ───────────────────────── */
+function addAccount() {
+  openModal('Add account',
+    `<div class="field"><label>ACCOUNT NAME</label><input name="name" required maxlength="80" placeholder="e.g. Abukai Team Alpha"></div>
+     <div class="field"><label>ACCOUNT CODE</label><input name="code" maxlength="20" placeholder="e.g. ABK-01"></div>
+     <div class="field"><label>NOTES (OPTIONAL)</label><input name="notes" maxlength="200"></div>`,
+    async fd => {
+      const name = String(fd.get('name') || '').trim();
+      const code = String(fd.get('code') || '').trim();
+      if (!name) return false;
+      if (code && data.accounts.some(a => (a.code || '').toLowerCase() === code.toLowerCase())) { toast('That account code already exists.'); return false; }
+      const item = { name, code, notes: String(fd.get('notes') || '').trim(), assignedWorkerIds: [], assignedWorkerNames: [], isActive: true };
+      if (!configured) {
+        data.accounts.push({ ...item, id: 'local-' + Date.now(), createdAt: new Date(), updatedAt: new Date() });
+        toast('Demo account added.');
+        renderPage();
+        return;
+      }
+      await fb.addDoc(fb.collection(db, 'accounts'), { ...item, createdAt: fb.serverTimestamp(), updatedAt: fb.serverTimestamp() });
+      toast('Account created.');
+    }, 'Create account');
+}
+
+async function toggleAccount(id) {
+  const a = data.accounts.find(x => x.id === id);
+  if (!a || !isAdmin()) return;
+  const next = a.isActive === false;
+  if (!next && !confirm('Deactivate ' + a.name + '? Workers will no longer be able to submit shifts for it.')) return;
+  if (!configured) { a.isActive = next; renderPage(); return; }
+  try {
+    await fb.updateDoc(fb.doc(db, 'accounts', id), { isActive: next, updatedAt: fb.serverTimestamp() });
+    toast(next ? 'Account activated.' : 'Account deactivated.');
+  } catch (e) { console.error(e); toast('Could not update account. Check Firestore rules.'); }
+}
+
+function assignWorker(accountId) {
+  const account = data.accounts.find(a => a.id === accountId);
+  if (!account) return toast('Account not found.');
+  const eligible = data.users.filter(u => u.role === 'worker' && u.isActive !== false && (u.status || 'approved') === 'approved');
+  if (!eligible.length) return toast('No approved workers found.');
+  const current = new Set(account.assignedWorkerIds || []);
+
+  const body = `<p class="muted" style="margin-top:0">Select the workers who can submit shifts for <b>${esc(account.name)}</b>.</p>` +
+    eligible.map(w => `<label class="sh-check"><input type="checkbox" name="w" value="${esc(w.id)}" ${current.has(w.id) ? 'checked' : ''}><span><b>${esc(w.displayName || w.email || w.id)}</b><br><small class="muted">${esc(w.email || '')}</small></span></label>`).join('');
+
+  openModal('Assign workers', body, async fd => {
+    const picked = fd.getAll('w');
+    const keep = [...current].filter(id => !eligible.some(w => w.id === id)); // e.g. deactivated workers stay assigned
+    const ids = [...new Set([...picked, ...keep])];
+    const nameOf = id => { const u = data.users.find(x => x.id === id); return u?.displayName || u?.email || 'Worker'; };
+    const names = ids.map(nameOf);
+
+    if (!configured) {
+      account.assignedWorkerIds = ids; account.assignedWorkerNames = names;
+      eligible.forEach(w => {
+        const list = new Set(w.assignedAccountIds || []);
+        ids.includes(w.id) ? list.add(account.id) : list.delete(account.id);
+        w.assignedAccountIds = [...list];
+      });
+      toast('Demo assignment updated.');
+      renderPage();
+      return;
+    }
+    const batch = fb.writeBatch(db);
+    batch.update(fb.doc(db, 'accounts', account.id), { assignedWorkerIds: ids, assignedWorkerNames: names, updatedAt: fb.serverTimestamp() });
+    eligible.forEach(w => {
+      const was = current.has(w.id), now = ids.includes(w.id);
+      if (was === now) return;
+      batch.update(fb.doc(db, 'users', w.id), { assignedAccountIds: now ? fb.arrayUnion(account.id) : fb.arrayRemove(account.id), updatedAt: fb.serverTimestamp() });
+    });
+    await batch.commit();
+    toast('Assignments saved.');
+  }, 'Save assignments');
+}
+
+/* ───────────────────────── Workers ───────────────────────── */
+function viewWorker(id) {
+  const u = data.users.find(x => x.id === id);
+  if (!u) return;
+  const accts = (u.assignedAccountIds || []).map(aid => data.accounts.find(a => a.id === aid)?.name || aid);
+  openModal('Worker profile', `<div class="form-grid" style="grid-template-columns:1fr">
+    <div><p class="muted">Name</p><b>${esc(u.displayName || 'Unnamed')}</b></div>
+    <div><p class="muted">Email</p><b>${esc(u.email || '—')}</b></div>
+    <div><p class="muted">Role / status</p><b>${esc(u.role || 'worker')} · ${esc(u.status || 'approved')} · ${u.isActive === false ? 'inactive' : 'active'}</b></div>
+    <div><p class="muted">Assigned accounts</p><b>${esc(accts.join(', ') || 'None')}</b></div></div>`, null);
+}
+
+async function workerAction(id, action) {
+  if (!isAdmin()) return;
+  const u = data.users.find(x => x.id === id);
+  if (!u) return;
+  const changes = ({
+    approve: { status: 'approved', isActive: true },
+    reject: { status: 'rejected', isActive: false },
+    activate: { isActive: true },
+    deactivate: { isActive: false }
+  })[action];
+  if (!changes) return;
+  if (['reject', 'deactivate'].includes(action) && !confirm(`${action === 'reject' ? 'Reject' : 'Deactivate'} ${u.displayName || u.email}?`)) return;
+  if (!configured) { Object.assign(u, changes); renderPage(); return; }
+  try {
+    await fb.updateDoc(fb.doc(db, 'users', id), { ...changes, updatedAt: fb.serverTimestamp() });
+    toast('Worker updated.');
+  } catch (e) { console.error(e); toast('Could not update worker. Check Firestore rules.'); }
+}
+
+/* ───────────────────────── Settings, chat, export ───────────────────────── */
+async function saveSettings(e) {
+  e.preventDefault();
+  const f = new FormData(e.currentTarget);
+  const rateVal = Number(f.get('rate')), deduction = Number(f.get('deduction'));
+  if (!Number.isFinite(rateVal) || rateVal < 0) return toast('Enter a valid rate.');
+  if (!Number.isFinite(deduction) || deduction < 0 || deduction > 100) return toast('Deduction must be between 0 and 100.');
+  const gross = Math.round(rateVal * 100);
+  if (!configured) {
+    data.settings = { grossRateCents: gross, deductionPercent: deduction };
+    toast('Demo settings updated only.');
+    renderPage();
+    return;
+  }
+  try {
+    await fb.setDoc(fb.doc(db, 'settings', 'paySettings'), {
+      id: 'paySettings', grossRateCents: gross, deductionPercent: deduction,
+      updatedBy: currentUser.uid, updatedAt: fb.serverTimestamp()
+    }, { merge: true });
+    toast('Pay settings saved.');
+  } catch (err) { console.error(err); toast('Could not save settings. Check Firestore rules.'); }
+}
+
+async function sendMessage(e) {
+  e.preventDefault();
+  const input = e.currentTarget.elements.message;
+  const text = input.value.trim();
+  if (!text) return;
+  const item = { senderId: currentUser.uid, senderName: profile.displayName, text };
+  if (!configured) {
+    data.messages.push({ ...item, id: 'm' + Date.now(), createdAt: new Date() });
+    input.value = '';
+    updateChat();
+    return;
+  }
+  input.value = '';
+  try {
+    await fb.addDoc(fb.collection(db, 'conversations', 'company_group', 'messages'), { ...item, createdAt: fb.serverTimestamp() });
+  } catch (err) {
+    console.error(err);
+    input.value = text; // restore so nothing is lost
+    toast('Could not send message. Check Firestore rules.');
+  }
+}
+
+function exportCsv() {
+  const rows = visibleSubmissions().slice().sort((a, b) => timeVal(b.createdAt) - timeVal(a.createdAt));
+  const cell = v => {
+    let s = String(v ?? '');
+    if (/^[=+\-@\t\r]/.test(s)) s = "'" + s; // block spreadsheet formula injection
+    return '"' + s.replace(/"/g, '""') + '"';
+  };
+  const peso = c => (num(c) / 100).toFixed(2);
+  const head = ['Worker', 'Account', 'Shift date', 'Shift', 'Start', 'End', 'Receipts', 'Status', 'Gross (PHP)', 'Deductions (PHP)', 'Net (PHP)'];
+  const lines = rows.map(r => [r.workerName, r.accountName, r.shiftDate, r.shiftType, r.startTime, r.endTime, r.receiptCount, r.status, peso(r.grossCents), peso(r.deductionCents), peso(r.netCents)].map(cell).join(','));
+  const csv = '\ufeff' + [head.map(cell).join(','), ...lines].join('\r\n'); // BOM so Excel reads UTF-8
+  const url = URL.createObjectURL(new Blob([csv], { type: 'text/csv;charset=utf-8;' }));
+  const a = document.createElement('a');
+  a.href = url;
+  a.download = `steivy-receipt-report-${todayStr()}.csv`;
+  document.body.appendChild(a);
+  a.click();
+  a.remove();
+  setTimeout(() => URL.revokeObjectURL(url), 1000);
+}
+
+/* ───────────────────────── Boot ───────────────────────── */
+async function boot() {
+  const ok = await initFirebase();
+  if (!ok) { renderLogin(); return; }
+
+  fb.onAuthStateChanged(auth, async user => {
+    const token = ++authToken;
+    unlisten();
+    closeModal();
+    if (!user) { currentUser = null; profile = null; renderLogin(); return; }
+
+    try {
+      const snap = await fb.getDoc(fb.doc(db, 'users', user.uid));
+      if (token !== authToken) return;
+      if (!snap.exists()) {
+        toast('Your sign-in worked, but no approved user profile exists. Ask an administrator for access.');
+        await fb.signOut(auth);
+        return;
+      }
+      const p = { id: snap.id, ...snap.data() };
+      p.displayName = p.displayName || user.displayName || user.email || 'User';
+      if (p.isActive === false || p.status === 'rejected' || p.status === 'pending') {
+        toast(p.status === 'pending' ? 'Your account is awaiting approval.' : 'Your account is not active.');
+        await fb.signOut(auth);
+        return;
+      }
+      if (!['admin', 'worker'].includes(p.role)) {
+        toast('Your account has no valid role. Contact an administrator.');
+        await fb.signOut(auth);
+        return;
+      }
+      currentUser = { uid: user.uid, email: user.email || '', displayName: p.displayName };
+      profile = p;
+      page = 'dashboard';
+      detailId = null;
+      await loadData();
+      if (token !== authToken) return;
+      renderPage();
+    } catch (e) {
+      console.error(e);
+      toast('Could not load your profile. Check Firestore rules.');
+      renderLogin();
+    }
+  });
+}
+
 boot();
