@@ -21,7 +21,7 @@ let pendingRender = false;
 let detailId = null;
 const filters = { q: '', status: 'all' };
 const DEFAULT_SETTINGS = { grossRateCents: 100, deductionPercent: 10 };
-const data = { submissions: [], accounts: [], users: [], messages: [], presence: [], settings: { ...DEFAULT_SETTINGS } };
+const data = { submissions: [], accounts: [], users: [], messages: [], presence: [], announcements: [], annRead: [], settings: { ...DEFAULT_SETTINGS } };
 
 /* ───────────────────────── Helpers ───────────────────────── */
 const $ = s => document.querySelector(s);
@@ -103,7 +103,10 @@ button:disabled{opacity:.6;cursor:not-allowed}
 .online-dot{width:9px;height:9px;border-radius:50%;background:#2ecc71;box-shadow:0 0 0 0 rgba(46,204,113,.6);animation:onlinePulse 1.8s infinite}
 @keyframes onlineScroll{from{transform:translateX(0)}to{transform:translateX(-50%)}}
 @keyframes onlinePulse{0%{box-shadow:0 0 0 0 rgba(46,204,113,.6)}70%{box-shadow:0 0 0 8px rgba(46,204,113,0)}100%{box-shadow:0 0 0 0 rgba(46,204,113,0)}}
-@media (prefers-reduced-motion:reduce){.online-track{animation:none}.online-marquee{overflow-x:auto}}`;
+@media (prefers-reduced-motion:reduce){.online-track{animation:none}.online-marquee{overflow-x:auto}}
+#annPopup{z-index:1100}
+.ann-badge{display:inline-block;background:#fff4d6;color:#8a5a00;border-radius:999px;padding:4px 12px;font-size:12px;font-weight:700;margin-bottom:10px}
+.ann-body{white-space:pre-wrap;line-height:1.55;margin:10px 0 14px;word-break:break-word}`;
 document.head.appendChild(extraStyle);
 
 /* ───────────────────────── Modal ───────────────────────── */
@@ -166,6 +169,96 @@ async function stopPresence() {
 }
 document.addEventListener('visibilitychange', () => { if (!document.hidden && heartbeatTimer) beat(true); });
 window.addEventListener('pagehide', () => { if (heartbeatTimer) beat(false); });
+
+/* ───────────────────────── Announcements (admin -> all users) ───────────────────────── */
+const annLsKey = () => 'steivy_ann_dismissed_' + (currentUser?.uid || '');
+function localDismissed() { try { return JSON.parse(localStorage.getItem(annLsKey()) || '[]'); } catch { return []; } }
+const dismissedSet = () => new Set([...(data.annRead || []), ...localDismissed()]);
+function pendingAnnouncements() {
+  const done = dismissedSet(), uid = currentUser?.uid;
+  return data.announcements
+    .filter(a => a.active !== false && !done.has(a.id) && a.createdBy !== uid) // the author does not get a popup for their own post
+    .sort((a, b) => timeVal(b.createdAt) - timeVal(a.createdAt));
+}
+function closeAnnPopup() { $('#annPopup')?.remove(); }
+
+// Shows the newest announcement the user has not closed yet. Only on the dashboard.
+function syncAnnouncementPopup() {
+  if (!currentUser || !profile || page !== 'dashboard') { closeAnnPopup(); return; }
+  const list = pendingAnnouncements();
+  if (!list.length) { closeAnnPopup(); return; }
+  const a = list[0];
+  const old = $('#annPopup');
+  if (old && old.dataset.id === a.id && old.dataset.count === String(list.length)) return;
+  closeAnnPopup();
+  const wrap = document.createElement('div');
+  wrap.className = 'sh-modal';
+  wrap.id = 'annPopup';
+  wrap.dataset.id = a.id;
+  wrap.dataset.count = String(list.length);
+  wrap.innerHTML = `<div class="sh-modal-card" role="dialog" aria-modal="true"><span class="ann-badge">📢 Announcement from admin</span><h3>${esc(a.title || 'Announcement')}</h3><div class="ann-body">${esc(a.message || '')}</div><small class="muted">Posted by ${esc(a.createdByName || 'Admin')} · ${esc(date(a.createdAt))} ${esc(fmtTime(a.createdAt))}</small>${list.length > 1 ? `<div><small class="muted">${list.length - 1} more announcement(s) after this one</small></div>` : ''}<div class="sh-modal-actions"><button type="button" class="btn btn-primary" data-ann-close>Got it, close</button></div></div>`;
+  document.body.appendChild(wrap);
+  wrap.querySelector('[data-ann-close]').addEventListener('click', () => dismissAnnouncement(a.id));
+}
+
+async function dismissAnnouncement(id) {
+  try { localStorage.setItem(annLsKey(), JSON.stringify([...new Set([...localDismissed(), id])])); } catch {}
+  data.annRead = [...new Set([...(data.annRead || []), id])];
+  syncAnnouncementPopup(); // closes, or shows the next one
+  if (!configured || !currentUser) return;
+  try {
+    await fb.setDoc(fb.doc(db, 'announcementReads', currentUser.uid), { dismissedIds: fb.arrayUnion(id), updatedAt: fb.serverTimestamp() }, { merge: true });
+  } catch (e) { console.warn('announcementReads write failed (check Firestore rules)', e); }
+}
+
+function announcementsPanel() {
+  const list = data.announcements.filter(a => a.active !== false).sort((a, b) => timeVal(b.createdAt) - timeVal(a.createdAt));
+  const rows = list.map(a => `<div style="display:flex;gap:12px;justify-content:space-between;align-items:flex-start;padding:12px 0;border-top:1px solid var(--line)"><div><b>${esc(a.title || 'Announcement')}</b><div class="muted" style="white-space:pre-wrap;margin:4px 0">${esc(a.message || '')}</div><small class="muted">${esc(date(a.createdAt))} ${esc(fmtTime(a.createdAt))} · ${esc(a.createdByName || 'Admin')}</small></div><button class="small-btn" data-del-announcement="${esc(a.id)}">Remove</button></div>`).join('');
+  return `<div class="panel"><div class="panel-head"><div><h3>Announcements</h3><p>Posted notes pop up on every user's dashboard until they close them</p></div><button class="btn btn-primary" id="addAnnouncement">📢 Post announcement</button></div>${rows || '<div class="empty">📢<b>No active announcements</b>Post a note to show it to all users.</div>'}</div>`;
+}
+
+function addAnnouncement() {
+  if (!isAdmin()) return;
+  openModal('Post announcement',
+    `<div class="field"><label>TITLE (OPTIONAL)</label><input name="title" maxlength="80" placeholder="e.g. Schedule update"></div>
+     <div class="field"><label>MESSAGE / NOTE</label><textarea name="message" required maxlength="1000" placeholder="Write your note for all users…"></textarea></div>
+     <div class="notice">This will pop up on every user's dashboard until they close it.</div>`,
+    async fd => {
+      const title = String(fd.get('title') || '').trim();
+      const message = String(fd.get('message') || '').trim();
+      if (!message) { toast('Write a message first.'); return false; }
+      const item = { title, message, active: true, createdBy: currentUser.uid, createdByName: profile.displayName };
+      if (!configured) {
+        data.announcements.unshift({ ...item, id: 'local-' + Date.now(), createdAt: new Date() });
+        toast('Demo announcement posted (not saved online).');
+        renderPage();
+        return;
+      }
+      await fb.addDoc(fb.collection(db, 'announcements'), { ...item, createdAt: fb.serverTimestamp() });
+      toast('Announcement posted. It will pop up for all users.');
+    }, 'Post to all users');
+}
+
+async function removeAnnouncement(id) {
+  if (!isAdmin()) return;
+  if (!confirm('Remove this announcement? It will disappear for everyone.')) return;
+  if (!configured) { data.announcements = data.announcements.filter(a => a.id !== id); renderPage(); return; }
+  try {
+    await fb.deleteDoc(fb.doc(db, 'announcements', id));
+    toast('Announcement removed.');
+  } catch (e) { console.error(e); toast('Could not remove announcement. Check Firestore rules.'); }
+}
+
+// Last month / this month processed receipts and errors for the dashboard (rejected excluded)
+function monthStats(rows) {
+  const cur = monthKeyOf(0), prev = monthKeyOf(-1);
+  const sum = key => rows
+    .filter(s => s.status !== 'rejected' && String(s.shiftDate || '').slice(0, 7) === key)
+    .reduce((t, s) => ({ r: t.r + num(s.receiptCount), e: t.e + num(s.errorCount) }), { r: 0, e: 0 });
+  const p = sum(prev), c = sum(cur);
+  const pre = isAdmin() ? 'Team · ' : '';
+  return `<div class="stats">${stat('Last month processed', p.r.toLocaleString(), esc(pre + monthLabel(prev)), '◀')}${stat('Last month errors', p.e.toLocaleString(), esc(pre + monthLabel(prev)), '⚠')}${stat('This month processed', c.r.toLocaleString(), esc(pre + monthLabel(cur)), '▧')}${stat('This month errors', c.e.toLocaleString(), esc(pre + monthLabel(cur)), '⚠')}</div>`;
+}
 
 function closeModal() { $('#shModal')?.remove(); }
 document.addEventListener('keydown', e => { if (e.key === 'Escape') closeModal(); });
@@ -259,6 +352,7 @@ async function loadData() {
   if (!db || !profile) return;
   const { collection, doc, onSnapshot, query, where, orderBy, limit } = fb;
   const uid = currentUser.uid;
+  data.announcements = []; data.annRead = [];
 
   if (isAdmin()) {
     listen('accounts', 'accounts');
@@ -275,6 +369,15 @@ async function loadData() {
     data.settings = { ...DEFAULT_SETTINGS, ...(s.exists() ? s.data() : {}) };
     requestRender();
   }, () => {}));
+
+  unsubs.push(onSnapshot(query(collection(db, 'announcements'), orderBy('createdAt', 'desc'), limit(30)), s => {
+    data.announcements = s.docs.map(d => ({ id: d.id, ...d.data() }));
+    requestRender();
+  }, err => console.warn('announcements listener (check Firestore rules)', err)));
+  unsubs.push(onSnapshot(doc(db, 'announcementReads', uid), s => {
+    data.annRead = s.exists() ? (s.data().dismissedIds || []) : [];
+    syncAnnouncementPopup();
+  }, err => console.warn('announcementReads listener (check Firestore rules)', err)));
 
   unsubs.push(onSnapshot(collection(db, 'presence'), s => {
     presenceReadErr = false;
@@ -332,6 +435,7 @@ function authError(code) {
 function renderLogin() {
   unlisten();
   closeModal();
+  closeAnnPopup();
   $('#app').innerHTML = `<main class="login-wrap"><section class="login-art"><div class="brand"><img src="assets/logo.jpg" alt=""><div><strong>STEIVY</strong><small>RECEIPT HUB</small></div></div><div><h1>Keep every shift<br>in good order.</h1><p>Manage receipt submissions, track shift totals, review reports, and stay connected with your team.</p></div><div class="art-foot"><p>One hub for your team's daily operations.</p></div></section><section class="login-form-side"><form id="loginForm" class="login-form"><div class="brand-mark">S</div><h2>Welcome back</h2><p class="muted">Sign in to continue to your workspace.</p>${!configured ? `<div class="demo-note"><b>Firebase setup required</b><br>This copy has no Firebase web credentials yet. You can preview the interface with demo accounts below; demo changes are not saved online.</div>` : ''}<div class="field"><label for="email">EMAIL ADDRESS</label><input id="email" type="email" placeholder="you@company.com" autocomplete="username" required></div><div class="field"><label for="password">PASSWORD</label><input id="password" type="password" placeholder="Enter your password" autocomplete="current-password" required></div><button class="btn btn-primary btn-block" type="submit">Sign in <span>→</span></button><p class="muted" style="font-size:12px;text-align:center;margin:18px 0">Need an account? Ask your administrator to create or approve it.</p>${!configured ? `<div class="field"><label>PREVIEW WITHOUT FIREBASE</label><button class="btn btn-light btn-block" type="button" id="demoWorker">Continue as demo worker</button><button class="btn btn-ghost btn-block" style="margin-top:8px" type="button" id="demoAdmin">Preview admin dashboard</button></div>` : ''}<div class="footer-note">Steivy Receipt Hub · Web edition</div></form></section></main>`;
 
   $('#loginForm').addEventListener('submit', async e => {
@@ -384,7 +488,7 @@ function dashboard() {
   const earned = approved.reduce((n, s) => n + num(s.netCents), 0);
   const recent = rows.slice().sort((a, b) => timeVal(b.createdAt) - timeVal(a.createdAt)).slice(0, 5);
   const first = esc((profile.displayName || 'there').split(' ')[0]);
-  return `<div class="welcome"><div><h2>${isAdmin() ? 'Good day, Administrator' : 'Welcome back, ' + first + ' 👋'}</h2><p>Here’s what’s happening with ${isAdmin() ? 'your team' : 'your shifts'} today.</p></div>${!isAdmin() ? '<button class="btn btn-primary" data-page="receipts">＋ Submit shift</button>' : '<button class="btn btn-primary" data-page="receipts">Review submissions →</button>'}</div>${onlineStrip()}<div class="stats">${stat(isAdmin() ? 'Total submissions' : 'My submissions', rows.length, isAdmin() ? 'All recorded shifts' : 'Your recorded shifts', '▤')}${stat('Receipts processed', total.toLocaleString(), `${errTotal.toLocaleString()} error(s) recorded`, '▧')}${stat('Pending review', pending.length, 'Awaiting a decision', '◷')}${stat(isAdmin() ? 'Approved net pay' : 'Approved earnings', money(earned), 'After configured deductions', '₱')}</div><div class="grid-2"><div class="panel"><div class="panel-head"><div><h3>Recent submissions</h3><p>Latest shift records and review status</p></div><button class="small-btn" data-page="receipts">View all →</button></div><div class="table-wrap"><table><thead><tr><th>Worker / account</th><th>Shift date</th><th>Shift</th><th>Processed</th><th>Errors</th><th>Net pay</th><th>Status</th><th></th></tr></thead><tbody>${submissionRows(recent)}</tbody></table></div></div><div class="panel"><div class="panel-head"><div><h3>Quick actions</h3><p>Common tasks, one click away</p></div></div><div class="quick-grid"><button class="quick" data-page="receipts"><span>🧾</span><strong>Submit shift</strong><small>Record receipt count</small></button><button class="quick" data-page="errors"><span>⚠️</span><strong>Error processed</strong><small>Review error receipts</small></button><button class="quick" data-page="reports"><span>📊</span><strong>View reports</strong><small>Track your totals</small></button><button class="quick" data-page="chat"><span>💬</span><strong>Team chat</strong><small>Message your team</small></button>${isAdmin() ? '<button class="quick" data-page="workers"><span>👥</span><strong>Manage workers</strong><small>Review team accounts</small></button>' : ''}</div><div class="notice">${isAdmin() ? `You have <b>${pending.length}</b> submission(s) waiting for review.` : `Your approved submissions show in earnings. If a shift is rejected, check the reason and submit a correction.`}</div></div></div>`;
+  return `<div class="welcome"><div><h2>${isAdmin() ? 'Good day, Administrator' : 'Welcome back, ' + first + ' 👋'}</h2><p>Here’s what’s happening with ${isAdmin() ? 'your team' : 'your shifts'} today.</p></div>${!isAdmin() ? '<button class="btn btn-primary" data-page="receipts">＋ Submit shift</button>' : '<button class="btn btn-primary" data-page="receipts">Review submissions →</button>'}</div>${onlineStrip()}<div class="stats">${stat(isAdmin() ? 'Total submissions' : 'My submissions', rows.length, isAdmin() ? 'All recorded shifts' : 'Your recorded shifts', '▤')}${stat('Receipts processed', total.toLocaleString(), `${errTotal.toLocaleString()} error(s) recorded`, '▧')}${stat('Pending review', pending.length, 'Awaiting a decision', '◷')}${stat(isAdmin() ? 'Approved net pay' : 'Approved earnings', money(earned), 'After configured deductions', '₱')}</div>${monthStats(rows)}${isAdmin() ? announcementsPanel() : ''}<div class="grid-2"><div class="panel"><div class="panel-head"><div><h3>Recent submissions</h3><p>Latest shift records and review status</p></div><button class="small-btn" data-page="receipts">View all →</button></div><div class="table-wrap"><table><thead><tr><th>Worker / account</th><th>Shift date</th><th>Shift</th><th>Processed</th><th>Errors</th><th>Net pay</th><th>Status</th><th></th></tr></thead><tbody>${submissionRows(recent)}</tbody></table></div></div><div class="panel"><div class="panel-head"><div><h3>Quick actions</h3><p>Common tasks, one click away</p></div></div><div class="quick-grid"><button class="quick" data-page="receipts"><span>🧾</span><strong>Submit shift</strong><small>Record receipt count</small></button><button class="quick" data-page="errors"><span>⚠️</span><strong>Error processed</strong><small>Review error receipts</small></button><button class="quick" data-page="reports"><span>📊</span><strong>View reports</strong><small>Track your totals</small></button><button class="quick" data-page="chat"><span>💬</span><strong>Team chat</strong><small>Message your team</small></button>${isAdmin() ? '<button class="quick" data-page="workers"><span>👥</span><strong>Manage workers</strong><small>Review team accounts</small></button>' : ''}</div><div class="notice">${isAdmin() ? `You have <b>${pending.length}</b> submission(s) waiting for review.` : `Your approved submissions show in earnings. If a shift is rejected, check the reason and submit a correction.`}</div></div></div>`;
 }
 
 function filteredSubmissions() {
@@ -542,6 +646,7 @@ function renderPage() {
   wireShell();
   wirePage();
   if (detailId) { const s = visibleSubmissions().find(x => x.id === detailId); if (s) viewSubmission(s.id, false); else detailId = null; }
+  syncAnnouncementPopup();
 }
 
 function go(p) {
@@ -567,6 +672,7 @@ function wireShell() {
     if ((el = t.closest('[data-page]'))) return go(el.dataset.page);
     if ((el = t.closest('[data-view]'))) return viewSubmission(el.dataset.view);
     if ((el = t.closest('[data-edit-counts]'))) return editCounts(el.dataset.editCounts);
+    if ((el = t.closest('[data-del-announcement]'))) return removeAnnouncement(el.dataset.delAnnouncement);
     if ((el = t.closest('[data-worker]'))) return viewWorker(el.dataset.worker);
     if ((el = t.closest('[data-assign]'))) return assignWorker(el.dataset.assign);
     if ((el = t.closest('[data-toggle-account]'))) return toggleAccount(el.dataset.toggleAccount);
@@ -581,6 +687,7 @@ function wirePage() {
   $('#statusFilter')?.addEventListener('change', e => { filters.status = e.target.value; filterRows(); });
   $('#addAccount')?.addEventListener('click', addAccount);
   $('#addWorker')?.addEventListener('click', addWorker);
+  $('#addAnnouncement')?.addEventListener('click', addAnnouncement);
   $('#settingsForm')?.addEventListener('submit', saveSettings);
   $('#chatForm')?.addEventListener('submit', sendMessage);
   $('#exportCsv')?.addEventListener('click', exportCsv);
