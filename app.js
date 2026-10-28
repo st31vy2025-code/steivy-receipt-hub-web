@@ -1,4 +1,4 @@
-// Steivy Receipt Hub — app.js (with Create worker + Delete worker)
+// Steivy Receipt Hub — app.js (Create worker + Delete worker + Error Processed + Admin edit counts)
 // Load with: <script type="module" src="app.js"></script>
 
 let firebaseConfig = {};
@@ -223,8 +223,8 @@ function demoSignIn(role) {
     { id: 'worker-3', displayName: 'Pat Reyes', email: 'pat@example.com', role: 'worker', isActive: true, status: 'pending', assignedAccountIds: [] }];
   const t = todayStr();
   data.submissions = [
-    { id: 'demo-1', workerId: 'demo-worker', workerName: 'Demo Worker', accountId: 'abk-01', accountName: 'Abukai Team Alpha', shiftDate: t, shiftType: 'Morning', startTime: '06:00', endTime: '14:00', receiptCount: 125, status: 'approved', grossCents: 12500, deductionCents: 1250, netCents: 11250, createdAt: new Date() },
-    { id: 'demo-2', workerId: 'worker-2', workerName: 'Jamie Santos', accountId: 'abk-01', accountName: 'Abukai Team Alpha', shiftDate: t, shiftType: 'Afternoon', startTime: '14:00', endTime: '22:00', receiptCount: 96, status: 'pending', grossCents: 9600, deductionCents: 960, netCents: 8640, createdAt: new Date() }];
+    { id: 'demo-1', workerId: 'demo-worker', workerName: 'Demo Worker', accountId: 'abk-01', accountName: 'Abukai Team Alpha', shiftDate: t, shiftType: 'Morning', startTime: '06:00', endTime: '14:00', receiptCount: 125, errorCount: 4, errorNote: 'Blurry images', status: 'approved', rateCents: 100, deductionPercent: 10, grossCents: 12500, deductionCents: 1250, netCents: 11250, createdAt: new Date() },
+    { id: 'demo-2', workerId: 'worker-2', workerName: 'Jamie Santos', accountId: 'abk-01', accountName: 'Abukai Team Alpha', shiftDate: t, shiftType: 'Afternoon', startTime: '14:00', endTime: '22:00', receiptCount: 96, errorCount: 0, errorNote: '', status: 'pending', rateCents: 100, deductionPercent: 10, grossCents: 9600, deductionCents: 960, netCents: 8640, createdAt: new Date() }];
   data.messages = [{ id: 'm1', senderId: 'worker-2', senderName: 'Jamie Santos', text: 'Hi team, my shift submission is ready for review.', createdAt: new Date() }];
   data.settings = { ...DEFAULT_SETTINGS };
   page = 'dashboard';
@@ -267,11 +267,11 @@ function renderLogin() {
 }
 
 /* ───────────────────────── Layout ───────────────────────── */
-const PAGE_TITLES = { dashboard: 'Dashboard', receipts: 'Receipt submissions', accounts: 'Account management', reports: 'Reports & earnings', chat: 'Team chat', workers: 'Worker management', settings: 'Pay settings' };
-const allowedPages = () => isAdmin() ? ['dashboard', 'receipts', 'accounts', 'reports', 'chat', 'workers', 'settings'] : ['dashboard', 'receipts', 'reports', 'chat'];
+const PAGE_TITLES = { dashboard: 'Dashboard', receipts: 'Receipt submissions', errors: 'Error processed', accounts: 'Account management', reports: 'Reports & earnings', chat: 'Team chat', workers: 'Worker management', settings: 'Pay settings' };
+const allowedPages = () => isAdmin() ? ['dashboard', 'receipts', 'errors', 'accounts', 'reports', 'chat', 'workers', 'settings'] : ['dashboard', 'receipts', 'errors', 'reports', 'chat'];
 
 function shell() {
-  const items = [['dashboard', '⌂', 'Dashboard'], ['receipts', '▤', 'Submissions']];
+  const items = [['dashboard', '⌂', 'Dashboard'], ['receipts', '▤', 'Submissions'], ['errors', '⚠', 'Error processed']];
   if (isAdmin()) items.push(['accounts', '▦', 'Accounts']);
   items.push(['reports', '▥', 'Reports'], ['chat', '☏', 'Team chat']);
   if (isAdmin()) items.push(['workers', '♙', 'Workers'], ['settings', '⚙', 'Pay settings']);
@@ -284,8 +284,11 @@ const status = s => `<span class="status ${esc(String(s || 'pending').toLowerCas
 
 /* ───────────────────────── Pages ───────────────────────── */
 function submissionRows(rows) {
-  if (!rows.length) return `<tr><td colspan="7"><div class="empty">▤<b>No submissions yet</b>Shift submissions will appear here.</div></td></tr>`;
-  return rows.slice().sort((a, b) => timeVal(b.createdAt) - timeVal(a.createdAt)).map(s => `<tr><td><div class="person"><div class="avatar">${esc(initials(s.workerName))}</div><div><strong>${esc(s.workerName || 'Worker')}</strong><small>${esc(s.accountName || 'No account')}</small></div></div></td><td>${esc(date(s.shiftDate))}</td><td>${esc(s.shiftType || '—')}<small style="display:block;color:#8a958e;margin-top:4px">${esc(s.startTime || '')} – ${esc(s.endTime || '')}</small></td><td>${num(s.receiptCount).toLocaleString()}</td><td>${money(s.netCents)}</td><td>${status(s.status)}</td><td><button class="small-btn" data-view="${esc(s.id)}">View</button></td></tr>`).join('');
+  if (!rows.length) return `<tr><td colspan="8"><div class="empty">▤<b>No submissions yet</b>Shift submissions will appear here.</div></td></tr>`;
+  return rows.slice().sort((a, b) => timeVal(b.createdAt) - timeVal(a.createdAt)).map(s => {
+    const err = num(s.errorCount);
+    return `<tr><td><div class="person"><div class="avatar">${esc(initials(s.workerName))}</div><div><strong>${esc(s.workerName || 'Worker')}</strong><small>${esc(s.accountName || 'No account')}</small></div></div></td><td>${esc(date(s.shiftDate))}</td><td>${esc(s.shiftType || '—')}<small style="display:block;color:#8a958e;margin-top:4px">${esc(s.startTime || '')} – ${esc(s.endTime || '')}</small></td><td>${num(s.receiptCount).toLocaleString()}</td><td${err > 0 ? ' style="color:#c0392b;font-weight:600"' : ''}>${err.toLocaleString()}</td><td>${money(s.netCents)}</td><td>${status(s.status)}</td><td><div class="sh-row-actions"><button class="small-btn" data-view="${esc(s.id)}">View</button>${isAdmin() ? `<button class="small-btn" data-edit-counts="${esc(s.id)}">Edit</button>` : ''}</div></td></tr>`;
+  }).join('');
 }
 
 function dashboard() {
@@ -293,10 +296,11 @@ function dashboard() {
   const approved = rows.filter(s => s.status === 'approved');
   const pending = rows.filter(s => s.status === 'pending');
   const total = rows.reduce((n, s) => n + num(s.receiptCount), 0);
+  const errTotal = rows.reduce((n, s) => n + num(s.errorCount), 0);
   const earned = approved.reduce((n, s) => n + num(s.netCents), 0);
   const recent = rows.slice().sort((a, b) => timeVal(b.createdAt) - timeVal(a.createdAt)).slice(0, 5);
   const first = esc((profile.displayName || 'there').split(' ')[0]);
-  return `<div class="welcome"><div><h2>${isAdmin() ? 'Good day, Administrator' : 'Welcome back, ' + first + ' 👋'}</h2><p>Here’s what’s happening with ${isAdmin() ? 'your team' : 'your shifts'} today.</p></div>${!isAdmin() ? '<button class="btn btn-primary" data-page="receipts">＋ Submit shift</button>' : '<button class="btn btn-primary" data-page="receipts">Review submissions →</button>'}</div><div class="stats">${stat(isAdmin() ? 'Total submissions' : 'My submissions', rows.length, isAdmin() ? 'All recorded shifts' : 'Your recorded shifts', '▤')}${stat('Receipts processed', total.toLocaleString(), 'Across listed submissions', '▧')}${stat('Pending review', pending.length, 'Awaiting a decision', '◷')}${stat(isAdmin() ? 'Approved net pay' : 'Approved earnings', money(earned), 'After configured deductions', '₱')}</div><div class="grid-2"><div class="panel"><div class="panel-head"><div><h3>Recent submissions</h3><p>Latest shift records and review status</p></div><button class="small-btn" data-page="receipts">View all →</button></div><div class="table-wrap"><table><thead><tr><th>Worker / account</th><th>Shift date</th><th>Shift</th><th>Receipts</th><th>Net pay</th><th>Status</th><th></th></tr></thead><tbody>${submissionRows(recent)}</tbody></table></div></div><div class="panel"><div class="panel-head"><div><h3>Quick actions</h3><p>Common tasks, one click away</p></div></div><div class="quick-grid"><button class="quick" data-page="receipts"><span>🧾</span><strong>Submit shift</strong><small>Record receipt count</small></button><button class="quick" data-page="reports"><span>📊</span><strong>View reports</strong><small>Track your totals</small></button><button class="quick" data-page="chat"><span>💬</span><strong>Team chat</strong><small>Message your team</small></button>${isAdmin() ? '<button class="quick" data-page="workers"><span>👥</span><strong>Manage workers</strong><small>Review team accounts</small></button>' : ''}</div><div class="notice">${isAdmin() ? `You have <b>${pending.length}</b> submission(s) waiting for review.` : `Your approved submissions show in earnings. If a shift is rejected, check the reason and submit a correction.`}</div></div></div>`;
+  return `<div class="welcome"><div><h2>${isAdmin() ? 'Good day, Administrator' : 'Welcome back, ' + first + ' 👋'}</h2><p>Here’s what’s happening with ${isAdmin() ? 'your team' : 'your shifts'} today.</p></div>${!isAdmin() ? '<button class="btn btn-primary" data-page="receipts">＋ Submit shift</button>' : '<button class="btn btn-primary" data-page="receipts">Review submissions →</button>'}</div><div class="stats">${stat(isAdmin() ? 'Total submissions' : 'My submissions', rows.length, isAdmin() ? 'All recorded shifts' : 'Your recorded shifts', '▤')}${stat('Receipts processed', total.toLocaleString(), `${errTotal.toLocaleString()} error(s) recorded`, '▧')}${stat('Pending review', pending.length, 'Awaiting a decision', '◷')}${stat(isAdmin() ? 'Approved net pay' : 'Approved earnings', money(earned), 'After configured deductions', '₱')}</div><div class="grid-2"><div class="panel"><div class="panel-head"><div><h3>Recent submissions</h3><p>Latest shift records and review status</p></div><button class="small-btn" data-page="receipts">View all →</button></div><div class="table-wrap"><table><thead><tr><th>Worker / account</th><th>Shift date</th><th>Shift</th><th>Processed</th><th>Errors</th><th>Net pay</th><th>Status</th><th></th></tr></thead><tbody>${submissionRows(recent)}</tbody></table></div></div><div class="panel"><div class="panel-head"><div><h3>Quick actions</h3><p>Common tasks, one click away</p></div></div><div class="quick-grid"><button class="quick" data-page="receipts"><span>🧾</span><strong>Submit shift</strong><small>Record receipt count</small></button><button class="quick" data-page="errors"><span>⚠️</span><strong>Error processed</strong><small>Review error receipts</small></button><button class="quick" data-page="reports"><span>📊</span><strong>View reports</strong><small>Track your totals</small></button><button class="quick" data-page="chat"><span>💬</span><strong>Team chat</strong><small>Message your team</small></button>${isAdmin() ? '<button class="quick" data-page="workers"><span>👥</span><strong>Manage workers</strong><small>Review team accounts</small></button>' : ''}</div><div class="notice">${isAdmin() ? `You have <b>${pending.length}</b> submission(s) waiting for review.` : `Your approved submissions show in earnings. If a shift is rejected, check the reason and submit a correction.`}</div></div></div>`;
 }
 
 function filteredSubmissions() {
@@ -308,13 +312,13 @@ function filteredSubmissions() {
 function submissionForm() {
   const uid = currentUser.uid;
   const accts = data.accounts.filter(a => a.isActive !== false && (!a.assignedWorkerIds || a.assignedWorkerIds.includes(uid)));
-  return `<div class="panel" id="submissionFormPanel"><div class="panel-head"><div><h3>Submit completed shift</h3><p>Enter your shift details. Pay is calculated using current settings.</p></div></div><form id="submissionForm"><div class="form-grid"><div class="field"><label>ACCOUNT</label><select name="accountId" required>${accts.map(a => `<option value="${esc(a.id)}">${esc(a.name)} (${esc(a.code || '')})</option>`).join('') || '<option value="">No active accounts assigned</option>'}</select></div><div class="field"><label>SHIFT DATE</label><input name="shiftDate" type="date" value="${todayStr()}" max="${todayStr()}" required></div><div class="field"><label>SHIFT</label><select name="shiftType"><option>Morning</option><option>Afternoon</option><option>Night</option><option>Custom</option></select></div><div class="field"><label>RECEIPT COUNT</label><input name="receiptCount" type="number" min="0" step="1" placeholder="e.g. 125" required></div><div class="field"><label>START TIME</label><input name="startTime" type="time" value="06:00" required></div><div class="field"><label>END TIME</label><input name="endTime" type="time" value="14:00" required></div><div class="full right" style="justify-content:flex-end;margin:0 0 8px"><button class="btn btn-primary" type="submit" ${accts.length ? '' : 'disabled'}>Submit for review →</button></div></div></form></div>`;
+  return `<div class="panel" id="submissionFormPanel"><div class="panel-head"><div><h3>Submit completed shift</h3><p>Enter your shift details. Pay is calculated on processed receipts using current settings; error receipts are not paid.</p></div></div><form id="submissionForm"><div class="form-grid"><div class="field"><label>ACCOUNT</label><select name="accountId" required>${accts.map(a => `<option value="${esc(a.id)}">${esc(a.name)} (${esc(a.code || '')})</option>`).join('') || '<option value="">No active accounts assigned</option>'}</select></div><div class="field"><label>SHIFT DATE</label><input name="shiftDate" type="date" value="${todayStr()}" max="${todayStr()}" required></div><div class="field"><label>SHIFT</label><select name="shiftType"><option>Morning</option><option>Afternoon</option><option>Night</option><option>Custom</option></select></div><div class="field"><label>PROCESSED RECEIPTS</label><input name="receiptCount" type="number" min="0" step="1" placeholder="e.g. 125" required></div><div class="field"><label>ERROR COUNT</label><input name="errorCount" type="number" min="0" step="1" value="0" placeholder="e.g. 3" required></div><div class="field"><label>START TIME</label><input name="startTime" type="time" value="06:00" required></div><div class="field"><label>END TIME</label><input name="endTime" type="time" value="14:00" required></div><div class="full right" style="justify-content:flex-end;margin:0 0 8px"><button class="btn btn-primary" type="submit" ${accts.length ? '' : 'disabled'}>Submit for review →</button></div></div></form></div>`;
 }
 
 function receipts() {
   const rows = filteredSubmissions();
   const sel = v => filters.status === v ? 'selected' : '';
-  return `<div class="welcome"><div><h2>${isAdmin() ? 'Review submissions' : 'My shift submissions'}</h2><p>${isAdmin() ? 'Review worker activity and approve or reject shift records.' : 'Record a completed shift and track its status.'}</p></div>${!isAdmin() ? '<button class="btn btn-primary" id="newSubmission">＋ New submission</button>' : ''}</div>${!isAdmin() ? submissionForm() : ''}<div class="panel"><div class="toolbar"><input id="receiptSearch" placeholder="Search worker or account…" value="${esc(filters.q)}"><select id="statusFilter"><option value="all">All statuses</option><option ${sel('pending')}>pending</option><option ${sel('approved')}>approved</option><option ${sel('rejected')}>rejected</option></select><span class="spacer"></span><span class="muted" id="recordCount">${rows.length} record(s)</span></div><div class="table-wrap"><table><thead><tr><th>Worker / account</th><th>Shift date</th><th>Shift</th><th>Receipts</th><th>Net pay</th><th>Status</th><th>Action</th></tr></thead><tbody id="submissionRows">${submissionRows(rows)}</tbody></table></div></div>`;
+  return `<div class="welcome"><div><h2>${isAdmin() ? 'Review submissions' : 'My shift submissions'}</h2><p>${isAdmin() ? 'Review worker activity, edit processed/error counts, and approve or reject shift records.' : 'Record a completed shift and track its status.'}</p></div>${!isAdmin() ? '<button class="btn btn-primary" id="newSubmission">＋ New submission</button>' : ''}</div>${!isAdmin() ? submissionForm() : ''}<div class="panel"><div class="toolbar"><input id="receiptSearch" placeholder="Search worker or account…" value="${esc(filters.q)}"><select id="statusFilter"><option value="all">All statuses</option><option ${sel('pending')}>pending</option><option ${sel('approved')}>approved</option><option ${sel('rejected')}>rejected</option></select><span class="spacer"></span><span class="muted" id="recordCount">${rows.length} record(s)</span></div><div class="table-wrap"><table><thead><tr><th>Worker / account</th><th>Shift date</th><th>Shift</th><th>Processed</th><th>Errors</th><th>Net pay</th><th>Status</th><th>Action</th></tr></thead><tbody id="submissionRows">${submissionRows(rows)}</tbody></table></div></div>`;
 }
 
 function workerNamesFor(a) {
@@ -325,6 +329,23 @@ function workerNamesFor(a) {
 
 function accounts() {
   return `<div class="welcome"><div><h2>Accounts</h2><p>Abukai accounts and worker assignments.</p></div>${isAdmin() ? '<button class="btn btn-primary" id="addAccount">＋ Add account</button>' : ''}</div><div class="panel">${data.accounts.length ? `<div class="table-wrap"><table><thead><tr><th>Account</th><th>Code</th><th>Assigned workers</th><th>Status</th><th>Notes</th><th>Action</th></tr></thead><tbody>${data.accounts.map(a => `<tr><td><strong>${esc(a.name)}</strong></td><td>${esc(a.code || '—')}</td><td>${esc(workerNamesFor(a))}</td><td>${status(a.isActive === false ? 'inactive' : 'active')}</td><td>${esc(a.notes || '—')}</td><td>${isAdmin() ? `<div class="sh-row-actions"><button class="btn btn-secondary" data-assign="${esc(a.id)}">Assign workers</button><button class="small-btn" data-toggle-account="${esc(a.id)}">${a.isActive === false ? 'Activate' : 'Deactivate'}</button></div>` : '—'}</td></tr>`).join('')}</tbody></table></div>` : `<div class="empty">▦<b>No accounts available</b>Ask an administrator to create an account and assign workers.</div>`}</div>`;
+}
+
+/* ───────────────────────── Error processed ───────────────────────── */
+function errorsPage() {
+  const all = visibleSubmissions();
+  const rows = all.filter(s => num(s.errorCount) > 0).sort((a, b) => timeVal(b.createdAt) - timeVal(a.createdAt));
+  const totalErr = rows.reduce((n, s) => n + num(s.errorCount), 0);
+  const totalProcessed = all.reduce((n, s) => n + num(s.receiptCount), 0);
+  const overall = totalProcessed + totalErr > 0 ? (totalErr / (totalProcessed + totalErr) * 100).toFixed(1) : '0.0';
+
+  const body = rows.length ? rows.map(s => {
+    const p = num(s.receiptCount), er = num(s.errorCount);
+    const rt = p + er > 0 ? (er / (p + er) * 100).toFixed(1) : '0.0';
+    return `<tr><td><div class="person"><div class="avatar">${esc(initials(s.workerName))}</div><div><strong>${esc(s.workerName || 'Worker')}</strong><small>${esc(s.accountName || 'No account')}</small></div></div></td><td>${esc(date(s.shiftDate))}</td><td>${esc(s.shiftType || '—')}</td><td>${p.toLocaleString()}</td><td style="color:#c0392b;font-weight:600">${er.toLocaleString()}</td><td>${rt}%</td><td>${esc(s.errorNote || '—')}</td><td>${status(s.status)}</td><td><div class="sh-row-actions"><button class="small-btn" data-view="${esc(s.id)}">View</button>${isAdmin() ? `<button class="small-btn" data-edit-counts="${esc(s.id)}">Edit</button>` : ''}</div></td></tr>`;
+  }).join('') : `<tr><td colspan="9"><div class="empty">✓<b>No errors recorded</b>Submissions with an error count above zero will appear here.</div></td></tr>`;
+
+  return `<div class="welcome"><div><h2>${isAdmin() ? 'Error processed' : 'My error processed'}</h2><p>${isAdmin() ? 'Shifts with error receipts. Use Edit to correct processed or error counts.' : 'Shifts where you recorded error receipts.'}</p></div></div><div class="stats">${stat('Total errors', totalErr.toLocaleString(), 'Across listed submissions', '⚠')}${stat('Shifts with errors', rows.length, `of ${all.length} submission(s)`, '▤')}${stat('Error rate', overall + '%', 'Errors ÷ (processed + errors)', '%')}${stat('Processed receipts', totalProcessed.toLocaleString(), 'Paid receipts', '✓')}</div><div class="panel"><div class="table-wrap"><table><thead><tr><th>Worker / account</th><th>Shift date</th><th>Shift</th><th>Processed</th><th>Errors</th><th>Error rate</th><th>Note</th><th>Status</th><th>Action</th></tr></thead><tbody>${body}</tbody></table></div></div>`;
 }
 
 function reports() {
@@ -396,7 +417,7 @@ function renderPage() {
   pendingRender = false;
   if (!allowedPages().includes(page)) page = 'dashboard';
   $('#app').innerHTML = shell();
-  $('#pageContent').innerHTML = ({ dashboard, receipts, accounts, reports, chat, workers, settings })[page]();
+  $('#pageContent').innerHTML = ({ dashboard, receipts, errors: errorsPage, accounts, reports, chat, workers, settings })[page]();
   wireShell();
   wirePage();
   if (detailId) { const s = visibleSubmissions().find(x => x.id === detailId); if (s) viewSubmission(s.id, false); else detailId = null; }
@@ -423,6 +444,7 @@ function wireShell() {
     let el;
     if ((el = t.closest('[data-page]'))) return go(el.dataset.page);
     if ((el = t.closest('[data-view]'))) return viewSubmission(el.dataset.view);
+    if ((el = t.closest('[data-edit-counts]'))) return editCounts(el.dataset.editCounts);
     if ((el = t.closest('[data-worker]'))) return viewWorker(el.dataset.worker);
     if ((el = t.closest('[data-assign]'))) return assignWorker(el.dataset.assign);
     if ((el = t.closest('[data-toggle-account]'))) return toggleAccount(el.dataset.toggleAccount);
@@ -467,19 +489,24 @@ async function submitShift(e) {
   const shiftDate = f.get('shiftDate');
   if (shiftDate > todayStr()) return toast('Shift date cannot be in the future.');
   const count = parseInt(f.get('receiptCount'), 10);
-  if (!Number.isFinite(count) || count < 0) return toast('Enter a valid receipt count.');
+  if (!Number.isFinite(count) || count < 0) return toast('Enter a valid processed receipt count.');
+  const errCount = parseInt(f.get('errorCount') || '0', 10);
+  if (!Number.isFinite(errCount) || errCount < 0) return toast('Enter a valid error count.');
   const shiftType = f.get('shiftType');
 
   const dup = visibleSubmissions().find(s => s.accountId === account.id && s.shiftDate === shiftDate && s.shiftType === shiftType && s.status !== 'rejected' && s.workerId === currentUser.uid);
   if (dup && !confirm('You already submitted a ' + shiftType + ' shift for this account on this date. Submit another anyway?')) return;
 
-  const gross = count * rate();
-  const ded = Math.round(gross * dedPct() / 100);
+  const rateCents = rate(), pct = dedPct();
+  const gross = Math.round(count * rateCents);
+  const ded = Math.round(gross * pct / 100);
   const item = {
     workerId: currentUser.uid, workerName: profile.displayName, workerEmail: currentUser.email,
     accountId: account.id, accountName: account.name,
     shiftDate, shiftType, startTime: f.get('startTime'), endTime: f.get('endTime'),
-    receiptCount: count, status: 'pending', rejectionReason: '',
+    receiptCount: count, errorCount: errCount, errorNote: '',
+    status: 'pending', rejectionReason: '',
+    rateCents, deductionPercent: pct,
     grossCents: gross, deductionCents: ded, netCents: gross - ded
   };
 
@@ -506,13 +533,17 @@ function viewSubmission(id, scroll = true) {
   const s = visibleSubmissions().find(x => x.id === id);
   if (!s) return;
   detailId = id;
-  const actions = isAdmin() && s.status === 'pending'
-    ? `<button class="btn btn-primary" id="approveOne">Approve</button><button class="btn btn-danger" id="rejectOne">Reject</button>` : '';
+  const processed = num(s.receiptCount), errs = num(s.errorCount);
+  const errRate = processed + errs > 0 ? (errs / (processed + errs) * 100).toFixed(1) + '%' : '0%';
+  const actions = (isAdmin() ? `<button class="btn btn-secondary" id="editCountsBtn">Edit counts</button>` : '') +
+    (isAdmin() && s.status === 'pending' ? `<button class="btn btn-primary" id="approveOne">Approve</button><button class="btn btn-danger" id="rejectOne">Reject</button>` : '');
   const reason = s.rejectionReason ? `<div class="notice warn">Rejection reason: ${esc(s.rejectionReason)}</div>` : '';
-  const html = `<div class="panel"><div class="panel-head"><div><h3>Submission details</h3><p>${esc(s.id)}</p></div><button class="btn btn-ghost" id="closeDetails">Close</button></div><div class="form-grid"><div><p class="muted">Worker</p><b>${esc(s.workerName)}</b></div><div><p class="muted">Status</p>${status(s.status)}</div><div><p class="muted">Account</p><b>${esc(s.accountName)}</b></div><div><p class="muted">Shift date</p><b>${esc(date(s.shiftDate))}</b></div><div><p class="muted">Shift hours</p><b>${esc(s.startTime)} – ${esc(s.endTime)}</b></div><div><p class="muted">Receipts</p><b>${num(s.receiptCount)}</b></div><div><p class="muted">Gross pay</p><b>${money(s.grossCents)}</b></div><div><p class="muted">Deductions</p><b>${money(s.deductionCents)}</b></div><div><p class="muted">Net pay</p><b>${money(s.netCents)}</b></div></div>${reason}<div class="right" style="justify-content:flex-end;margin-top:20px;gap:8px">${actions}</div></div>`;
+  const errNote = s.errorNote ? `<div class="notice">Error note: ${esc(s.errorNote)}</div>` : '';
+  const html = `<div class="panel"><div class="panel-head"><div><h3>Submission details</h3><p>${esc(s.id)}</p></div><button class="btn btn-ghost" id="closeDetails">Close</button></div><div class="form-grid"><div><p class="muted">Worker</p><b>${esc(s.workerName)}</b></div><div><p class="muted">Status</p>${status(s.status)}</div><div><p class="muted">Account</p><b>${esc(s.accountName)}</b></div><div><p class="muted">Shift date</p><b>${esc(date(s.shiftDate))}</b></div><div><p class="muted">Shift hours</p><b>${esc(s.startTime)} – ${esc(s.endTime)}</b></div><div><p class="muted">Processed receipts</p><b>${processed.toLocaleString()}</b></div><div><p class="muted">Error count</p><b${errs > 0 ? ' style="color:#c0392b"' : ''}>${errs.toLocaleString()}</b></div><div><p class="muted">Error rate</p><b>${errRate}</b></div><div><p class="muted">Gross pay</p><b>${money(s.grossCents)}</b></div><div><p class="muted">Deductions</p><b>${money(s.deductionCents)}</b></div><div><p class="muted">Net pay</p><b>${money(s.netCents)}</b></div></div>${errNote}${reason}<div class="right" style="justify-content:flex-end;margin-top:20px;gap:8px">${actions}</div></div>`;
   $('#detailsPanel')?.remove();
   $('#pageContent').insertAdjacentHTML('afterbegin', `<div id="detailsPanel">${html}</div>`);
   $('#closeDetails').onclick = () => { detailId = null; $('#detailsPanel')?.remove(); };
+  $('#editCountsBtn')?.addEventListener('click', () => editCounts(s.id));
   $('#approveOne')?.addEventListener('click', e => { e.currentTarget.disabled = true; reviewSubmission(s, 'approved'); });
   $('#rejectOne')?.addEventListener('click', () => {
     openModal('Reject submission',
@@ -549,6 +580,51 @@ async function reviewSubmission(s, statusValue, reason = '') {
     toast('Could not update submission. Check Firestore rules.');
     throw e;
   }
+}
+
+/* ADMIN: edit processed / error counts and recalculate pay */
+function editCounts(id) {
+  if (!isAdmin()) return;
+  const s = data.submissions.find(x => x.id === id);
+  if (!s) return toast('Submission not found.');
+
+  openModal('Edit receipt counts',
+    `<p class="muted" style="margin-top:0"><b>${esc(s.workerName || 'Worker')}</b> · ${esc(s.accountName || '')} · ${esc(date(s.shiftDate))} · ${esc(s.shiftType || '')}</p>
+     <div class="field"><label>PROCESSED RECEIPTS</label><input name="receiptCount" type="number" min="0" step="1" value="${num(s.receiptCount)}" required></div>
+     <div class="field"><label>ERROR COUNT</label><input name="errorCount" type="number" min="0" step="1" value="${num(s.errorCount)}" required></div>
+     <div class="field"><label>ERROR NOTE (OPTIONAL)</label><input name="errorNote" maxlength="200" value="${esc(s.errorNote || '')}" placeholder="e.g. Blurry images, wrong amounts"></div>
+     <div class="notice">Pay is recalculated from the processed count using the rate saved on this submission. Error receipts are not paid.</div>`,
+    async fd => {
+      const processed = parseInt(fd.get('receiptCount'), 10);
+      const errs = parseInt(fd.get('errorCount'), 10);
+      if (!Number.isFinite(processed) || processed < 0) { toast('Enter a valid processed count.'); return false; }
+      if (!Number.isFinite(errs) || errs < 0) { toast('Enter a valid error count.'); return false; }
+
+      // Use the rate/deduction that applied to this submission, not today's settings.
+      const oldCount = num(s.receiptCount), oldGross = num(s.grossCents);
+      const rateCents = s.rateCents != null ? num(s.rateCents) : (oldCount > 0 ? oldGross / oldCount : rate());
+      const pct = s.deductionPercent != null ? num(s.deductionPercent) : (oldGross > 0 ? num(s.deductionCents) / oldGross * 100 : dedPct());
+      const gross = Math.round(processed * rateCents);
+      const ded = Math.round(gross * pct / 100);
+
+      const changes = {
+        receiptCount: processed, errorCount: errs,
+        errorNote: String(fd.get('errorNote') || '').trim(),
+        rateCents, deductionPercent: pct,
+        grossCents: gross, deductionCents: ded, netCents: gross - ded
+      };
+
+      if (!configured) {
+        Object.assign(s, changes, { updatedAt: new Date() });
+        toast('Demo counts updated (not saved online).');
+        renderPage();
+        return;
+      }
+      await fb.updateDoc(fb.doc(db, 'submissions', s.id), {
+        ...changes, editedBy: currentUser.uid, editedAt: fb.serverTimestamp(), updatedAt: fb.serverTimestamp()
+      });
+      toast('Counts updated and pay recalculated.');
+    }, 'Save changes');
 }
 
 /* ───────────────────────── Accounts ───────────────────────── */
@@ -786,8 +862,8 @@ function exportCsv() {
     return '"' + s.replace(/"/g, '""') + '"';
   };
   const peso = c => (num(c) / 100).toFixed(2);
-  const head = ['Worker', 'Account', 'Shift date', 'Shift', 'Start', 'End', 'Receipts', 'Status', 'Gross (PHP)', 'Deductions (PHP)', 'Net (PHP)'];
-  const lines = rows.map(r => [r.workerName, r.accountName, r.shiftDate, r.shiftType, r.startTime, r.endTime, r.receiptCount, r.status, peso(r.grossCents), peso(r.deductionCents), peso(r.netCents)].map(cell).join(','));
+  const head = ['Worker', 'Account', 'Shift date', 'Shift', 'Start', 'End', 'Processed', 'Errors', 'Error note', 'Status', 'Gross (PHP)', 'Deductions (PHP)', 'Net (PHP)'];
+  const lines = rows.map(r => [r.workerName, r.accountName, r.shiftDate, r.shiftType, r.startTime, r.endTime, r.receiptCount, num(r.errorCount), r.errorNote || '', r.status, peso(r.grossCents), peso(r.deductionCents), peso(r.netCents)].map(cell).join(','));
   const csv = '\ufeff' + [head.map(cell).join(','), ...lines].join('\r\n'); // BOM so Excel reads UTF-8
   const url = URL.createObjectURL(new Blob([csv], { type: 'text/csv;charset=utf-8;' }));
   const a = document.createElement('a');
