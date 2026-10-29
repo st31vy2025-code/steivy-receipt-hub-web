@@ -1,4 +1,6 @@
-// Steivy Receipt Hub — app.js (Create worker + Delete worker + Error Processed + Admin edit counts) — FIXED
+// Steivy Receipt Hub — app.js
+// Features: Create/Edit/Delete worker, Add/Edit/Delete account, "Are you sure?" confirmations,
+// Team-chat popups + live chat feed, Top performers / Top errors leaderboards, Error Processed, Admin edit counts.
 // Load with: <script type="module" src="app.js"></script>
 
 let firebaseConfig = {};
@@ -19,9 +21,12 @@ let unsubs = [];
 let authToken = 0;
 let pendingRender = false;
 let detailId = null;
+let chatReady = false, unreadChat = 0;
+let lbPeriod = 'month', lbError = false, lbTimer = null;
+let loaded = {};
 const filters = { q: '', status: 'all' };
 const DEFAULT_SETTINGS = { grossRateCents: 100, deductionPercent: 10 };
-const data = { submissions: [], accounts: [], users: [], messages: [], presence: [], announcements: [], annRead: [], settings: { ...DEFAULT_SETTINGS } };
+const data = { submissions: [], accounts: [], users: [], messages: [], presence: [], announcements: [], annRead: [], leaderboard: [], settings: { ...DEFAULT_SETTINGS } };
 
 /* ───────────────────────── Helpers ───────────────────────── */
 const $ = s => document.querySelector(s);
@@ -31,6 +36,7 @@ const initials = n => (n || 'U').trim().split(/\s+/).slice(0, 2).map(x => x[0] |
 const pesoFmt = new Intl.NumberFormat('en-PH', { style: 'currency', currency: 'PHP', maximumFractionDigits: 2 });
 const money = cents => pesoFmt.format((Number(cents) || 0) / 100);
 const num = v => Number(v) || 0;
+const ordinal = n => { const s = ['th', 'st', 'nd', 'rd'], v = n % 100; return n + (s[(v - 20) % 10] || s[v] || s[0]); };
 
 function toDate(d) {
   if (!d) return null;
@@ -79,7 +85,16 @@ function unlisten() { unsubs.forEach(fn => { try { fn(); } catch {} }); unsubs =
 const isAdmin = () => profile?.role === 'admin';
 const visibleSubmissions = () => isAdmin() ? data.submissions : data.submissions.filter(s => s.workerId === currentUser?.uid);
 
-/* Small extra styles (modal, hidden, disabled) so no CSS file change is needed */
+// Runs many Firestore writes in batches of 400 (Firestore limit is 500 per batch).
+async function commitInChunks(ops) {
+  for (let i = 0; i < ops.length; i += 400) {
+    const b = fb.writeBatch(db);
+    ops.slice(i, i + 400).forEach(f => f(b));
+    await b.commit();
+  }
+}
+
+/* Extra styles so no CSS file change is needed */
 const extraStyle = document.createElement('style');
 extraStyle.textContent = `
 .hidden{display:none!important}
@@ -106,7 +121,58 @@ button:disabled{opacity:.6;cursor:not-allowed}
 @media (prefers-reduced-motion:reduce){.online-track{animation:none}.online-marquee{overflow-x:auto}}
 #annPopup{z-index:1100}
 .ann-badge{display:inline-block;background:#fff4d6;color:#8a5a00;border-radius:999px;padding:4px 12px;font-size:12px;font-weight:700;margin-bottom:10px}
-.ann-body{white-space:pre-wrap;line-height:1.55;margin:10px 0 14px;word-break:break-word}`;
+.ann-body{white-space:pre-wrap;line-height:1.55;margin:10px 0 14px;word-break:break-word}
+/* confirm dialog */
+#confirmBox{z-index:1300}
+.sh-confirm{max-width:400px;text-align:center}
+.sh-confirm p{margin:0 0 4px;line-height:1.5}
+.sh-confirm .sh-modal-actions{justify-content:center}
+.sh-confirm-ico{width:56px;height:56px;border-radius:50%;background:#e8f1ff;display:flex;align-items:center;justify-content:center;font-size:26px;margin:0 auto 12px}
+.sh-confirm-ico.danger{background:#fdecea}
+/* chat popups + live feed */
+#chatPopups{position:fixed;top:16px;right:16px;display:flex;flex-direction:column;gap:10px;z-index:1200;width:min(340px,calc(100vw - 32px))}
+.chat-pop{display:flex;gap:12px;align-items:flex-start;background:#fff;color:#1a2420;border-radius:14px;padding:12px 14px;box-shadow:0 12px 34px rgba(0,0,0,.22);border-left:5px solid #2ecc71;cursor:pointer;animation:popIn .35s ease}
+.chat-pop-body{display:flex;flex-direction:column;gap:3px;min-width:0;flex:1}
+.chat-pop-body span{font-size:14px;line-height:1.4;word-break:break-word;white-space:pre-wrap}
+.chat-pop-body small{color:#8a958e;font-size:11px}
+.chat-pop-x{border:0;background:transparent;font-size:20px;line-height:1;cursor:pointer;color:#8a958e}
+@keyframes popIn{from{opacity:0;transform:translateX(40px)}to{opacity:1;transform:none}}
+@keyframes bubbleIn{from{opacity:0;transform:translateY(14px)}to{opacity:1;transform:none}}
+.chat-messages .bubble:last-child{animation:bubbleIn .3s ease}
+.nav-badge{margin-left:auto;background:#e74c3c;color:#fff;border-radius:999px;font-size:11px;font-weight:700;padding:2px 7px;min-width:18px;text-align:center}
+.live-chat{max-height:280px;overflow-y:auto;display:flex;flex-direction:column;gap:10px;scroll-behavior:smooth;padding-right:4px}
+.live-msg{display:flex;gap:10px;align-items:flex-start}
+.live-msg.fresh{animation:bubbleIn .45s ease}
+.live-body{background:#f4f7f5;border-radius:12px;padding:8px 12px;display:flex;flex-direction:column;gap:2px;min-width:0;max-width:100%}
+.live-msg.mine .live-body{background:#e6f6ec}
+.live-body span{font-size:14px;line-height:1.4;word-break:break-word;white-space:pre-wrap}
+.live-body small{color:#8a958e;font-size:11px}
+/* leaderboard + standing */
+.perf{margin-bottom:16px}
+.lb-tabs{display:flex;gap:6px;flex-wrap:wrap}
+.lb-tab{border:1px solid #d5ddd8;background:#fff;color:#1a2420;border-radius:999px;padding:6px 14px;font-size:12px;font-weight:600;cursor:pointer}
+.lb-tab.active{background:#1e8449;border-color:#1e8449;color:#fff}
+.lb-row{display:flex;gap:12px;align-items:center;padding:10px 0;border-top:1px solid var(--line,#eee)}
+.lb-rank{width:34px;text-align:center;font-size:22px;font-weight:700}
+.lb-main{flex:1;min-width:0}
+.lb-top{display:flex;justify-content:space-between;gap:8px;margin-bottom:6px}
+.lb-val{font-weight:700;color:#1e8449;white-space:nowrap}
+.lb-val.err{color:#c0392b}
+.lb-bar{height:8px;background:#edf1ee;border-radius:999px;overflow:hidden;margin-bottom:4px}
+.lb-fill{height:100%;background:linear-gradient(90deg,#2ecc71,#1e8449);border-radius:999px}
+.lb-fill.err{background:linear-gradient(90deg,#f5a623,#c0392b)}
+.standing-grid{display:grid;grid-template-columns:repeat(auto-fit,minmax(280px,1fr));gap:14px}
+.standing{display:flex;gap:14px;align-items:center;border-radius:16px;padding:18px;border:1px solid #e3e9e5;background:#fff}
+.standing-ico{font-size:40px;line-height:1}
+.standing b{display:block;font-size:16px;margin-bottom:4px}
+.standing p{margin:0;font-size:13px;line-height:1.45;color:#52605a}
+.standing.gold{background:linear-gradient(135deg,#fff8dc,#ffeaa0);border-color:#f0c93a}
+.standing.silver{background:linear-gradient(135deg,#f6f7f9,#dde2e8);border-color:#b8c0ca}
+.standing.bronze{background:linear-gradient(135deg,#fff1e4,#f1c9a0);border-color:#d9a06a}
+.standing.danger{background:#fdecea;border-color:#f1b0a8}
+.standing.warn{background:#fff4d6;border-color:#f0d487}
+.standing.good{background:#e6f6ec;border-color:#a8dcb9}
+.standing.info{background:#f1f8f4}`;
 document.head.appendChild(extraStyle);
 
 /* ───────────────────────── Presence (who is online) ───────────────────────── */
@@ -244,7 +310,7 @@ function addAnnouncement() {
 
 async function removeAnnouncement(id) {
   if (!isAdmin()) return;
-  if (!confirm('Remove this announcement? It will disappear for everyone.')) return;
+  if (!await confirmBox('Remove announcement?', 'Are you sure you want to remove this announcement? It will disappear for everyone.', 'Yes, remove', true)) return;
   if (!configured) { data.announcements = data.announcements.filter(a => a.id !== id); renderPage(); return; }
   try {
     await fb.deleteDoc(fb.doc(db, 'announcements', id));
@@ -263,7 +329,7 @@ function monthStats(rows) {
   return `<div class="stats">${stat('Last month processed', p.r.toLocaleString(), esc(pre + monthLabel(prev)), '◀')}${stat('Last month errors', p.e.toLocaleString(), esc(pre + monthLabel(prev)), '⚠')}${stat('This month processed', c.r.toLocaleString(), esc(pre + monthLabel(cur)), '▧')}${stat('This month errors', c.e.toLocaleString(), esc(pre + monthLabel(cur)), '⚠')}</div>`;
 }
 
-/* ───────────────────────── Modal ───────────────────────── */
+/* ───────────────────────── Modal + Confirm ───────────────────────── */
 function closeModal() { $('#shModal')?.remove(); }
 document.addEventListener('keydown', e => { if (e.key === 'Escape') closeModal(); });
 
@@ -293,6 +359,25 @@ function openModal(title, bodyHtml, onSubmit, submitLabel = 'Save') {
     }
   });
   form.querySelector('input:not([type=checkbox]),select,textarea')?.focus();
+}
+
+// "Are you sure?" dialog. Resolves true (confirmed) or false (cancelled).
+function confirmBox(title, message, okLabel = 'Yes, continue', danger = false) {
+  return new Promise(resolve => {
+    $('#confirmBox')?.remove();
+    const wrap = document.createElement('div');
+    wrap.className = 'sh-modal';
+    wrap.id = 'confirmBox';
+    wrap.innerHTML = `<div class="sh-modal-card sh-confirm" role="alertdialog" aria-modal="true"><div class="sh-confirm-ico ${danger ? 'danger' : ''}">${danger ? '🗑️' : '❓'}</div><h3>${esc(title)}</h3><p class="muted">${esc(message)}</p><div class="sh-modal-actions"><button type="button" class="btn btn-ghost" data-no>Cancel</button><button type="button" class="btn ${danger ? 'btn-danger' : 'btn-primary'}" data-yes>${esc(okLabel)}</button></div></div>`;
+    document.body.appendChild(wrap);
+    const onKey = e => { if (e.key === 'Escape') { e.stopPropagation(); done(false); } };
+    const done = v => { document.removeEventListener('keydown', onKey, true); wrap.remove(); resolve(v); };
+    document.addEventListener('keydown', onKey, true);
+    wrap.addEventListener('mousedown', e => { if (e.target === wrap) done(false); });
+    wrap.querySelector('[data-no]').addEventListener('click', () => done(false));
+    wrap.querySelector('[data-yes]').addEventListener('click', () => done(true));
+    wrap.querySelector('[data-yes]').focus();
+  });
 }
 
 /* ───────────────────────── Firebase ───────────────────────── */
@@ -326,7 +411,11 @@ function isEditing() {
 // Snapshot-driven refresh: never wipe what the user is typing.
 function requestRender(kind) {
   if (!currentUser || !profile) return;
-  if (kind === 'chat') { if (page === 'chat') updateChat(); return; }
+  if (kind === 'chat') {
+    if (page === 'chat') updateChat();
+    if (page === 'dashboard') updateLiveFeed();
+    return;
+  }
   if (isEditing()) { pendingRender = true; return; }
   renderPage();
 }
@@ -343,6 +432,8 @@ function listen(path, key, queryFn) {
   if (queryFn) ref = queryFn(ref, { query, where, orderBy, limit });
   const stop = onSnapshot(ref, s => {
     data[key] = s.docs.map(d => ({ id: d.id, ...d.data() }));
+    loaded[key] = true;
+    if (key === 'submissions' || key === 'users') scheduleLbSync();
     requestRender();
   }, err => {
     console.error(path, err);
@@ -360,8 +451,9 @@ async function loadData() {
   // Reset so nothing from a previous login can leak into this session.
   data.announcements = []; data.annRead = [];
   data.submissions = []; data.accounts = []; data.users = [];
-  data.messages = []; data.presence = [];
+  data.messages = []; data.presence = []; data.leaderboard = [];
   data.settings = { ...DEFAULT_SETTINGS };
+  loaded = {}; chatReady = false; unreadChat = 0; lbError = false;
 
   if (isAdmin()) {
     listen('accounts', 'accounts');
@@ -398,11 +490,207 @@ async function loadData() {
     updateOnline();
   }));
 
+  // Leaderboard totals (one small doc per worker per month) so workers can see their rank without reading other workers' submissions.
+  unsubs.push(onSnapshot(collection(db, 'leaderboard'), s => {
+    lbError = false;
+    data.leaderboard = s.docs.map(d => ({ id: d.id, ...d.data() }));
+    loaded.leaderboard = true;
+    scheduleLbSync();
+    requestRender();
+  }, err => {
+    console.warn('leaderboard listener (check Firestore rules for /leaderboard)', err);
+    lbError = true;
+    requestRender();
+  }));
+
   const msgQuery = query(collection(db, 'conversations', 'company_group', 'messages'), orderBy('createdAt', 'desc'), limit(150));
   unsubs.push(onSnapshot(msgQuery, s => {
+    // Popup for brand-new messages from other people (skip the very first load)
+    if (chatReady) {
+      s.docChanges().forEach(ch => {
+        if (ch.type !== 'added' || ch.doc.metadata.hasPendingWrites) return;
+        const m = { id: ch.doc.id, ...ch.doc.data() };
+        if (m.senderId !== currentUser?.uid) onIncomingMessage(m);
+      });
+    }
+    chatReady = true;
     data.messages = s.docs.map(d => ({ id: d.id, ...d.data() })).sort((a, b) => timeVal(a.createdAt) - timeVal(b.createdAt));
     requestRender('chat');
   }, err => { console.error('messages', err); toast('Could not load chat.'); }));
+}
+
+/* ───────────────────────── Leaderboard (top performers / top errors) ───────────────────────── */
+const inPeriod = (m, p) => p === 'all' ? /^\d{4}-\d{2}$/.test(m) : p === 'prev' ? m === monthKeyOf(-1) : m === monthKeyOf(0);
+const periodLabel = p => p === 'all' ? 'All time' : monthLabel(monthKeyOf(p === 'prev' ? -1 : 0));
+
+function boardRows(period) {
+  const map = new Map();
+  const add = (id, name, r, e, sh) => {
+    const g = map.get(id) || { id, name: name || 'Worker', receipts: 0, errors: 0, shifts: 0 };
+    g.receipts += r; g.errors += e; g.shifts += sh;
+    if (name) g.name = name;
+    map.set(id, g);
+  };
+  const fromSubs = list => list.forEach(s => {
+    if (s.status === 'rejected' || !s.workerId) return;
+    if (!inPeriod(String(s.shiftDate || '').slice(0, 7), period)) return;
+    add(s.workerId, s.workerName, num(s.receiptCount), num(s.errorCount), 1);
+  });
+  if (isAdmin() || !configured) {
+    fromSubs(data.submissions);
+    const valid = new Set(data.users.filter(u => u.role !== 'admin').map(u => u.id)); // deleted workers are not ranked
+    return [...map.values()].filter(r => valid.has(r.id));
+  }
+  data.leaderboard.forEach(d => {
+    if (d.workerId === currentUser.uid || !inPeriod(d.month, period)) return;
+    add(d.workerId, d.workerName, num(d.receipts), num(d.errors), num(d.shifts));
+  });
+  fromSubs(data.submissions.filter(s => s.workerId === currentUser.uid)); // my own numbers always come from live data
+  return [...map.values()];
+}
+
+function rankings(period) {
+  const rows = boardRows(period).filter(r => r.receipts > 0 || r.errors > 0);
+  const byOut = [...rows].sort((a, b) => b.receipts - a.receipts || a.errors - b.errors || a.name.localeCompare(b.name));
+  const byErr = rows.filter(r => r.errors > 0).sort((a, b) => b.errors - a.errors || b.receipts - a.receipts || a.name.localeCompare(b.name));
+  return { rows, byOut, byErr };
+}
+
+// Keeps /leaderboard in sync. Admin writes totals for every worker; a worker writes only their own.
+function scheduleLbSync() { clearTimeout(lbTimer); lbTimer = setTimeout(syncLeaderboard, 1500); }
+async function syncLeaderboard() {
+  if (!configured || !db || !currentUser || !loaded.leaderboard || !loaded.submissions) return;
+  if (isAdmin() && !loaded.users) return;
+  const uid = currentUser.uid, admin = isAdmin();
+  const validIds = admin ? new Set(data.users.filter(u => u.role !== 'admin').map(u => u.id)) : null;
+  const mine = (admin ? data.submissions : data.submissions.filter(s => s.workerId === uid)).filter(s => s.workerId && (!admin || validIds.has(s.workerId)));
+  const want = new Map();
+  mine.forEach(s => {
+    if (s.status === 'rejected') return;
+    const m = String(s.shiftDate || '').slice(0, 7);
+    if (!/^\d{4}-\d{2}$/.test(m)) return;
+    const id = `${s.workerId}_${m}`;
+    const g = want.get(id) || { workerId: s.workerId, workerName: s.workerName || 'Worker', month: m, receipts: 0, errors: 0, shifts: 0 };
+    g.receipts += num(s.receiptCount); g.errors += num(s.errorCount); g.shifts += 1;
+    want.set(id, g);
+  });
+  // Anything stored before that no longer has submissions (edited, rejected, deleted) is reset to zero.
+  data.leaderboard.forEach(d => {
+    if (!(admin ? validIds.has(d.workerId) : d.workerId === uid) || want.has(d.id)) return;
+    if (num(d.receipts) || num(d.errors) || num(d.shifts)) want.set(d.id, { workerId: d.workerId, workerName: d.workerName || 'Worker', month: d.month, receipts: 0, errors: 0, shifts: 0 });
+  });
+  const old = new Map(data.leaderboard.map(d => [d.id, d]));
+  const writes = [...want].filter(([id, g]) => {
+    const o = old.get(id);
+    return !o || num(o.receipts) !== g.receipts || num(o.errors) !== g.errors || num(o.shifts) !== g.shifts || (o.workerName || '') !== g.workerName;
+  });
+  if (!writes.length) return;
+  try {
+    await commitInChunks(writes.map(([id, g]) => b => b.set(fb.doc(db, 'leaderboard', id), { ...g, updatedAt: fb.serverTimestamp() }, { merge: true })));
+  } catch (e) { console.warn('leaderboard write failed (check Firestore rules for /leaderboard)', e); }
+}
+
+const medal = i => ['🥇', '🥈', '🥉'][i] || `#${i + 1}`;
+
+function top5Panel(title, sub, list, kind) {
+  const val = r => kind === 'out' ? r.receipts : r.errors;
+  const max = Math.max(1, ...list.slice(0, 5).map(val));
+  const rows = list.slice(0, 5).map((r, i) => `<div class="lb-row"><span class="lb-rank">${medal(i)}</span><div class="avatar">${esc(initials(r.name))}</div><div class="lb-main"><div class="lb-top"><b>${esc(r.name)}</b><span class="lb-val ${kind === 'err' ? 'err' : ''}">${val(r).toLocaleString()} ${kind === 'out' ? 'receipts' : 'error(s)'}</span></div><div class="lb-bar"><div class="lb-fill ${kind === 'err' ? 'err' : ''}" style="width:${(val(r) / max * 100).toFixed(1)}%"></div></div><small class="muted">${kind === 'out' ? num(r.errors).toLocaleString() + ' error(s) · ' : num(r.receipts).toLocaleString() + ' processed · '}${r.shifts} shift(s)</small></div></div>`).join('');
+  return `<div class="panel"><div class="panel-head"><div><h3>${title}</h3><p>${sub}</p></div></div>${rows || `<div class="empty">${kind === 'out' ? '🏆' : '✓'}<b>${kind === 'out' ? 'No output recorded yet' : 'No errors recorded'}</b>${kind === 'out' ? 'Rankings appear after shifts are submitted.' : 'Great — nobody has errors in this period.'}</div>`}</div>`;
+}
+
+function workerStandings(rk, period) {
+  const label = periodLabel(period);
+  const uid = currentUser.uid;
+  const me = rk.rows.find(r => r.id === uid);
+  if (!me) return [{ cls: 'info', icon: '📝', title: 'No submissions yet', text: `Submit a shift for ${label} to see your ranking.` }];
+  const n = rk.byOut.length;
+  const rank = rk.byOut.findIndex(r => r.id === uid) + 1;
+  const top = rk.byOut[0];
+  const gap = top.receipts - me.receipts;
+  let out;
+  if (rank === 1) out = { cls: 'gold', icon: '🏆', title: 'Congratulations! You are the TOP PERFORMER', text: `You processed the most receipts (${me.receipts.toLocaleString()}) in ${label}. Outstanding work — keep it up!` };
+  else if (rank === 2) out = { cls: 'silver', icon: '🥈', title: 'You are 2nd place in output', text: `${me.receipts.toLocaleString()} receipts processed — only ${gap.toLocaleString()} behind the top performer. You are almost there!` };
+  else if (rank === 3) out = { cls: 'bronze', icon: '🥉', title: 'You are 3rd place in output', text: `${me.receipts.toLocaleString()} receipts processed — ${gap.toLocaleString()} behind the top performer. Great effort, keep pushing!` };
+  else if (rank === n && n > 1) out = { cls: 'warn', icon: '📉', title: 'You have the lowest output', text: `${me.receipts.toLocaleString()} receipts processed in ${label}. Let's aim higher on your next shift — you can do it!` };
+  else out = { cls: 'info', icon: '📊', title: `You are ${ordinal(rank)} of ${n} in output`, text: `${me.receipts.toLocaleString()} receipts processed — ${gap.toLocaleString()} behind the top performer.` };
+
+  const er = rk.byErr.findIndex(r => r.id === uid) + 1;
+  let err;
+  if (me.errors === 0) err = { cls: 'good', icon: '✅', title: 'Zero errors — excellent accuracy!', text: `No error receipts recorded in ${label}. Keep up the clean work!` };
+  else if (er === 1) err = { cls: 'danger', icon: '⚠️', title: 'You have the MOST errors', text: `${me.errors.toLocaleString()} error(s) in ${label}, the highest in the team. Please double-check each receipt before submitting.` };
+  else if (er === 2) err = { cls: 'danger', icon: '⚠️', title: 'You have the 2nd highest errors', text: `${me.errors.toLocaleString()} error(s) in ${label}. Slow down a little and review your work to bring this down.` };
+  else if (er === 3) err = { cls: 'warn', icon: '⚠️', title: 'You have the 3rd highest errors', text: `${me.errors.toLocaleString()} error(s) in ${label}. A little more checking will bring this down.` };
+  else err = { cls: 'info', icon: '🔎', title: `${me.errors.toLocaleString()} error(s) recorded`, text: `You are outside the top 3 for errors in ${label}. Keep your accuracy improving!` };
+  return [out, err];
+}
+
+function performanceSection() {
+  const rk = rankings(lbPeriod);
+  const label = periodLabel(lbPeriod);
+  const tabs = `<div class="lb-tabs">${[['month', 'This month'], ['prev', 'Last month'], ['all', 'All time']].map(([k, l]) => `<button type="button" class="lb-tab ${lbPeriod === k ? 'active' : ''}" data-lb-period="${k}">${l}</button>`).join('')}</div>`;
+  const head = `<div class="panel-head" style="margin:0 0 12px"><div><h3>🏆 ${isAdmin() ? 'Team performance' : 'My standing'}</h3><p>${esc(label)} · rejected shifts are not counted</p></div>${tabs}</div>`;
+  if (isAdmin()) {
+    return `<div class="perf">${head}<div class="grid-2">${top5Panel('Top 5 performers', 'Most receipts processed · ' + esc(label), rk.byOut, 'out')}${top5Panel('Top 5 most errors', 'Highest error count · ' + esc(label), rk.byErr, 'err')}</div></div>`;
+  }
+  const cards = workerStandings(rk, lbPeriod).map(c => `<div class="standing ${c.cls}"><div class="standing-ico">${c.icon}</div><div><b>${esc(c.title)}</b><p>${esc(c.text)}</p></div></div>`).join('');
+  const warn = lbError ? `<div class="notice warn" style="margin-bottom:10px">Team ranking could not be loaded. Update your Firestore rules for the "leaderboard" collection.</div>` : '';
+  return `<div class="perf">${head}${warn}<div class="standing-grid">${cards}</div></div>`;
+}
+
+/* ───────────────────────── Team chat: popups, badge, live feed ───────────────────────── */
+function updateChatBadge() {
+  const b = $('[data-nav="chat"]');
+  if (!b) return;
+  b.querySelector('.nav-badge')?.remove();
+  if (unreadChat > 0) b.insertAdjacentHTML('beforeend', `<span class="nav-badge">${unreadChat > 9 ? '9+' : unreadChat}</span>`);
+}
+
+function showChatPopup(m) {
+  let box = $('#chatPopups');
+  if (!box) { box = document.createElement('div'); box.id = 'chatPopups'; document.body.appendChild(box); }
+  while (box.children.length >= 3) box.firstChild.remove();
+  const t = String(m.text || m.message || '');
+  const el = document.createElement('div');
+  el.className = 'chat-pop';
+  el.innerHTML = `<div class="avatar">${esc(initials(m.senderName))}</div><div class="chat-pop-body"><b>💬 ${esc(m.senderName || 'Team member')}</b><span>${esc(t.length > 160 ? t.slice(0, 160) + '…' : t)}</span><small>New team message · click to open chat</small></div><button type="button" class="chat-pop-x" aria-label="Dismiss">×</button>`;
+  el.addEventListener('click', e => {
+    if (e.target.closest('.chat-pop-x')) { el.remove(); return; }
+    el.remove();
+    go('chat');
+  });
+  box.appendChild(el);
+  setTimeout(() => el.remove(), 9000);
+}
+
+function onIncomingMessage(m) {
+  if (!currentUser || !profile) return;
+  if (page === 'chat' && !document.hidden) return; // already reading the chat
+  unreadChat++;
+  updateChatBadge();
+  showChatPopup(m);
+}
+
+function liveFeedHtml() {
+  const msgs = (data.messages || []).slice(-6);
+  if (!msgs.length) return '<div class="empty">💬<b>No messages yet</b>Start the conversation in Team chat.</div>';
+  return msgs.map((m, i) => {
+    const mine = m.senderId === currentUser?.uid;
+    return `<div class="live-msg ${mine ? 'mine' : ''} ${i === msgs.length - 1 ? 'fresh' : ''}"><div class="avatar">${esc(initials(m.senderName))}</div><div class="live-body"><b>${esc(mine ? 'You' : (m.senderName || 'Team member'))}</b><span>${esc(m.text || m.message || '')}</span><small>${esc(fmtTime(m.createdAt))}</small></div></div>`;
+  }).join('');
+}
+function liveChatPanel() {
+  const last = (data.messages || []).slice(-1)[0]?.id || '';
+  return `<div class="panel" style="margin-bottom:16px"><div class="panel-head"><div><h3>💬 Live team chat</h3><p>Latest messages, updated in real time</p></div><button class="small-btn" data-page="chat">Open chat →</button></div><div class="live-chat" id="liveChat" data-last="${esc(last)}">${liveFeedHtml()}</div></div>`;
+}
+function updateLiveFeed() {
+  const el = $('#liveChat');
+  if (!el) return;
+  const last = (data.messages || []).slice(-1)[0]?.id || '';
+  if (el.dataset.last === last) return;
+  el.dataset.last = last;
+  el.innerHTML = liveFeedHtml();
+  el.scrollTop = el.scrollHeight;
 }
 
 /* ───────────────────────── Demo mode ───────────────────────── */
@@ -422,8 +710,10 @@ function demoSignIn(role) {
     { id: 'demo-2', workerId: 'worker-2', workerName: 'Jamie Santos', accountId: 'abk-01', accountName: 'Abukai Team Alpha', shiftDate: t, shiftType: 'Afternoon', startTime: '14:00', endTime: '22:00', receiptCount: 96, errorCount: 0, errorNote: '', status: 'pending', rateCents: 100, deductionPercent: 10, grossCents: 9600, deductionCents: 960, netCents: 8640, createdAt: new Date() }];
   data.messages = [{ id: 'm1', senderId: 'worker-2', senderName: 'Jamie Santos', text: 'Hi team, my shift submission is ready for review.', createdAt: new Date() }];
   data.presence = [{ id: 'demo-worker', displayName: 'Demo Worker', role: 'worker', demo: true }, { id: 'worker-2', displayName: 'Jamie Santos', role: 'worker', demo: true }];
+  data.leaderboard = [];
   data.settings = { ...DEFAULT_SETTINGS };
   page = 'dashboard';
+  unreadChat = 0;
   renderPage();
   toast('Demo mode: changes are not saved online.');
 }
@@ -445,6 +735,9 @@ function renderLogin() {
   unlisten();
   closeModal();
   closeAnnPopup();
+  $('#confirmBox')?.remove();
+  $('#chatPopups')?.remove();
+  unreadChat = 0;
   $('#app').innerHTML = `<main class="login-wrap"><section class="login-art"><div class="brand"><img src="assets/logo.jpg" alt=""><div><strong>STEIVY</strong><small>RECEIPT HUB</small></div></div><div><h1>Keep every shift<br>in good order.</h1><p>Manage receipt submissions, track shift totals, review reports, and stay connected with your team.</p></div><div class="art-foot"><p>One hub for your team's daily operations.</p></div></section><section class="login-form-side"><form id="loginForm" class="login-form"><div class="brand-mark">S</div><h2>Welcome back</h2><p class="muted">Sign in to continue to your workspace.</p>${!configured ? `<div class="demo-note"><b>Firebase setup required</b><br>This copy has no Firebase web credentials yet. You can preview the interface with demo accounts below; demo changes are not saved online.</div>` : ''}<div class="field"><label for="email">EMAIL ADDRESS</label><input id="email" type="email" placeholder="you@company.com" autocomplete="username" required></div><div class="field"><label for="password">PASSWORD</label><input id="password" type="password" placeholder="Enter your password" autocomplete="current-password" required></div><button class="btn btn-primary btn-block" type="submit">Sign in <span>→</span></button><p class="muted" style="font-size:12px;text-align:center;margin:18px 0">Need an account? Ask your administrator to create or approve it.</p>${!configured ? `<div class="field"><label>PREVIEW WITHOUT FIREBASE</label><button class="btn btn-light btn-block" type="button" id="demoWorker">Continue as demo worker</button><button class="btn btn-ghost btn-block" style="margin-top:8px" type="button" id="demoAdmin">Preview admin dashboard</button></div>` : ''}<div class="footer-note">Steivy Receipt Hub · Web edition</div></form></section></main>`;
 
   $('#loginForm').addEventListener('submit', async e => {
@@ -473,7 +766,8 @@ function shell() {
   items.push(['reports', '▥', 'Reports'], ['chat', '☏', 'Team chat']);
   if (isAdmin()) items.push(['workers', '♙', 'Workers'], ['settings', '⚙', 'Pay settings']);
   const title = PAGE_TITLES[page] || 'Dashboard';
-  return `<div class="shell"><aside class="sidebar" id="sidebar"><div class="brand"><img src="assets/logo.jpg" alt=""><div><strong>STEIVY</strong><small>RECEIPT HUB</small></div></div><div class="nav-label">WORKSPACE</div><nav class="nav">${items.map(n => `<button data-nav="${n[0]}" class="${page === n[0] ? 'active' : ''}"><span class="ico">${n[1]}</span>${n[2]}</button>`).join('')}</nav><div class="sidebar-bottom"><div class="user-mini"><div class="avatar">${esc(initials(profile?.displayName))}</div><div><strong>${esc(profile?.displayName || 'User')}</strong><small>${isAdmin() ? 'Administrator' : 'Worker'}</small></div></div><button class="btn btn-ghost btn-block" id="logout">↪ Sign out</button></div></aside><main class="main"><header class="topbar"><div class="right"><button class="btn btn-ghost mobile-menu" id="menuBtn">☰</button><div><div class="crumb">WORKSPACE / ${esc(title.toUpperCase())}</div><h1>${esc(title)}</h1></div></div><div class="top-actions"><span class="mode-pill">${configured ? '● Connected app' : '◉ Demo preview'}</span><div class="avatar">${esc(initials(profile?.displayName))}</div></div></header>${!configured ? '<div class="demo-banner">Demo preview — data is sample-only and will reset when you leave. Configure Firebase to use real accounts and save changes.</div>' : ''}<section class="content" id="pageContent"></section></main></div>`;
+  const badge = k => k === 'chat' && unreadChat > 0 ? `<span class="nav-badge">${unreadChat > 9 ? '9+' : unreadChat}</span>` : '';
+  return `<div class="shell"><aside class="sidebar" id="sidebar"><div class="brand"><img src="assets/logo.jpg" alt=""><div><strong>STEIVY</strong><small>RECEIPT HUB</small></div></div><div class="nav-label">WORKSPACE</div><nav class="nav">${items.map(n => `<button data-nav="${n[0]}" class="${page === n[0] ? 'active' : ''}"><span class="ico">${n[1]}</span>${n[2]}${badge(n[0])}</button>`).join('')}</nav><div class="sidebar-bottom"><div class="user-mini"><div class="avatar">${esc(initials(profile?.displayName))}</div><div><strong>${esc(profile?.displayName || 'User')}</strong><small>${isAdmin() ? 'Administrator' : 'Worker'}</small></div></div><button class="btn btn-ghost btn-block" id="logout">↪ Sign out</button></div></aside><main class="main"><header class="topbar"><div class="right"><button class="btn btn-ghost mobile-menu" id="menuBtn">☰</button><div><div class="crumb">WORKSPACE / ${esc(title.toUpperCase())}</div><h1>${esc(title)}</h1></div></div><div class="top-actions"><span class="mode-pill">${configured ? '● Connected app' : '◉ Demo preview'}</span><div class="avatar">${esc(initials(profile?.displayName))}</div></div></header>${!configured ? '<div class="demo-banner">Demo preview — data is sample-only and will reset when you leave. Configure Firebase to use real accounts and save changes.</div>' : ''}<section class="content" id="pageContent"></section></main></div>`;
 }
 
 const stat = (label, value, sub, ico) => `<div class="stat"><div class="stat-head">${label}<span class="stat-icon">${ico}</span></div><strong>${value}</strong><small>${sub}</small></div>`;
@@ -497,7 +791,7 @@ function dashboard() {
   const earned = approved.reduce((n, s) => n + num(s.netCents), 0);
   const recent = rows.slice().sort((a, b) => timeVal(b.createdAt) - timeVal(a.createdAt)).slice(0, 5);
   const first = esc((profile.displayName || 'there').split(' ')[0]);
-  return `<div class="welcome"><div><h2>${isAdmin() ? 'Good day, Administrator' : 'Welcome back, ' + first + ' 👋'}</h2><p>Here’s what’s happening with ${isAdmin() ? 'your team' : 'your shifts'} today.</p></div>${!isAdmin() ? '<button class="btn btn-primary" data-page="receipts">＋ Submit shift</button>' : '<button class="btn btn-primary" data-page="receipts">Review submissions →</button>'}</div>${onlineStrip()}<div class="stats">${stat(isAdmin() ? 'Total submissions' : 'My submissions', rows.length, isAdmin() ? 'All recorded shifts' : 'Your recorded shifts', '▤')}${stat('Receipts processed', total.toLocaleString(), `${errTotal.toLocaleString()} error(s) recorded`, '▧')}${stat('Pending review', pending.length, 'Awaiting a decision', '◷')}${stat(isAdmin() ? 'Approved net pay' : 'Approved earnings', money(earned), 'After configured deductions', '₱')}</div>${monthStats(rows)}${isAdmin() ? announcementsPanel() : ''}<div class="grid-2"><div class="panel"><div class="panel-head"><div><h3>Recent submissions</h3><p>Latest shift records and review status</p></div><button class="small-btn" data-page="receipts">View all →</button></div><div class="table-wrap"><table><thead><tr><th>Worker / account</th><th>Shift date</th><th>Shift</th><th>Processed</th><th>Errors</th><th>Net pay</th><th>Status</th><th></th></tr></thead><tbody>${submissionRows(recent)}</tbody></table></div></div><div class="panel"><div class="panel-head"><div><h3>Quick actions</h3><p>Common tasks, one click away</p></div></div><div class="quick-grid"><button class="quick" data-page="receipts"><span>🧾</span><strong>Submit shift</strong><small>Record receipt count</small></button><button class="quick" data-page="errors"><span>⚠️</span><strong>Error processed</strong><small>Review error receipts</small></button><button class="quick" data-page="reports"><span>📊</span><strong>View reports</strong><small>Track your totals</small></button><button class="quick" data-page="chat"><span>💬</span><strong>Team chat</strong><small>Message your team</small></button>${isAdmin() ? '<button class="quick" data-page="workers"><span>👥</span><strong>Manage workers</strong><small>Review team accounts</small></button>' : ''}</div><div class="notice">${isAdmin() ? `You have <b>${pending.length}</b> submission(s) waiting for review.` : `Your approved submissions show in earnings. If a shift is rejected, check the reason and submit a correction.`}</div></div></div>`;
+  return `<div class="welcome"><div><h2>${isAdmin() ? 'Good day, Administrator' : 'Welcome back, ' + first + ' 👋'}</h2><p>Here’s what’s happening with ${isAdmin() ? 'your team' : 'your shifts'} today.</p></div>${!isAdmin() ? '<button class="btn btn-primary" data-page="receipts">＋ Submit shift</button>' : '<button class="btn btn-primary" data-page="receipts">Review submissions →</button>'}</div>${onlineStrip()}<div class="stats">${stat(isAdmin() ? 'Total submissions' : 'My submissions', rows.length, isAdmin() ? 'All recorded shifts' : 'Your recorded shifts', '▤')}${stat('Receipts processed', total.toLocaleString(), `${errTotal.toLocaleString()} error(s) recorded`, '▧')}${stat('Pending review', pending.length, 'Awaiting a decision', '◷')}${stat(isAdmin() ? 'Approved net pay' : 'Approved earnings', money(earned), 'After configured deductions', '₱')}</div>${monthStats(rows)}${performanceSection()}${liveChatPanel()}${isAdmin() ? announcementsPanel() : ''}<div class="grid-2"><div class="panel"><div class="panel-head"><div><h3>Recent submissions</h3><p>Latest shift records and review status</p></div><button class="small-btn" data-page="receipts">View all →</button></div><div class="table-wrap"><table><thead><tr><th>Worker / account</th><th>Shift date</th><th>Shift</th><th>Processed</th><th>Errors</th><th>Net pay</th><th>Status</th><th></th></tr></thead><tbody>${submissionRows(recent)}</tbody></table></div></div><div class="panel"><div class="panel-head"><div><h3>Quick actions</h3><p>Common tasks, one click away</p></div></div><div class="quick-grid"><button class="quick" data-page="receipts"><span>🧾</span><strong>Submit shift</strong><small>Record receipt count</small></button><button class="quick" data-page="errors"><span>⚠️</span><strong>Error processed</strong><small>Review error receipts</small></button><button class="quick" data-page="reports"><span>📊</span><strong>View reports</strong><small>Track your totals</small></button><button class="quick" data-page="chat"><span>💬</span><strong>Team chat</strong><small>Message your team</small></button>${isAdmin() ? '<button class="quick" data-page="workers"><span>👥</span><strong>Manage workers</strong><small>Review team accounts</small></button>' : ''}</div><div class="notice">${isAdmin() ? `You have <b>${pending.length}</b> submission(s) waiting for review.` : `Your approved submissions show in earnings. If a shift is rejected, check the reason and submit a correction.`}</div></div></div>`;
 }
 
 function filteredSubmissions() {
@@ -558,7 +852,7 @@ function accounts() {
   }, { pr: 0, pe: 0, cr: 0, ce: 0 });
   const errCell = n => `<td${n > 0 ? ' style="color:#c0392b;font-weight:600"' : ''}>${n.toLocaleString()}</td>`;
 
-  const body = rows.map(({ a, st }) => `<tr><td><strong>${esc(a.name)}</strong></td><td>${esc(a.code || '—')}</td><td>${esc(workerNamesFor(a))}</td><td>${st.prev.receipts.toLocaleString()}</td>${errCell(st.prev.errors)}<td>${st.cur.receipts.toLocaleString()}</td>${errCell(st.cur.errors)}<td>${status(a.isActive === false ? 'inactive' : 'active')}</td><td>${esc(a.notes || '—')}</td><td>${isAdmin() ? `<div class="sh-row-actions"><button class="btn btn-secondary" data-assign="${esc(a.id)}">Assign workers</button><button class="small-btn" data-toggle-account="${esc(a.id)}">${a.isActive === false ? 'Activate' : 'Deactivate'}</button></div>` : '—'}</td></tr>`).join('');
+  const body = rows.map(({ a, st }) => `<tr><td><strong>${esc(a.name)}</strong></td><td>${esc(a.code || '—')}</td><td>${esc(workerNamesFor(a))}</td><td>${st.prev.receipts.toLocaleString()}</td>${errCell(st.prev.errors)}<td>${st.cur.receipts.toLocaleString()}</td>${errCell(st.cur.errors)}<td>${status(a.isActive === false ? 'inactive' : 'active')}</td><td>${esc(a.notes || '—')}</td><td>${isAdmin() ? `<div class="sh-row-actions"><button class="btn btn-secondary" data-assign="${esc(a.id)}">Assign workers</button><button class="small-btn" data-edit-account="${esc(a.id)}">Edit</button><button class="small-btn" data-toggle-account="${esc(a.id)}">${a.isActive === false ? 'Activate' : 'Deactivate'}</button><button class="btn btn-danger" data-delete-account="${esc(a.id)}">Delete</button></div>` : '—'}</td></tr>`).join('');
 
   const foot = `<tr style="font-weight:700;background:rgba(0,0,0,.03)"><td colspan="3">Total (all accounts)</td><td>${tot.pr.toLocaleString()}</td>${errCell(tot.pe)}<td>${tot.cr.toLocaleString()}</td>${errCell(tot.ce)}<td colspan="3"></td></tr>`;
 
@@ -611,7 +905,7 @@ function workers() {
   const users = data.users.filter(u => u.role !== 'admin');
   const actions = u => {
     const st = u.status || 'approved';
-    const b = [`<button class="small-btn" data-worker="${esc(u.id)}">View</button>`];
+    const b = [`<button class="small-btn" data-worker="${esc(u.id)}">View</button>`, `<button class="small-btn" data-worker-action="edit" data-id="${esc(u.id)}">Edit</button>`];
     if (st === 'pending' || st === 'rejected') b.push(`<button class="small-btn" data-worker-action="approve" data-id="${esc(u.id)}">Approve</button>`);
     if (st === 'pending') b.push(`<button class="small-btn" data-worker-action="reject" data-id="${esc(u.id)}">Reject</button>`);
     if (st === 'approved') b.push(u.isActive === false
@@ -637,9 +931,10 @@ function chatBubbles() {
 function updateChat() {
   const box = $('#chatMessages');
   if (!box) return;
-  const nearBottom = box.scrollHeight - box.scrollTop - box.clientHeight < 80;
+  const nearBottom = box.scrollHeight - box.scrollTop - box.clientHeight < 120;
+  const lastMine = (data.messages || []).slice(-1)[0]?.senderId === currentUser?.uid;
   box.innerHTML = chatBubbles();
-  if (nearBottom) box.scrollTop = box.scrollHeight;
+  if (nearBottom || lastMine) box.scrollTo({ top: box.scrollHeight, behavior: 'smooth' });
 }
 function chat() {
   return `<div class="welcome"><div><h2>Team conversation</h2><p>Share updates with your team.</p></div></div><div class="chat-layout"><div class="chat-list"><button class="active"><div class="avatar">👥</div><div><strong>Company group</strong><small>Team-wide conversation</small></div></button></div><div class="chat-window"><div class="chat-messages" id="chatMessages">${chatBubbles()}</div><form class="chat-compose" id="chatForm"><input name="message" placeholder="Write a message…" maxlength="2000" autocomplete="off" required><button class="btn btn-primary" type="submit">Send ↗</button></form></div></div>`;
@@ -650,6 +945,7 @@ function renderPage() {
   if (!currentUser || !profile) { renderLogin(); return; }
   pendingRender = false;
   if (!allowedPages().includes(page)) page = 'dashboard';
+  if (page === 'chat') unreadChat = 0;
   $('#app').innerHTML = shell();
   $('#pageContent').innerHTML = ({ dashboard, receipts, errors: errorsPage, accounts, reports, chat, workers, settings })[page]();
   wireShell();
@@ -661,6 +957,7 @@ function renderPage() {
 function go(p) {
   page = p;
   detailId = null;
+  if (p === 'chat') unreadChat = 0;
   renderPage();
   window.scrollTo(0, 0);
 }
@@ -678,12 +975,15 @@ function wireShell() {
   $('#pageContent').addEventListener('click', e => {
     const t = e.target;
     let el;
+    if ((el = t.closest('[data-lb-period]'))) { lbPeriod = el.dataset.lbPeriod; return renderPage(); }
     if ((el = t.closest('[data-page]'))) return go(el.dataset.page);
     if ((el = t.closest('[data-view]'))) return viewSubmission(el.dataset.view);
     if ((el = t.closest('[data-edit-counts]'))) return editCounts(el.dataset.editCounts);
     if ((el = t.closest('[data-del-announcement]'))) return removeAnnouncement(el.dataset.delAnnouncement);
     if ((el = t.closest('[data-worker]'))) return viewWorker(el.dataset.worker);
     if ((el = t.closest('[data-assign]'))) return assignWorker(el.dataset.assign);
+    if ((el = t.closest('[data-edit-account]'))) return editAccount(el.dataset.editAccount);
+    if ((el = t.closest('[data-delete-account]'))) return deleteAccount(el.dataset.deleteAccount);
     if ((el = t.closest('[data-toggle-account]'))) return toggleAccount(el.dataset.toggleAccount);
     if ((el = t.closest('[data-worker-action]'))) return workerAction(el.dataset.id, el.dataset.workerAction);
   });
@@ -706,6 +1006,8 @@ function wirePage() {
   });
   const cm = $('#chatMessages');
   if (cm) cm.scrollTop = cm.scrollHeight;
+  const lc = $('#liveChat');
+  if (lc) lc.scrollTop = lc.scrollHeight;
 }
 
 function filterRows() {
@@ -737,7 +1039,7 @@ async function submitShift(e) {
   const shiftType = f.get('shiftType');
 
   const dup = visibleSubmissions().find(s => s.accountId === account.id && s.shiftDate === shiftDate && s.shiftType === shiftType && s.status !== 'rejected' && s.workerId === currentUser.uid);
-  if (dup && !confirm('You already submitted a ' + shiftType + ' shift for this account on this date. Submit another anyway?')) { btn.disabled = false; return; }
+  if (dup && !await confirmBox('Duplicate shift?', 'You already submitted a ' + shiftType + ' shift for this account on this date. Submit another anyway?', 'Yes, submit again')) { btn.disabled = false; return; }
 
   const rateCents = rate(), pct = dedPct();
   const gross = Math.round(count * rateCents);
@@ -787,6 +1089,7 @@ function viewSubmission(id, scroll = true) {
   $('#editCountsBtn')?.addEventListener('click', () => editCounts(s.id));
   $('#approveOne')?.addEventListener('click', async e => {
     const btn = e.currentTarget;
+    if (!await confirmBox('Approve submission?', `Are you sure you want to approve ${s.workerName || 'this worker'}'s shift?`, 'Yes, approve')) return;
     btn.disabled = true;
     try { await reviewSubmission(s, 'approved'); } catch { btn.disabled = false; }
   });
@@ -796,6 +1099,7 @@ function viewSubmission(id, scroll = true) {
       async fd => {
         const r = String(fd.get('reason') || '').trim();
         if (!r) { toast('A reason is required.'); return false; }
+        if (!await confirmBox('Reject submission?', 'Are you sure you want to reject this shift submission?', 'Yes, reject', true)) return false;
         await reviewSubmission(s, 'rejected', r);
       }, 'Reject');
   });
@@ -835,11 +1139,11 @@ async function reviewSubmission(stale, statusValue, reason = '') {
 }
 
 /* ADMIN: edit processed / error counts and recalculate pay */
-function editCounts(id) {
+async function editCounts(id) {
   if (!isAdmin()) return;
   const s = data.submissions.find(x => x.id === id);
   if (!s) return toast('Submission not found.');
-  if (s.status === 'approved' && !confirm('This shift is already approved. Editing will change the worker\'s net pay. Continue?')) return;
+  if (s.status === 'approved' && !await confirmBox('Edit approved shift?', 'This shift is already approved. Editing will change the worker\'s net pay. Continue?', 'Yes, continue')) return;
 
   openModal('Edit receipt counts',
     `<p class="muted" style="margin-top:0"><b>${esc(s.workerName || 'Worker')}</b> · ${esc(s.accountName || '')} · ${esc(date(s.shiftDate))} · ${esc(s.shiftType || '')}</p>
@@ -852,6 +1156,7 @@ function editCounts(id) {
       const errs = parseInt(fd.get('errorCount'), 10);
       if (!Number.isFinite(processed) || processed < 0) { toast('Enter a valid processed count.'); return false; }
       if (!Number.isFinite(errs) || errs < 0) { toast('Enter a valid error count.'); return false; }
+      if (!await confirmBox('Save changes?', 'Are you sure you want to update the processed and error counts for this shift?', 'Yes, save changes')) return false;
 
       // Use the rate/deduction that applied to this submission, not today's settings.
       const oldCount = num(s.receiptCount), oldGross = num(s.grossCents);
@@ -903,11 +1208,75 @@ function addAccount() {
     }, 'Create account');
 }
 
+/* ADMIN: edit account name / code / notes (e.g. fix spelling) */
+function editAccount(id) {
+  if (!isAdmin()) return;
+  const a = data.accounts.find(x => x.id === id);
+  if (!a) return toast('Account not found.');
+  const oldName = a.name;
+  openModal('Edit account',
+    `<div class="field"><label>ACCOUNT NAME</label><input name="name" required maxlength="80" value="${esc(a.name || '')}"></div>
+     <div class="field"><label>ACCOUNT CODE</label><input name="code" maxlength="20" value="${esc(a.code || '')}"></div>
+     <div class="field"><label>NOTES (OPTIONAL)</label><input name="notes" maxlength="200" value="${esc(a.notes || '')}"></div>
+     <div class="notice">The new name will also be updated on this account's past submissions.</div>`,
+    async fd => {
+      const name = String(fd.get('name') || '').trim();
+      const code = String(fd.get('code') || '').trim();
+      const notes = String(fd.get('notes') || '').trim();
+      if (!name) { toast('Account name is required.'); return false; }
+      if (code && data.accounts.some(x => x.id !== a.id && (x.code || '').toLowerCase() === code.toLowerCase())) { toast('That account code already exists.'); return false; }
+      if (!await confirmBox('Save changes?', `Are you sure you want to update the account "${oldName}"?`, 'Yes, save changes')) return false;
+
+      if (!configured) {
+        Object.assign(a, { name, code, notes, updatedAt: new Date() });
+        data.submissions.forEach(s => { if (s.accountId === a.id) s.accountName = name; });
+        toast('Demo account updated.');
+        renderPage();
+        return;
+      }
+      await fb.updateDoc(fb.doc(db, 'accounts', a.id), { name, code, notes, updatedAt: fb.serverTimestamp() });
+      if (name !== oldName) {
+        try {
+          const ops = data.submissions.filter(s => s.accountId === a.id).map(s => b => b.update(fb.doc(db, 'submissions', s.id), { accountName: name }));
+          await commitInChunks(ops);
+        } catch (e) { console.warn(e); toast('Account updated, but old submissions kept the previous name (check Firestore rules).'); return; }
+      }
+      toast('Account updated.');
+    }, 'Save changes');
+}
+
+/* ADMIN: delete an account (past submissions are kept) */
+async function deleteAccount(id) {
+  if (!isAdmin()) return;
+  const a = data.accounts.find(x => x.id === id);
+  if (!a) return toast('Account not found.');
+  if (!await confirmBox('Delete account?', `Are you sure you want to delete "${a.name}"? Workers will lose access to it. Past submissions are kept. This cannot be undone.`, 'Yes, delete', true)) return;
+
+  if (!configured) {
+    data.accounts = data.accounts.filter(x => x.id !== id);
+    data.users.forEach(u => { u.assignedAccountIds = (u.assignedAccountIds || []).filter(x => x !== id); });
+    toast('Demo account deleted.');
+    renderPage();
+    return;
+  }
+  try {
+    const ops = [b => b.delete(fb.doc(db, 'accounts', id))];
+    data.users.filter(u => (u.assignedAccountIds || []).includes(id)).forEach(u => {
+      ops.push(b => b.update(fb.doc(db, 'users', u.id), { assignedAccountIds: fb.arrayRemove(id), updatedAt: fb.serverTimestamp() }));
+    });
+    await commitInChunks(ops);
+    toast('Account deleted.');
+  } catch (e) { console.error(e); toast('Could not delete account. Check Firestore rules.'); }
+}
+
 async function toggleAccount(id) {
   const a = data.accounts.find(x => x.id === id);
   if (!a || !isAdmin()) return;
   const next = a.isActive === false;
-  if (!next && !confirm('Deactivate ' + a.name + '? Workers will no longer be able to submit shifts for it.')) return;
+  const ok = next
+    ? await confirmBox('Activate account?', `Are you sure you want to activate "${a.name}"?`, 'Yes, activate')
+    : await confirmBox('Deactivate account?', `Are you sure you want to deactivate "${a.name}"? Workers will no longer be able to submit shifts for it.`, 'Yes, deactivate', true);
+  if (!ok) return;
   if (!configured) { a.isActive = next; renderPage(); return; }
   try {
     await fb.updateDoc(fb.doc(db, 'accounts', id), { isActive: next, updatedAt: fb.serverTimestamp() });
@@ -931,6 +1300,8 @@ function assignWorker(accountId) {
     const ids = [...new Set([...picked, ...keep])];
     const nameOf = id => { const u = data.users.find(x => x.id === id); return u?.displayName || u?.email || 'Worker'; };
     const names = ids.map(nameOf);
+
+    if (!await confirmBox('Save assignments?', `Are you sure you want to update the worker assignments for "${account.name}"?`, 'Yes, save')) return false;
 
     if (!configured) {
       account.assignedWorkerIds = ids; account.assignedWorkerNames = names;
@@ -965,6 +1336,49 @@ function viewWorker(id) {
     <div><p class="muted">Email</p><b>${esc(u.email || '—')}</b></div>
     <div><p class="muted">Role / status</p><b>${esc(u.role || 'worker')} · ${esc(u.status || 'approved')} · ${u.isActive === false ? 'inactive' : 'active'}</b></div>
     <div><p class="muted">Assigned accounts</p><b>${esc(accts.join(', ') || 'None')}</b></div></div>`, null);
+}
+
+/* ADMIN: edit a worker's name (e.g. fix spelling). Login email cannot be changed from the browser for another user. */
+function editWorker(u) {
+  if (!isAdmin()) return;
+  const oldName = u.displayName || '';
+  openModal('Edit worker',
+    `<div class="field"><label>FULL NAME</label><input name="name" required maxlength="80" value="${esc(oldName)}"></div>
+     <div class="field"><label>EMAIL (LOGIN)</label><input value="${esc(u.email || '')}" disabled></div>
+     <div class="notice">The new name will also be updated on this worker's past submissions and account assignments.</div>`,
+    async fd => {
+      const name = String(fd.get('name') || '').trim();
+      if (!name) { toast('Name is required.'); return false; }
+      if (!await confirmBox('Save changes?', `Are you sure you want to update this worker's name to "${name}"?`, 'Yes, save changes')) return false;
+
+      if (!configured) {
+        u.displayName = name;
+        data.submissions.forEach(s => { if (s.workerId === u.id) s.workerName = name; });
+        data.accounts.forEach(a => {
+          const i = (a.assignedWorkerIds || []).indexOf(u.id);
+          if (i >= 0) { a.assignedWorkerNames = [...(a.assignedWorkerNames || [])]; a.assignedWorkerNames[i] = name; }
+        });
+        toast('Demo worker updated.');
+        renderPage();
+        return;
+      }
+      await fb.updateDoc(fb.doc(db, 'users', u.id), { displayName: name, updatedAt: fb.serverTimestamp() });
+      if (name !== oldName) {
+        try {
+          const ops = [];
+          data.submissions.filter(s => s.workerId === u.id).forEach(s => ops.push(b => b.update(fb.doc(db, 'submissions', s.id), { workerName: name })));
+          data.accounts.forEach(a => {
+            const i = (a.assignedWorkerIds || []).indexOf(u.id);
+            if (i < 0) return;
+            const names = [...(a.assignedWorkerNames || [])];
+            names[i] = name;
+            ops.push(b => b.update(fb.doc(db, 'accounts', a.id), { assignedWorkerNames: names, updatedAt: fb.serverTimestamp() }));
+          });
+          await commitInChunks(ops);
+        } catch (e) { console.warn(e); toast('Worker updated, but older records kept the previous name (check Firestore rules).'); return; }
+      }
+      toast('Worker updated.');
+    }, 'Save changes');
 }
 
 /* CREATE WORKER — admin creates a login + profile without being signed out */
@@ -1018,7 +1432,7 @@ function addWorker() {
 async function deleteWorker(u) {
   if (!isAdmin()) return;
   if (u.id === currentUser.uid) return toast('You cannot delete yourself.');
-  if (!confirm(`Delete ${u.displayName || u.email}? Their profile will be removed and they will lose access. Past submissions are kept.`)) return;
+  if (!await confirmBox('Delete worker?', `Are you sure you want to delete ${u.displayName || u.email}? Their profile will be removed and they will lose access. Past submissions are kept. This cannot be undone.`, 'Yes, delete', true)) return;
 
   if (!configured) {
     data.users = data.users.filter(x => x.id !== u.id);
@@ -1030,15 +1444,16 @@ async function deleteWorker(u) {
     return;
   }
   try {
-    const batch = fb.writeBatch(db);
-    batch.delete(fb.doc(db, 'users', u.id));
+    const ops = [b => b.delete(fb.doc(db, 'users', u.id))];
     data.accounts.filter(a => (a.assignedWorkerIds || []).includes(u.id)).forEach(a => {
-      batch.update(fb.doc(db, 'accounts', a.id), {
+      ops.push(b => b.update(fb.doc(db, 'accounts', a.id), {
         assignedWorkerIds: fb.arrayRemove(u.id),
         updatedAt: fb.serverTimestamp()
-      });
+      }));
     });
-    await batch.commit();
+    // Remove their ranking totals so they no longer appear in team rankings.
+    data.leaderboard.filter(d => d.workerId === u.id).forEach(d => ops.push(b => b.delete(fb.doc(db, 'leaderboard', d.id))));
+    await commitInChunks(ops);
     try { await fb.deleteDoc(fb.doc(db, 'presence', u.id)); } catch {} // best effort: stop showing them as online
     toast('Worker deleted.');
   } catch (e) { console.error(e); toast('Could not delete worker. Check Firestore rules.'); }
@@ -1049,6 +1464,7 @@ async function workerAction(id, action) {
   const u = data.users.find(x => x.id === id);
   if (!u) return;
   if (action === 'delete') return deleteWorker(u);
+  if (action === 'edit') return editWorker(u);
   const changes = ({
     approve: { status: 'approved', isActive: true },
     reject: { status: 'rejected', isActive: false },
@@ -1056,7 +1472,10 @@ async function workerAction(id, action) {
     deactivate: { isActive: false }
   })[action];
   if (!changes) return;
-  if (['reject', 'deactivate'].includes(action) && !confirm(`${action === 'reject' ? 'Reject' : 'Deactivate'} ${u.displayName || u.email}?`)) return;
+  const who = u.displayName || u.email;
+  const labels = { approve: 'Approve', reject: 'Reject', activate: 'Activate', deactivate: 'Deactivate' };
+  const danger = ['reject', 'deactivate'].includes(action);
+  if (!await confirmBox(`${labels[action]} worker?`, `Are you sure you want to ${action} ${who}?`, `Yes, ${action}`, danger)) return;
   if (!configured) { Object.assign(u, changes); renderPage(); return; }
   try {
     await fb.updateDoc(fb.doc(db, 'users', id), { ...changes, updatedAt: fb.serverTimestamp() });
@@ -1071,6 +1490,7 @@ async function saveSettings(e) {
   const rateVal = Number(f.get('rate')), deduction = Number(f.get('deduction'));
   if (!Number.isFinite(rateVal) || rateVal < 0) return toast('Enter a valid rate.');
   if (!Number.isFinite(deduction) || deduction < 0 || deduction > 100) return toast('Deduction must be between 0 and 100.');
+  if (!await confirmBox('Save pay settings?', 'Are you sure you want to change the rate and deduction for future submissions?', 'Yes, save settings')) return;
   const gross = Math.round(rateVal * 100);
   if (!configured) {
     data.settings = { grossRateCents: gross, deductionPercent: deduction };
@@ -1139,6 +1559,8 @@ async function boot() {
     const token = ++authToken;
     unlisten();
     closeModal();
+    $('#confirmBox')?.remove();
+    $('#chatPopups')?.remove();
     if (!user) {
       // Already signed out: only stop timers (a presence write would be rejected now).
       clearPresenceTimers();
