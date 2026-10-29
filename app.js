@@ -173,6 +173,16 @@ button:disabled{opacity:.6;cursor:not-allowed}
 .standing.warn{background:#fff4d6;border-color:#f0d487}
 .standing.good{background:#e6f6ec;border-color:#a8dcb9}
 .standing.info{background:#f1f8f4}`;
+.welcome{gap:16px;flex-wrap:wrap}
+.msg-ticker{flex:1;min-width:220px;display:flex;align-items:center;gap:10px;background:#f1f8f4;border:1px solid #d5ecdd;border-radius:999px;padding:8px 16px;cursor:pointer;overflow:hidden}
+.msg-ticker-view{flex:1;min-width:0;overflow:hidden;white-space:nowrap;-webkit-mask-image:linear-gradient(90deg,transparent,#000 16px,#000 calc(100% - 16px),transparent);mask-image:linear-gradient(90deg,transparent,#000 16px,#000 calc(100% - 16px),transparent)}
+.msg-ticker-track{display:flex;width:max-content;animation:tickerScroll 25s linear infinite}
+.msg-ticker:hover .msg-ticker-track{animation-play-state:paused}
+.msg-ticker-set{display:flex;gap:36px;padding-right:36px;min-width:400px}
+.msg-item{font-size:13px;color:#1a2420}
+.msg-item b{color:#1e8449}
+@keyframes tickerScroll{from{transform:translateX(0)}to{transform:translateX(-50%)}}
+@media (prefers-reduced-motion:reduce){.msg-ticker-track{animation:none}.msg-ticker-view{overflow-x:auto}}
 document.head.appendChild(extraStyle);
 
 /* ───────────────────────── Presence (who is online) ───────────────────────── */
@@ -413,7 +423,30 @@ function requestRender(kind) {
   if (!currentUser || !profile) return;
   if (kind === 'chat') {
     if (page === 'chat') updateChat();
-    if (page === 'dashboard') updateLiveFeed();
+    if (page === 'dashboard') { updateLiveFeed(); updateTicker(); }
+    function tickerInner() {
+  const msgs = (data.messages || []).slice(-5);
+  if (!msgs.length) return '<span class="muted" style="font-size:13px">No team messages yet</span>';
+  const set = msgs.map(m => {
+    const who = m.senderId === currentUser?.uid ? 'You' : (m.senderName || 'Team member');
+    const txt = String(m.text || m.message || '').replace(/\s+/g, ' ').slice(0, 120);
+    return `<span class="msg-item"><b>${esc(who)}:</b> ${esc(txt)}</span>`;
+  }).join('');
+  const dur = Math.max(15, msgs.length * 6);
+  return `<div class="msg-ticker-track" style="animation-duration:${dur}s"><div class="msg-ticker-set">${set}</div><div class="msg-ticker-set" aria-hidden="true">${set}</div></div>`;
+}
+function messageTicker() {
+  const last = (data.messages || []).slice(-1)[0]?.id || '';
+  return `<div class="msg-ticker" id="msgTicker" data-page="chat" data-last="${esc(last)}" title="Open team chat"><span>💬</span><div class="msg-ticker-view">${tickerInner()}</div></div>`;
+}
+function updateTicker() {
+  const el = $('#msgTicker');
+  if (!el) return;
+  const last = (data.messages || []).slice(-1)[0]?.id || '';
+  if (el.dataset.last === last) return;
+  el.dataset.last = last;
+  el.querySelector('.msg-ticker-view').innerHTML = tickerInner();
+}
     return;
   }
   if (isEditing()) { pendingRender = true; return; }
@@ -791,7 +824,7 @@ function dashboard() {
   const earned = approved.reduce((n, s) => n + num(s.netCents), 0);
   const recent = rows.slice().sort((a, b) => timeVal(b.createdAt) - timeVal(a.createdAt)).slice(0, 5);
   const first = esc((profile.displayName || 'there').split(' ')[0]);
-  return `<div class="welcome"><div><h2>${isAdmin() ? 'Good day, Administrator' : 'Welcome back, ' + first + ' 👋'}</h2><p>Here’s what’s happening with ${isAdmin() ? 'your team' : 'your shifts'} today.</p></div>${!isAdmin() ? '<button class="btn btn-primary" data-page="receipts">＋ Submit shift</button>' : '<button class="btn btn-primary" data-page="receipts">Review submissions →</button>'}</div>${performanceSection()}${onlineStrip()}<div class="stats">${stat(isAdmin() ? 'Total submissions' : 'My submissions', rows.length, isAdmin() ? 'All recorded shifts' : 'Your recorded shifts', '▤')}${stat('Receipts processed', total.toLocaleString(), `${errTotal.toLocaleString()} error(s) recorded`, '▧')}${stat('Pending review', pending.length, 'Awaiting a decision', '◷')}${stat(isAdmin() ? 'Approved net pay' : 'Approved earnings', money(earned), 'After configured deductions', '₱')}</div>${monthStats(rows)}${liveChatPanel()}${isAdmin() ? announcementsPanel() : ''}<div class="grid-2"><div class="panel"><div class="panel-head"><div><h3>Recent submissions</h3><p>Latest shift records and review status</p></div><button class="small-btn" data-page="receipts">View all →</button></div><div class="table-wrap"><table><thead><tr><th>Worker / account</th><th>Shift date</th><th>Shift</th><th>Processed</th><th>Errors</th><th>Net pay</th><th>Status</th><th></th></tr></thead><tbody>${submissionRows(recent)}</tbody></table></div></div><div class="panel"><div class="panel-head"><div><h3>Quick actions</h3><p>Common tasks, one click away</p></div></div><div class="quick-grid"><button class="quick" data-page="receipts"><span>🧾</span><strong>Submit shift</strong><small>Record receipt count</small></button><button class="quick" data-page="errors"><span>⚠️</span><strong>Error processed</strong><small>Review error receipts</small></button><button class="quick" data-page="reports"><span>📊</span><strong>View reports</strong><small>Track your totals</small></button><button class="quick" data-page="chat"><span>💬</span><strong>Team chat</strong><small>Message your team</small></button>${isAdmin() ? '<button class="quick" data-page="workers"><span>👥</span><strong>Manage workers</strong><small>Review team accounts</small></button>' : ''}</div><div class="notice">${isAdmin() ? `You have <b>${pending.length}</b> submission(s) waiting for review.` : `Your approved submissions show in earnings. If a shift is rejected, check the reason and submit a correction.`}</div></div></div>`;
+  return `<div class="welcome"><div><h2>${isAdmin() ? 'Good day, Administrator' : 'Welcome back, ' + first + ' 👋'}</h2><p>Here’s what’s happening with ${isAdmin() ? 'your team' : 'your shifts'} today.</p></div>${messageTicker()}${!isAdmin() ? '<button class="btn btn-primary" data-page="receipts">＋ Submit shift</button>' : '<button class="btn btn-primary" data-page="receipts">Review submissions →</button>'}</div>${performanceSection()}${onlineStrip()}<div class="stats">${stat(isAdmin() ? 'Total submissions' : 'My submissions', rows.length, isAdmin() ? 'All recorded shifts' : 'Your recorded shifts', '▤')}${stat('Receipts processed', total.toLocaleString(), `${errTotal.toLocaleString()} error(s) recorded`, '▧')}${stat('Pending review', pending.length, 'Awaiting a decision', '◷')}${stat(isAdmin() ? 'Approved net pay' : 'Approved earnings', money(earned), 'After configured deductions', '₱')}</div>${monthStats(rows)}${liveChatPanel()}${isAdmin() ? announcementsPanel() : ''}<div class="grid-2"><div class="panel"><div class="panel-head"><div><h3>Recent submissions</h3><p>Latest shift records and review status</p></div><button class="small-btn" data-page="receipts">View all →</button></div><div class="table-wrap"><table><thead><tr><th>Worker / account</th><th>Shift date</th><th>Shift</th><th>Processed</th><th>Errors</th><th>Net pay</th><th>Status</th><th></th></tr></thead><tbody>${submissionRows(recent)}</tbody></table></div></div><div class="panel"><div class="panel-head"><div><h3>Quick actions</h3><p>Common tasks, one click away</p></div></div><div class="quick-grid"><button class="quick" data-page="receipts"><span>🧾</span><strong>Submit shift</strong><small>Record receipt count</small></button><button class="quick" data-page="errors"><span>⚠️</span><strong>Error processed</strong><small>Review error receipts</small></button><button class="quick" data-page="reports"><span>📊</span><strong>View reports</strong><small>Track your totals</small></button><button class="quick" data-page="chat"><span>💬</span><strong>Team chat</strong><small>Message your team</small></button>${isAdmin() ? '<button class="quick" data-page="workers"><span>👥</span><strong>Manage workers</strong><small>Review team accounts</small></button>' : ''}</div><div class="notice">${isAdmin() ? `You have <b>${pending.length}</b> submission(s) waiting for review.` : `Your approved submissions show in earnings. If a shift is rejected, check the reason and submit a correction.`}</div></div></div>`;
 }
 
 function filteredSubmissions() {
