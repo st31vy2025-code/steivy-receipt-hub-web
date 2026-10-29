@@ -1,7 +1,4 @@
-// Steivy Receipt Hub — app.js
-// Features: Create/Delete worker, Error Processed, Admin edit counts,
-//           Account Edit/Delete with confirmation, Team chat ticker,
-//           Real-time monthly leaderboard (admin top performers + worker banners).
+// Steivy Receipt Hub — app.js (Create worker + Delete worker + Error Processed + Admin edit counts) — FIXED
 // Load with: <script type="module" src="app.js"></script>
 
 let firebaseConfig = {};
@@ -24,7 +21,7 @@ let pendingRender = false;
 let detailId = null;
 const filters = { q: '', status: 'all' };
 const DEFAULT_SETTINGS = { grossRateCents: 100, deductionPercent: 10 };
-const data = { submissions: [], accounts: [], users: [], messages: [], presence: [], announcements: [], annRead: [], leaderboards: {}, settings: { ...DEFAULT_SETTINGS } };
+const data = { submissions: [], accounts: [], users: [], messages: [], presence: [], announcements: [], annRead: [], settings: { ...DEFAULT_SETTINGS } };
 
 /* ───────────────────────── Helpers ───────────────────────── */
 const $ = s => document.querySelector(s);
@@ -109,22 +106,7 @@ button:disabled{opacity:.6;cursor:not-allowed}
 @media (prefers-reduced-motion:reduce){.online-track{animation:none}.online-marquee{overflow-x:auto}}
 #annPopup{z-index:1100}
 .ann-badge{display:inline-block;background:#fff4d6;color:#8a5a00;border-radius:999px;padding:4px 12px;font-size:12px;font-weight:700;margin-bottom:10px}
-.ann-body{white-space:pre-wrap;line-height:1.55;margin:10px 0 14px;word-break:break-word}
-.chat-ticker{padding:14px 18px;margin-bottom:16px;cursor:pointer;transition:box-shadow .2s}
-.chat-ticker:hover{box-shadow:0 6px 20px rgba(0,0,0,.08)}
-.tick-box{height:156px;overflow:hidden;-webkit-mask-image:linear-gradient(180deg,transparent,#000 18px,#000 calc(100% - 18px),transparent);mask-image:linear-gradient(180deg,transparent,#000 18px,#000 calc(100% - 18px),transparent)}
-.tick-track{animation:tickUp 18s linear infinite}
-.tick-box:hover .tick-track{animation-play-state:paused}
-.tick-item{height:52px;box-sizing:border-box;padding:6px 12px;display:flex;flex-direction:column;justify-content:center;border-bottom:1px dashed #e3ebe6}
-.tick-item b{font-size:13px}
-.tick-item span{font-size:13px;color:#5d6b64;white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
-@keyframes tickUp{from{transform:translateY(0)}to{transform:translateY(-50%)}}
-@media (prefers-reduced-motion:reduce){.tick-track{animation:none}.tick-box{overflow-y:auto}}
-.perf-row{display:flex;align-items:center;gap:12px;padding:10px 0;border-top:1px solid var(--line)}
-.perf-rank{width:26px;text-align:center;font-weight:700}
-.perf-banner{display:flex;gap:12px;align-items:flex-start;padding:14px 18px;border-radius:14px;margin-bottom:16px;line-height:1.5}
-.perf-banner.good{background:#e6f6ec;border:1px solid #bfe5cd;color:#1e6b3f}
-.perf-banner.warn{background:#fff4d6;border:1px solid #f0dc9c;color:#8a5a00}`;
+.ann-body{white-space:pre-wrap;line-height:1.55;margin:10px 0 14px;word-break:break-word}`;
 document.head.appendChild(extraStyle);
 
 /* ───────────────────────── Presence (who is online) ───────────────────────── */
@@ -175,144 +157,21 @@ async function beat(online = true) {
 function startPresence() {
   clearInterval(heartbeatTimer); clearInterval(onlineTimer);
   if (!configured) return;
+  presenceWriteErr = false;
   beat(true);
   heartbeatTimer = setInterval(() => { if (!document.hidden) beat(true); }, 45000);
   onlineTimer = setInterval(updateOnline, 30000);
 }
-async function stopPresence() {
+function clearPresenceTimers() {
   clearInterval(heartbeatTimer); clearInterval(onlineTimer);
   heartbeatTimer = onlineTimer = null;
+}
+async function stopPresence() {
+  clearPresenceTimers();
   await beat(false);
 }
 document.addEventListener('visibilitychange', () => { if (!document.hidden && heartbeatTimer) beat(true); });
 window.addEventListener('pagehide', () => { if (heartbeatTimer) beat(false); });
-
-/* ───────────────────────── Team chat ticker (dashboard) ───────────────────────── */
-let tickCache = { key: '', html: '' };
-const shuffle = arr => {
-  const a = arr.slice();
-  for (let i = a.length - 1; i > 0; i--) { const j = Math.floor(Math.random() * (i + 1)); [a[i], a[j]] = [a[j], a[i]]; }
-  return a;
-};
-const chatTickerKey = () => { const m = data.messages || []; return m.length + ':' + (m[m.length - 1]?.id || ''); };
-
-function chatTickerInner() {
-  const key = chatTickerKey();
-  if (tickCache.key === key) return tickCache.html; // keep the same random order until a new message arrives
-  const msgs = (data.messages || []).slice(-15);
-  let html;
-  if (!msgs.length) {
-    html = `<div class="online-empty">No team messages yet. Click to start the conversation.</div>`;
-  } else {
-    let items = shuffle(msgs);
-    while (items.length < 4) items = items.concat(items);
-    const row = items.map(m => `<div class="tick-item"><b>${esc(m.senderName || 'Team member')}</b><span>${esc(m.text || m.message || '')}</span></div>`).join('');
-    html = `<div class="tick-box"><div class="tick-track" style="animation-duration:${Math.max(12, items.length * 3)}s"><div class="tick-set">${row}</div><div class="tick-set" aria-hidden="true">${row}</div></div></div>`;
-  }
-  tickCache = { key, html };
-  return html;
-}
-const chatTickerPanel = () => `<div class="panel chat-ticker" id="chatTicker" data-page="chat" data-key="${esc(chatTickerKey())}" title="Open team chat"><div class="online-head"><b>💬 Team chat</b><small class="muted">Click to open all messages</small></div><div id="chatTickerBody">${chatTickerInner()}</div></div>`;
-// Updates only the ticker (no full re-render) when a new chat message arrives.
-function updateChatTicker() {
-  const el = $('#chatTicker');
-  if (!el) return;
-  const key = chatTickerKey();
-  if (el.dataset.key === key) return;
-  el.dataset.key = key;
-  const body = $('#chatTickerBody');
-  if (body) body.innerHTML = chatTickerInner();
-}
-
-/* ───────────────────────── Monthly leaderboard (real time, no approval needed) ─────────────────────────
-   Counts pending + approved submissions of the current month (rejected excluded).
-   Workers can only read their own submissions, so each user publishes their own totals to
-   leaderboards/{YYYY-MM}.workers.{uid}; everyone can read that document in real time. */
-let statsTimer = null, statsSig = '';
-let lbReadErr = false, lbWriteErr = false;
-
-function computeLeaderboard(rows = data.submissions) {
-  const key = monthKeyOf(0), g = {};
-  rows.forEach(s => {
-    if (s.status === 'rejected' || String(s.shiftDate || '').slice(0, 7) !== key) return;
-    const id = s.workerId || s.workerName || 'unknown';
-    g[id] ||= { id, name: s.workerName || 'Worker', receipts: 0, errors: 0 };
-    g[id].receipts += num(s.receiptCount);
-    g[id].errors += num(s.errorCount);
-  });
-  return { month: key, workers: Object.values(g).sort((a, b) => a.id.localeCompare(b.id)) };
-}
-
-function scheduleStatsSync() {
-  if (!configured || !db || !currentUser || !profile) return;
-  clearTimeout(statsTimer);
-  statsTimer = setTimeout(syncStats, 1000);
-}
-async function syncStats() {
-  if (!configured || !db || !currentUser || !profile) return;
-  const month = monthKeyOf(0);
-  const local = computeLeaderboard().workers;
-  const workersMap = {};
-  if (isAdmin()) {
-    local.forEach(w => { workersMap[w.id] = { name: w.name, receipts: w.receipts, errors: w.errors }; });
-  } else {
-    const me = local.find(w => w.id === currentUser.uid);
-    const existing = data.leaderboards[month]?.workers?.[currentUser.uid];
-    if (me) workersMap[currentUser.uid] = { name: profile.displayName, receipts: me.receipts, errors: me.errors };
-    else if (existing) workersMap[currentUser.uid] = { name: profile.displayName, receipts: 0, errors: 0 };
-    else return;
-  }
-  const sig = month + JSON.stringify(workersMap);
-  if (sig === statsSig) return;
-  try {
-    const ref = fb.doc(db, 'leaderboards', month);
-    const payload = { month, workers: workersMap, updatedAt: fb.serverTimestamp() };
-    // Admin rewrites the whole month (also removes stale entries); a worker only merges their own entry.
-    if (isAdmin()) await fb.setDoc(ref, payload);
-    else await fb.setDoc(ref, payload, { merge: true });
-    statsSig = sig;
-    if (lbWriteErr) { lbWriteErr = false; requestRender(); }
-  } catch (e) {
-    console.warn('leaderboard write failed (check Firestore rules for /leaderboards)', e);
-    if (!lbWriteErr) { lbWriteErr = true; requestRender(); }
-  }
-}
-
-function leaderboardWorkers() {
-  const local = computeLeaderboard().workers;
-  if (isAdmin() || !configured) return local;
-  const map = data.leaderboards[monthKeyOf(0)]?.workers || {};
-  const list = Object.entries(map).map(([id, w]) => ({ id, name: w.name || 'Worker', receipts: num(w.receipts), errors: num(w.errors) }));
-  // Override the worker's own entry with live local numbers so it updates instantly.
-  const me = local.find(w => w.id === currentUser.uid);
-  const i = list.findIndex(w => w.id === currentUser.uid);
-  if (me) { if (i >= 0) list[i] = me; else list.push(me); }
-  else if (i >= 0) list[i] = { ...list[i], receipts: 0, errors: 0 };
-  return list;
-}
-const leaderboardWarn = () => (lbReadErr || lbWriteErr) ? `<div class="notice warn" style="margin-bottom:16px">Team ranking needs Firestore rules for the "leaderboards" collection. Update your rules and refresh.</div>` : '';
-
-function perfRows(list, field, icon) {
-  return list.map((w, i) => `<div class="perf-row"><span class="perf-rank">${i === 0 ? icon : i + 1}</span><div class="avatar">${esc(initials(w.name))}</div><strong style="flex:1">${esc(w.name)}</strong><b${field === 'errors' ? ' style="color:#c0392b"' : ''}>${w[field].toLocaleString()}</b></div>`).join('');
-}
-function performersPanel() {
-  const list = leaderboardWorkers();
-  const top = list.filter(w => w.receipts > 0).sort((a, b) => b.receipts - a.receipts).slice(0, 3);
-  const err = list.filter(w => w.errors > 0).sort((a, b) => b.errors - a.errors).slice(0, 3);
-  const label = esc(monthLabel(monthKeyOf(0)));
-  return leaderboardWarn() + `<div class="grid-2"><div class="panel"><div class="panel-head"><div><h3>🏆 Top output</h3><p>Most receipts processed · ${label}</p></div></div>${perfRows(top, 'receipts', '🏆') || '<div class="empty">No processed receipts yet this month.</div>'}</div><div class="panel"><div class="panel-head"><div><h3>⚠️ Most errors</h3><p>Highest error count · ${label}</p></div></div>${perfRows(err, 'errors', '⚠️') || '<div class="empty">No errors recorded this month.</div>'}</div></div>`;
-}
-function workerBanner() {
-  const list = leaderboardWorkers();
-  const me = list.find(w => w.id === currentUser.uid);
-  let out = leaderboardWarn();
-  if (!me) return out;
-  const maxR = Math.max(0, ...list.map(w => w.receipts)), maxE = Math.max(0, ...list.map(w => w.errors));
-  const first = esc((profile.displayName || '').split(' ')[0] || 'there');
-  if (me.receipts > 0 && me.receipts === maxR) out += `<div class="perf-banner good"><span>🏆</span><div><b>Congratulations, ${first}!</b> You have the highest output of all workers this month with ${me.receipts.toLocaleString()} processed receipts. Excellent work, keep it up!</div></div>`;
-  if (me.errors > 0 && me.errors === maxE) out += `<div class="perf-banner warn"><span>⚠️</span><div><b>Please be more careful, ${first}.</b> You have the most errors of all workers this month (${me.errors.toLocaleString()}). Take a little extra time to double-check each receipt before submitting.</div></div>`;
-  return out;
-}
 
 /* ───────────────────────── Announcements (admin -> all users) ───────────────────────── */
 const annLsKey = () => 'steivy_ann_dismissed_' + (currentUser?.uid || '');
@@ -404,33 +263,9 @@ function monthStats(rows) {
   return `<div class="stats">${stat('Last month processed', p.r.toLocaleString(), esc(pre + monthLabel(prev)), '◀')}${stat('Last month errors', p.e.toLocaleString(), esc(pre + monthLabel(prev)), '⚠')}${stat('This month processed', c.r.toLocaleString(), esc(pre + monthLabel(cur)), '▧')}${stat('This month errors', c.e.toLocaleString(), esc(pre + monthLabel(cur)), '⚠')}</div>`;
 }
 
-/* ───────────────────────── Modal + confirm dialog ───────────────────────── */
+/* ───────────────────────── Modal ───────────────────────── */
 function closeModal() { $('#shModal')?.remove(); }
-document.addEventListener('keydown', e => {
-  if (e.key !== 'Escape') return;
-  const c = $('#shConfirm');
-  if (c) { c.querySelector('[data-no]')?.click(); return; } // close the confirm dialog first
-  closeModal();
-});
-
-// Promise-based confirmation pop-up. Resolves true (confirmed) or false (cancelled).
-function confirmDialog({ title, message, confirmLabel = 'Confirm', danger = false }) {
-  return new Promise(resolve => {
-    $('#shConfirm')?.remove();
-    const wrap = document.createElement('div');
-    wrap.className = 'sh-modal';
-    wrap.id = 'shConfirm';
-    wrap.style.zIndex = 1200;
-    wrap.innerHTML = `<div class="sh-modal-card" style="max-width:420px" role="alertdialog" aria-modal="true"><h3>${esc(title)}</h3><p class="muted" style="margin:0;line-height:1.5">${esc(message)}</p><div class="sh-modal-actions"><button type="button" class="btn btn-ghost" data-no>Cancel</button><button type="button" class="btn ${danger ? 'btn-danger' : 'btn-primary'}" data-yes>${esc(confirmLabel)}</button></div></div>`;
-    const done = v => { wrap.remove(); resolve(v); };
-    wrap.addEventListener('click', e => {
-      if (e.target === wrap || e.target.closest('[data-no]')) done(false);
-      else if (e.target.closest('[data-yes]')) done(true);
-    });
-    document.body.appendChild(wrap);
-    wrap.querySelector('[data-yes]').focus();
-  });
-}
+document.addEventListener('keydown', e => { if (e.key === 'Escape') closeModal(); });
 
 function openModal(title, bodyHtml, onSubmit, submitLabel = 'Save') {
   closeModal();
@@ -470,8 +305,8 @@ async function initFirebase() {
       import(base + 'firebase-auth.js'),
       import(base + 'firebase-firestore.js')
     ]);
-    // initializeApp is kept so we can create a secondary app when an admin creates a worker.
-    fb = { ...authmod, ...fsmod, initializeApp: appmod.initializeApp };
+    // initializeApp/deleteApp are kept so we can create (and clean up) a secondary app when an admin creates a worker.
+    fb = { ...authmod, ...fsmod, initializeApp: appmod.initializeApp, deleteApp: appmod.deleteApp };
     const app = appmod.initializeApp(firebaseConfig);
     auth = authmod.getAuth(app);
     db = fsmod.getFirestore(app);
@@ -491,11 +326,7 @@ function isEditing() {
 // Snapshot-driven refresh: never wipe what the user is typing.
 function requestRender(kind) {
   if (!currentUser || !profile) return;
-  if (kind === 'chat') {
-    if (page === 'chat') updateChat();
-    else if (page === 'dashboard') updateChatTicker();
-    return;
-  }
+  if (kind === 'chat') { if (page === 'chat') updateChat(); return; }
   if (isEditing()) { pendingRender = true; return; }
   renderPage();
 }
@@ -512,7 +343,6 @@ function listen(path, key, queryFn) {
   if (queryFn) ref = queryFn(ref, { query, where, orderBy, limit });
   const stop = onSnapshot(ref, s => {
     data[key] = s.docs.map(d => ({ id: d.id, ...d.data() }));
-    if (key === 'submissions') scheduleStatsSync(); // keep the monthly leaderboard up to date in real time
     requestRender();
   }, err => {
     console.error(path, err);
@@ -526,9 +356,12 @@ async function loadData() {
   if (!db || !profile) return;
   const { collection, doc, onSnapshot, query, where, orderBy, limit } = fb;
   const uid = currentUser.uid;
-  data.announcements = []; data.annRead = []; data.leaderboards = {};
-  statsSig = ''; lbReadErr = false; lbWriteErr = false;
-  tickCache = { key: '', html: '' };
+
+  // Reset so nothing from a previous login can leak into this session.
+  data.announcements = []; data.annRead = [];
+  data.submissions = []; data.accounts = []; data.users = [];
+  data.messages = []; data.presence = [];
+  data.settings = { ...DEFAULT_SETTINGS };
 
   if (isAdmin()) {
     listen('accounts', 'accounts');
@@ -565,19 +398,6 @@ async function loadData() {
     updateOnline();
   }));
 
-  // Monthly leaderboard documents (readable by every signed-in user).
-  unsubs.push(onSnapshot(collection(db, 'leaderboards'), s => {
-    lbReadErr = false;
-    const m = {};
-    s.docs.forEach(d => { m[d.id] = d.data(); });
-    data.leaderboards = m;
-    requestRender();
-  }, err => {
-    console.warn('leaderboards listener (check Firestore rules for /leaderboards)', err);
-    lbReadErr = true;
-    requestRender();
-  }));
-
   const msgQuery = query(collection(db, 'conversations', 'company_group', 'messages'), orderBy('createdAt', 'desc'), limit(150));
   unsubs.push(onSnapshot(msgQuery, s => {
     data.messages = s.docs.map(d => ({ id: d.id, ...d.data() })).sort((a, b) => timeVal(a.createdAt) - timeVal(b.createdAt));
@@ -600,13 +420,9 @@ function demoSignIn(role) {
   data.submissions = [
     { id: 'demo-1', workerId: 'demo-worker', workerName: 'Demo Worker', accountId: 'abk-01', accountName: 'Abukai Team Alpha', shiftDate: t, shiftType: 'Morning', startTime: '06:00', endTime: '14:00', receiptCount: 125, errorCount: 4, errorNote: 'Blurry images', status: 'approved', rateCents: 100, deductionPercent: 10, grossCents: 12500, deductionCents: 1250, netCents: 11250, createdAt: new Date() },
     { id: 'demo-2', workerId: 'worker-2', workerName: 'Jamie Santos', accountId: 'abk-01', accountName: 'Abukai Team Alpha', shiftDate: t, shiftType: 'Afternoon', startTime: '14:00', endTime: '22:00', receiptCount: 96, errorCount: 0, errorNote: '', status: 'pending', rateCents: 100, deductionPercent: 10, grossCents: 9600, deductionCents: 960, netCents: 8640, createdAt: new Date() }];
-  data.messages = [
-    { id: 'm1', senderId: 'worker-2', senderName: 'Jamie Santos', text: 'Hi team, my shift submission is ready for review.', createdAt: new Date() },
-    { id: 'm2', senderId: 'demo-worker', senderName: 'Demo Worker', text: 'Good morning everyone!', createdAt: new Date() }];
+  data.messages = [{ id: 'm1', senderId: 'worker-2', senderName: 'Jamie Santos', text: 'Hi team, my shift submission is ready for review.', createdAt: new Date() }];
   data.presence = [{ id: 'demo-worker', displayName: 'Demo Worker', role: 'worker', demo: true }, { id: 'worker-2', displayName: 'Jamie Santos', role: 'worker', demo: true }];
   data.settings = { ...DEFAULT_SETTINGS };
-  data.leaderboards = {};
-  tickCache = { key: '', html: '' };
   page = 'dashboard';
   renderPage();
   toast('Demo mode: changes are not saved online.');
@@ -681,7 +497,7 @@ function dashboard() {
   const earned = approved.reduce((n, s) => n + num(s.netCents), 0);
   const recent = rows.slice().sort((a, b) => timeVal(b.createdAt) - timeVal(a.createdAt)).slice(0, 5);
   const first = esc((profile.displayName || 'there').split(' ')[0]);
-  return `<div class="welcome"><div><h2>${isAdmin() ? 'Good day, Administrator' : 'Welcome back, ' + first + ' 👋'}</h2><p>Here’s what’s happening with ${isAdmin() ? 'your team' : 'your shifts'} today.</p></div>${!isAdmin() ? '<button class="btn btn-primary" data-page="receipts">＋ Submit shift</button>' : '<button class="btn btn-primary" data-page="receipts">Review submissions →</button>'}</div>${onlineStrip()}${chatTickerPanel()}${!isAdmin() ? workerBanner() : ''}<div class="stats">${stat(isAdmin() ? 'Total submissions' : 'My submissions', rows.length, isAdmin() ? 'All recorded shifts' : 'Your recorded shifts', '▤')}${stat('Receipts processed', total.toLocaleString(), `${errTotal.toLocaleString()} error(s) recorded`, '▧')}${stat('Pending review', pending.length, 'Awaiting a decision', '◷')}${stat(isAdmin() ? 'Approved net pay' : 'Approved earnings', money(earned), 'After configured deductions', '₱')}</div>${monthStats(rows)}${isAdmin() ? performersPanel() : ''}${isAdmin() ? announcementsPanel() : ''}<div class="grid-2"><div class="panel"><div class="panel-head"><div><h3>Recent submissions</h3><p>Latest shift records and review status</p></div><button class="small-btn" data-page="receipts">View all →</button></div><div class="table-wrap"><table><thead><tr><th>Worker / account</th><th>Shift date</th><th>Shift</th><th>Processed</th><th>Errors</th><th>Net pay</th><th>Status</th><th></th></tr></thead><tbody>${submissionRows(recent)}</tbody></table></div></div><div class="panel"><div class="panel-head"><div><h3>Quick actions</h3><p>Common tasks, one click away</p></div></div><div class="quick-grid"><button class="quick" data-page="receipts"><span>🧾</span><strong>Submit shift</strong><small>Record receipt count</small></button><button class="quick" data-page="errors"><span>⚠️</span><strong>Error processed</strong><small>Review error receipts</small></button><button class="quick" data-page="reports"><span>📊</span><strong>View reports</strong><small>Track your totals</small></button><button class="quick" data-page="chat"><span>💬</span><strong>Team chat</strong><small>Message your team</small></button>${isAdmin() ? '<button class="quick" data-page="workers"><span>👥</span><strong>Manage workers</strong><small>Review team accounts</small></button>' : ''}</div><div class="notice">${isAdmin() ? `You have <b>${pending.length}</b> submission(s) waiting for review.` : `Your approved submissions show in earnings. If a shift is rejected, check the reason and submit a correction.`}</div></div></div>`;
+  return `<div class="welcome"><div><h2>${isAdmin() ? 'Good day, Administrator' : 'Welcome back, ' + first + ' 👋'}</h2><p>Here’s what’s happening with ${isAdmin() ? 'your team' : 'your shifts'} today.</p></div>${!isAdmin() ? '<button class="btn btn-primary" data-page="receipts">＋ Submit shift</button>' : '<button class="btn btn-primary" data-page="receipts">Review submissions →</button>'}</div>${onlineStrip()}<div class="stats">${stat(isAdmin() ? 'Total submissions' : 'My submissions', rows.length, isAdmin() ? 'All recorded shifts' : 'Your recorded shifts', '▤')}${stat('Receipts processed', total.toLocaleString(), `${errTotal.toLocaleString()} error(s) recorded`, '▧')}${stat('Pending review', pending.length, 'Awaiting a decision', '◷')}${stat(isAdmin() ? 'Approved net pay' : 'Approved earnings', money(earned), 'After configured deductions', '₱')}</div>${monthStats(rows)}${isAdmin() ? announcementsPanel() : ''}<div class="grid-2"><div class="panel"><div class="panel-head"><div><h3>Recent submissions</h3><p>Latest shift records and review status</p></div><button class="small-btn" data-page="receipts">View all →</button></div><div class="table-wrap"><table><thead><tr><th>Worker / account</th><th>Shift date</th><th>Shift</th><th>Processed</th><th>Errors</th><th>Net pay</th><th>Status</th><th></th></tr></thead><tbody>${submissionRows(recent)}</tbody></table></div></div><div class="panel"><div class="panel-head"><div><h3>Quick actions</h3><p>Common tasks, one click away</p></div></div><div class="quick-grid"><button class="quick" data-page="receipts"><span>🧾</span><strong>Submit shift</strong><small>Record receipt count</small></button><button class="quick" data-page="errors"><span>⚠️</span><strong>Error processed</strong><small>Review error receipts</small></button><button class="quick" data-page="reports"><span>📊</span><strong>View reports</strong><small>Track your totals</small></button><button class="quick" data-page="chat"><span>💬</span><strong>Team chat</strong><small>Message your team</small></button>${isAdmin() ? '<button class="quick" data-page="workers"><span>👥</span><strong>Manage workers</strong><small>Review team accounts</small></button>' : ''}</div><div class="notice">${isAdmin() ? `You have <b>${pending.length}</b> submission(s) waiting for review.` : `Your approved submissions show in earnings. If a shift is rejected, check the reason and submit a correction.`}</div></div></div>`;
 }
 
 function filteredSubmissions() {
@@ -742,7 +558,7 @@ function accounts() {
   }, { pr: 0, pe: 0, cr: 0, ce: 0 });
   const errCell = n => `<td${n > 0 ? ' style="color:#c0392b;font-weight:600"' : ''}>${n.toLocaleString()}</td>`;
 
-  const body = rows.map(({ a, st }) => `<tr><td><strong>${esc(a.name)}</strong></td><td>${esc(a.code || '—')}</td><td>${esc(workerNamesFor(a))}</td><td>${st.prev.receipts.toLocaleString()}</td>${errCell(st.prev.errors)}<td>${st.cur.receipts.toLocaleString()}</td>${errCell(st.cur.errors)}<td>${status(a.isActive === false ? 'inactive' : 'active')}</td><td>${esc(a.notes || '—')}</td><td>${isAdmin() ? `<div class="sh-row-actions"><button class="btn btn-secondary" data-assign="${esc(a.id)}">Assign workers</button><button class="small-btn" data-edit-account="${esc(a.id)}">Edit</button><button class="small-btn" data-toggle-account="${esc(a.id)}">${a.isActive === false ? 'Activate' : 'Deactivate'}</button><button class="btn btn-danger" data-delete-account="${esc(a.id)}">Delete</button></div>` : '—'}</td></tr>`).join('');
+  const body = rows.map(({ a, st }) => `<tr><td><strong>${esc(a.name)}</strong></td><td>${esc(a.code || '—')}</td><td>${esc(workerNamesFor(a))}</td><td>${st.prev.receipts.toLocaleString()}</td>${errCell(st.prev.errors)}<td>${st.cur.receipts.toLocaleString()}</td>${errCell(st.cur.errors)}<td>${status(a.isActive === false ? 'inactive' : 'active')}</td><td>${esc(a.notes || '—')}</td><td>${isAdmin() ? `<div class="sh-row-actions"><button class="btn btn-secondary" data-assign="${esc(a.id)}">Assign workers</button><button class="small-btn" data-toggle-account="${esc(a.id)}">${a.isActive === false ? 'Activate' : 'Deactivate'}</button></div>` : '—'}</td></tr>`).join('');
 
   const foot = `<tr style="font-weight:700;background:rgba(0,0,0,.03)"><td colspan="3">Total (all accounts)</td><td>${tot.pr.toLocaleString()}</td>${errCell(tot.pe)}<td>${tot.cr.toLocaleString()}</td>${errCell(tot.ce)}<td colspan="3"></td></tr>`;
 
@@ -868,8 +684,6 @@ function wireShell() {
     if ((el = t.closest('[data-del-announcement]'))) return removeAnnouncement(el.dataset.delAnnouncement);
     if ((el = t.closest('[data-worker]'))) return viewWorker(el.dataset.worker);
     if ((el = t.closest('[data-assign]'))) return assignWorker(el.dataset.assign);
-    if ((el = t.closest('[data-edit-account]'))) return editAccount(el.dataset.editAccount);
-    if ((el = t.closest('[data-delete-account]'))) return deleteAccount(el.dataset.deleteAccount);
     if ((el = t.closest('[data-toggle-account]'))) return toggleAccount(el.dataset.toggleAccount);
     if ((el = t.closest('[data-worker-action]'))) return workerAction(el.dataset.id, el.dataset.workerAction);
   });
@@ -907,19 +721,23 @@ async function submitShift(e) {
   e.preventDefault();
   const form = e.currentTarget;
   const btn = form.querySelector('[type=submit]');
+  if (btn.disabled) return;
+  btn.disabled = true; // lock immediately so a double click cannot create two submissions
+  const fail = msg => { toast(msg); btn.disabled = false; };
+
   const f = new FormData(form);
   const account = data.accounts.find(a => a.id === f.get('accountId'));
-  if (!account) return toast('Select an active account first.');
+  if (!account) return fail('Select an active account first.');
   const shiftDate = f.get('shiftDate');
-  if (shiftDate > todayStr()) return toast('Shift date cannot be in the future.');
+  if (shiftDate > todayStr()) return fail('Shift date cannot be in the future.');
   const count = parseInt(f.get('receiptCount'), 10);
-  if (!Number.isFinite(count) || count < 0) return toast('Enter a valid processed receipt count.');
+  if (!Number.isFinite(count) || count < 0) return fail('Enter a valid processed receipt count.');
   const errCount = parseInt(f.get('errorCount') || '0', 10);
-  if (!Number.isFinite(errCount) || errCount < 0) return toast('Enter a valid error count.');
+  if (!Number.isFinite(errCount) || errCount < 0) return fail('Enter a valid error count.');
   const shiftType = f.get('shiftType');
 
   const dup = visibleSubmissions().find(s => s.accountId === account.id && s.shiftDate === shiftDate && s.shiftType === shiftType && s.status !== 'rejected' && s.workerId === currentUser.uid);
-  if (dup && !confirm('You already submitted a ' + shiftType + ' shift for this account on this date. Submit another anyway?')) return;
+  if (dup && !confirm('You already submitted a ' + shiftType + ' shift for this account on this date. Submit another anyway?')) { btn.disabled = false; return; }
 
   const rateCents = rate(), pct = dedPct();
   const gross = Math.round(count * rateCents);
@@ -934,7 +752,6 @@ async function submitShift(e) {
     grossCents: gross, deductionCents: ded, netCents: gross - ded
   };
 
-  btn.disabled = true;
   if (!configured) {
     data.submissions.unshift({ ...item, id: 'local-' + Date.now(), createdAt: new Date(), updatedAt: new Date() });
     toast('Demo submission added (not saved online).');
@@ -968,7 +785,11 @@ function viewSubmission(id, scroll = true) {
   $('#pageContent').insertAdjacentHTML('afterbegin', `<div id="detailsPanel">${html}</div>`);
   $('#closeDetails').onclick = () => { detailId = null; $('#detailsPanel')?.remove(); };
   $('#editCountsBtn')?.addEventListener('click', () => editCounts(s.id));
-  $('#approveOne')?.addEventListener('click', e => { e.currentTarget.disabled = true; reviewSubmission(s, 'approved'); });
+  $('#approveOne')?.addEventListener('click', async e => {
+    const btn = e.currentTarget;
+    btn.disabled = true;
+    try { await reviewSubmission(s, 'approved'); } catch { btn.disabled = false; }
+  });
   $('#rejectOne')?.addEventListener('click', () => {
     openModal('Reject submission',
       `<div class="field"><label>REASON FOR REJECTION</label><textarea name="reason" required maxlength="500" placeholder="Tell the worker what to correct…"></textarea></div>`,
@@ -981,9 +802,16 @@ function viewSubmission(id, scroll = true) {
   if (scroll) $('#detailsPanel').scrollIntoView({ behavior: 'smooth' });
 }
 
-async function reviewSubmission(s, statusValue, reason = '') {
+async function reviewSubmission(stale, statusValue, reason = '') {
   if (!isAdmin()) return;
-  if (s.status !== 'pending') { toast('This submission was already reviewed.'); return; }
+  // Always use the freshest copy from the live snapshot, not the object captured when the panel opened.
+  const s = data.submissions.find(x => x.id === stale.id) || stale;
+  if (s.status !== 'pending') {
+    toast('This submission was already reviewed.');
+    detailId = null;
+    $('#detailsPanel')?.remove();
+    return;
+  }
   if (!configured) {
     s.status = statusValue; s.rejectionReason = reason;
     detailId = null;
@@ -1011,6 +839,7 @@ function editCounts(id) {
   if (!isAdmin()) return;
   const s = data.submissions.find(x => x.id === id);
   if (!s) return toast('Submission not found.');
+  if (s.status === 'approved' && !confirm('This shift is already approved. Editing will change the worker\'s net pay. Continue?')) return;
 
   openModal('Edit receipt counts',
     `<p class="muted" style="margin-top:0"><b>${esc(s.workerName || 'Worker')}</b> · ${esc(s.accountName || '')} · ${esc(date(s.shiftDate))} · ${esc(s.shiftType || '')}</p>
@@ -1074,81 +903,6 @@ function addAccount() {
     }, 'Create account');
 }
 
-/* ADMIN: edit account (with confirmation) */
-function editAccount(id) {
-  if (!isAdmin()) return;
-  const a = data.accounts.find(x => x.id === id);
-  if (!a) return toast('Account not found.');
-  openModal('Edit account',
-    `<div class="field"><label>ACCOUNT NAME</label><input name="name" required maxlength="80" value="${esc(a.name || '')}"></div>
-     <div class="field"><label>ACCOUNT CODE</label><input name="code" maxlength="20" value="${esc(a.code || '')}"></div>
-     <div class="field"><label>NOTES (OPTIONAL)</label><input name="notes" maxlength="200" value="${esc(a.notes || '')}"></div>`,
-    async fd => {
-      const name = String(fd.get('name') || '').trim();
-      const code = String(fd.get('code') || '').trim();
-      const notes = String(fd.get('notes') || '').trim();
-      if (!name) { toast('Account name is required.'); return false; }
-      if (code && data.accounts.some(x => x.id !== a.id && (x.code || '').toLowerCase() === code.toLowerCase())) {
-        toast('That account code already exists.'); return false;
-      }
-      const ok = await confirmDialog({
-        title: 'Save changes?',
-        message: `Are you sure you want to update the account "${a.name}"?`,
-        confirmLabel: 'Yes, save changes'
-      });
-      if (!ok) return false; // keep the edit form open
-
-      const changes = { name, code, notes };
-      if (!configured) {
-        Object.assign(a, changes, { updatedAt: new Date() });
-        data.submissions.forEach(s => { if (s.accountId === a.id) s.accountName = name; });
-        toast('Demo account updated.');
-        renderPage();
-        return;
-      }
-      const batch = fb.writeBatch(db);
-      batch.update(fb.doc(db, 'accounts', a.id), { ...changes, updatedAt: fb.serverTimestamp() });
-      // Keep the account name shown on existing submissions in sync (Firestore batch limit is 500).
-      data.submissions.filter(s => s.accountId === a.id && s.accountName !== name).slice(0, 450)
-        .forEach(s => batch.update(fb.doc(db, 'submissions', s.id), { accountName: name }));
-      await batch.commit();
-      toast('Account updated.');
-    }, 'Save changes');
-}
-
-/* ADMIN: delete account (with confirmation) — submissions are kept */
-async function deleteAccount(id) {
-  if (!isAdmin()) return;
-  const a = data.accounts.find(x => x.id === id);
-  if (!a) return toast('Account not found.');
-  const subs = data.submissions.filter(s => s.accountId === id).length;
-  const workersCount = (a.assignedWorkerIds || []).length;
-  const ok = await confirmDialog({
-    title: 'Delete account?',
-    message: `Are you sure you want to delete "${a.name}"? ${workersCount} assigned worker(s) will lose access to it. Its ${subs} existing submission(s) will be kept. This action cannot be undone.`,
-    confirmLabel: 'Yes, delete account',
-    danger: true
-  });
-  if (!ok) return;
-
-  if (!configured) {
-    data.accounts = data.accounts.filter(x => x.id !== id);
-    data.users.forEach(u => { u.assignedAccountIds = (u.assignedAccountIds || []).filter(x => x !== id); });
-    toast('Demo account deleted.');
-    renderPage();
-    return;
-  }
-  try {
-    const batch = fb.writeBatch(db);
-    batch.delete(fb.doc(db, 'accounts', id));
-    data.users.filter(u => (u.assignedAccountIds || []).includes(id)).forEach(u => {
-      batch.update(fb.doc(db, 'users', u.id), { assignedAccountIds: fb.arrayRemove(id), updatedAt: fb.serverTimestamp() });
-    });
-    await batch.commit();
-    toast('Account deleted.');
-  } catch (e) { console.error(e); toast('Could not delete account. Check Firestore rules.'); }
-}
-
 async function toggleAccount(id) {
   const a = data.accounts.find(x => x.id === id);
   if (!a || !isAdmin()) return;
@@ -1182,7 +936,7 @@ function assignWorker(accountId) {
       account.assignedWorkerIds = ids; account.assignedWorkerNames = names;
       eligible.forEach(w => {
         const list = new Set(w.assignedAccountIds || []);
-        ids.includes(w.id) ? list.add(account.id) : list.delete(account.id);
+        if (ids.includes(w.id)) list.add(account.id); else list.delete(account.id);
         w.assignedAccountIds = [...list];
       });
       toast('Demo assignment updated.');
@@ -1255,6 +1009,7 @@ function addWorker() {
         return false;
       } finally {
         try { await fb.signOut(secAuth); } catch {}
+        try { await fb.deleteApp(secondary); } catch {}
       }
     }, 'Create worker');
 }
@@ -1284,6 +1039,7 @@ async function deleteWorker(u) {
       });
     });
     await batch.commit();
+    try { await fb.deleteDoc(fb.doc(db, 'presence', u.id)); } catch {} // best effort: stop showing them as online
     toast('Worker deleted.');
   } catch (e) { console.error(e); toast('Could not delete worker. Check Firestore rules.'); }
 }
@@ -1383,7 +1139,13 @@ async function boot() {
     const token = ++authToken;
     unlisten();
     closeModal();
-    if (!user) { stopPresence(); currentUser = null; profile = null; renderLogin(); return; }
+    if (!user) {
+      // Already signed out: only stop timers (a presence write would be rejected now).
+      clearPresenceTimers();
+      currentUser = null; profile = null;
+      renderLogin();
+      return;
+    }
 
     try {
       const snap = await fb.getDoc(fb.doc(db, 'users', user.uid));
