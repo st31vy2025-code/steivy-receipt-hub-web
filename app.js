@@ -173,6 +173,7 @@ button:disabled{opacity:.6;cursor:not-allowed}
 .standing.warn{background:#fff4d6;border-color:#f0d487}
 .standing.good{background:#e6f6ec;border-color:#a8dcb9}
 .standing.info{background:#f1f8f4}`;
+.standing.info{background:#f1f8f4}
 .welcome{gap:16px;flex-wrap:wrap}
 .msg-ticker{flex:1;min-width:220px;display:flex;align-items:center;gap:10px;background:#f1f8f4;border:1px solid #d5ecdd;border-radius:999px;padding:8px 16px;cursor:pointer;overflow:hidden}
 .msg-ticker-view{flex:1;min-width:0;overflow:hidden;white-space:nowrap;-webkit-mask-image:linear-gradient(90deg,transparent,#000 16px,#000 calc(100% - 16px),transparent);mask-image:linear-gradient(90deg,transparent,#000 16px,#000 calc(100% - 16px),transparent)}
@@ -182,9 +183,8 @@ button:disabled{opacity:.6;cursor:not-allowed}
 .msg-item{font-size:13px;color:#1a2420}
 .msg-item b{color:#1e8449}
 @keyframes tickerScroll{from{transform:translateX(0)}to{transform:translateX(-50%)}}
-@media (prefers-reduced-motion:reduce){.msg-ticker-track{animation:none}.msg-ticker-view{overflow-x:auto}}
+@media (prefers-reduced-motion:reduce){.msg-ticker-track{animation:none}.msg-ticker-view{overflow-x:auto}}`;
 document.head.appendChild(extraStyle);
-
 /* ───────────────────────── Presence (who is online) ───────────────────────── */
 const ONLINE_WINDOW_MS = 150000; // a worker counts as online if seen in the last 2.5 minutes
 let heartbeatTimer = null, onlineTimer = null;
@@ -725,7 +725,29 @@ function updateLiveFeed() {
   el.innerHTML = liveFeedHtml();
   el.scrollTop = el.scrollHeight;
 }
-
+function tickerInner() {
+  const msgs = (data.messages || []).slice(-5);
+  if (!msgs.length) return '<span class="muted" style="font-size:13px">No team messages yet</span>';
+  const set = msgs.map(m => {
+    const who = m.senderId === currentUser?.uid ? 'You' : (m.senderName || 'Team member');
+    const txt = String(m.text || m.message || '').replace(/\s+/g, ' ').slice(0, 120);
+    return `<span class="msg-item"><b>${esc(who)}:</b> ${esc(txt)}</span>`;
+  }).join('');
+  const dur = Math.max(15, msgs.length * 6);
+  return `<div class="msg-ticker-track" style="animation-duration:${dur}s"><div class="msg-ticker-set">${set}</div><div class="msg-ticker-set" aria-hidden="true">${set}</div></div>`;
+}
+function messageTicker() {
+  const last = (data.messages || []).slice(-1)[0]?.id || '';
+  return `<div class="msg-ticker" id="msgTicker" data-page="chat" data-last="${esc(last)}" title="Open team chat"><span>💬</span><div class="msg-ticker-view">${tickerInner()}</div></div>`;
+}
+function updateTicker() {
+  const el = $('#msgTicker');
+  if (!el) return;
+  const last = (data.messages || []).slice(-1)[0]?.id || '';
+  if (el.dataset.last === last) return;
+  el.dataset.last = last;
+  el.querySelector('.msg-ticker-view').innerHTML = tickerInner();
+}
 /* ───────────────────────── Demo mode ───────────────────────── */
 function demoSignIn(role) {
   unlisten();
