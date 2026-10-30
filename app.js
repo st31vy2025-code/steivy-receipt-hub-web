@@ -863,11 +863,12 @@ async function syncLeaderboard() {
 }
 
 const medal = i => ['🥇', '🥈', '🥉'][i] || `#${i + 1}`;
+const errMedal = i => ['😡', '😭', '😢', '😟', '😕'][i] || `#${i + 1}`; // emojis for the error ranking
 
 function top5Panel(title, sub, list, kind) {
   const val = r => kind === 'out' ? r.receipts : r.errors;
   const max = Math.max(1, ...list.slice(0, 5).map(val));
-  const rows = list.slice(0, 5).map((r, i) => `<div class="lb-row"><span class="lb-rank">${medal(i)}</span><div class="avatar">${esc(initials(r.name))}</div><div class="lb-main"><div class="lb-top"><b>${esc(r.name)}</b><span class="lb-val ${kind === 'err' ? 'err' : ''}">${val(r).toLocaleString()} ${kind === 'out' ? 'receipts' : 'error(s)'}</span></div><div class="lb-bar"><div class="lb-fill ${kind === 'err' ? 'err' : ''}" style="width:${(val(r) / max * 100).toFixed(1)}%"></div></div><small class="muted">${kind === 'out' ? num(r.errors).toLocaleString() + ' error(s) · ' : num(r.receipts).toLocaleString() + ' processed · '}${r.shifts} shift(s)</small></div></div>`).join('');
+  const rows = list.slice(0, 5).map((r, i) => `<div class="lb-row"><span class="lb-rank">${kind === 'err' ? errMedal(i) : medal(i)}</span><div class="avatar">${esc(initials(r.name))}</div><div class="lb-main"><div class="lb-top"><b>${esc(r.name)}</b><span class="lb-val ${kind === 'err' ? 'err' : ''}">${val(r).toLocaleString()} ${kind === 'out' ? 'receipts' : 'error(s)'}</span></div><div class="lb-bar"><div class="lb-fill ${kind === 'err' ? 'err' : ''}" style="width:${(val(r) / max * 100).toFixed(1)}%"></div></div><small class="muted">${kind === 'out' ? num(r.errors).toLocaleString() + ' error(s) · ' : num(r.receipts).toLocaleString() + ' processed · '}${r.shifts} shift(s)</small></div></div>`).join('');
   return `<div class="panel"><div class="panel-head"><div><h3>${title}</h3><p>${sub}</p></div></div>${rows || `<div class="empty">${kind === 'out' ? '🏆' : '✓'}<b>${kind === 'out' ? 'No output recorded yet' : 'No errors recorded'}</b>${kind === 'out' ? 'Rankings appear after shifts are submitted.' : 'Great — nobody has errors in this period.'}</div>`}</div>`;
 }
 
@@ -887,13 +888,13 @@ function workerStandings(rk, period) {
   else if (rank === n && n > 1) out = { cls: 'warn', icon: '📉', title: 'You have the lowest output', text: `${me.receipts.toLocaleString()} receipts processed in ${label}. Let's aim higher on your next shift — you can do it!` };
   else out = { cls: 'info', icon: '📊', title: `You are ${ordinal(rank)} of ${n} in output`, text: `${me.receipts.toLocaleString()} receipts processed — ${gap.toLocaleString()} behind the top performer.` };
 
-  const er = rk.byErr.findIndex(r => r.id === uid) + 1;
-  let err;
-  if (me.errors === 0) err = { cls: 'good', icon: '✅', title: 'Zero errors — excellent accuracy!', text: `No error receipts recorded in ${label}. Keep up the clean work!` };
-  else if (er === 1) err = { cls: 'danger', icon: '⚠️', title: 'You have the MOST errors', text: `${me.errors.toLocaleString()} error(s) in ${label}, the highest in the team. Please double-check each receipt before submitting.` };
-  else if (er === 2) err = { cls: 'danger', icon: '⚠️', title: 'You have the 2nd highest errors', text: `${me.errors.toLocaleString()} error(s) in ${label}. Slow down a little and review your work to bring this down.` };
-  else if (er === 3) err = { cls: 'warn', icon: '⚠️', title: 'You have the 3rd highest errors', text: `${me.errors.toLocaleString()} error(s) in ${label}. A little more checking will bring this down.` };
-  else err = { cls: 'info', icon: '🔎', title: `${me.errors.toLocaleString()} error(s) recorded`, text: `You are outside the top 3 for errors in ${label}. Keep your accuracy improving!` };
+   const er = rk.byErr.findIndex(r => r.id === uid) + 1;
+   let err;
+   if (me.errors === 0) err = { cls: 'good', icon: '✅', title: 'Zero errors — excellent accuracy!', text: `No error receipts recorded in ${label}. Keep up the clean work!` };
+   else if (er === 1) err = { cls: 'danger', icon: '😡', title: 'You have the MOST errors', text: `${me.errors.toLocaleString()} error(s) in ${label}, the highest in the team. Please double-check each receipt before submitting.` };
+   else if (er === 2) err = { cls: 'danger', icon: '😭', title: 'You have the 2nd highest errors', text: `${me.errors.toLocaleString()} error(s) in ${label}. Slow down a little and review your work to bring this down.` };
+   else if (er === 3) err = { cls: 'warn', icon: '😢', title: 'You have the 3rd highest errors', text: `${me.errors.toLocaleString()} error(s) in ${label}. A little more checking will bring this down.` };
+   else err = { cls: 'info', icon: '😕', title: `${me.errors.toLocaleString()} error(s) recorded`, text: `You are outside the top 3 for errors in ${label}. Keep your accuracy improving!` };
   return [out, err];
 }
 
