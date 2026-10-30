@@ -24,9 +24,11 @@ let detailId = null;
 let chatReady = false, unreadChat = 0;
 let lbPeriod = 'month', lbError = false, lbTimer = null;
 let loaded = {};
+let accessErr = {}; // collections the admin could not read (permission-denied)
+let missedFrom = '', missedTo = '';
 const filters = { q: '', status: 'all' };
-const DEFAULT_SETTINGS = { grossRateCents: 100, deductionPercent: 10 };
-const data = { submissions: [], accounts: [], users: [], messages: [], presence: [], announcements: [], annRead: [], leaderboard: [], settings: { ...DEFAULT_SETTINGS } };
+const DEFAULT_SETTINGS = { grossRateCents: 100, deductionPercent: 10, errorWarnPercent: 5, workUrl: '' };
+const data = { submissions: [], accounts: [], users: [], messages: [], presence: [], announcements: [], annRead: [], leaderboard: [], audit: [], settings: { ...DEFAULT_SETTINGS } };
 
 /* ───────────────────────── Helpers ───────────────────────── */
 const $ = s => document.querySelector(s);
@@ -70,6 +72,233 @@ const timeVal = v => {
 };
 const rate = () => num(data.settings.grossRateCents ?? DEFAULT_SETTINGS.grossRateCents);
 const dedPct = () => num(data.settings.deductionPercent ?? DEFAULT_SETTINGS.deductionPercent);
+
+/* ───────────────────────── Shift schedule ───────────────────────── */
+const SHIFT_OPTIONS = [
+  { id: 'n1', label: '6:00 PM – 2:00 AM', from: '18:00', to: '02:00' },
+  { id: 'n2', label: '2:00 AM – 10:00 AM', from: '02:00', to: '10:00' },
+  { id: 'd1', label: '10:00 AM – 6:00 PM', from: '10:00', to: '18:00' },
+  { id: 'long', label: '6:00 PM – 10:00 AM', from: '18:00', to: '10:00' },
+  { id: 'open', label: '24h / Open shift', from: '', to: '' },
+  { id: 'custom', label: 'Custom time (from – to)', from: '', to: '' },
+  { id: 'none', label: 'No schedule (no time limit)', from: '', to: '' }
+];
+const toMin = t => { const [h, m] = String(t).split(':').map(Number); return (h || 0) * 60 + (m || 0); };
+const fmt12 = t => { const [h, m] = String(t).split(':').map(Number); return `${((h + 11) % 12) + 1}:${String(m || 0).padStart(2, '0')} ${h >= 12 ? 'PM' : 'AM'}`; };
+// Returns { type, from, to, open, label } or null when the user has no schedule.
+function scheduleOf(u) {
+  const s = u?.shiftSchedule;
+  if (!s || !s.type || s.type === 'none') return null;
+  if (s.type === 'open') return { type: 'open', open: true, label: '24h / Open shift' };
+  const opt = SHIFT_OPTIONS.find(o => o.id === s.type);
+  const from = s.type === 'custom' ? s.from : opt?.from;
+  const to = s.type === 'custom' ? s.to : opt?.to;
+  if (!from || !to) return null;
+  return { type: s.type, from, to, open: false, label: `${fmt12(from)} – ${fmt12(to)}${s.type === 'custom' ? ' (custom)' : ''}` };
+}
+// True when "now" is inside the scheduled window (overnight windows such as 6 PM – 2 AM are handled).
+function inWindow(sc, now = new Date()) {
+  if (!sc || sc.open) return true;
+  const n = now.getHours() * 60 + now.getMinutes(), a = toMin(sc.from), b = toMin(sc.to);
+  if (a === b) return true;
+  return a < b ? (n >= a && n <= b) : (n >= a || n <= b);
+}
+// After midnight in an overnight shift the shift belongs to the previous calendar day.
+function defaultShiftDate(sc) {
+  const d = new Date();
+  if (sc && !sc.open) {
+    const a = toMin(sc.from), b = toMin(sc.to), n = d.getHours() * 60 + d.getMinutes();
+    if (a > b && n <= b) d.setDate(d.getDate() - 1);
+  }
+  return `${d.getFullYear()}-${String(d.getMonth() + 1).padStart(2, '0')}-${String(d.getDate()).padStart(2, '0')}`;
+}
+function shiftNoticeHtml(sc, ok) {
+  if (!sc) return `<div class="notice" style="margin-bottom:12px">No shift schedule assigned yet. Ask your administrator to set your schedule.</div>`;
+  if (sc.open) return `<div class="notice" style="margin-bottom:12px">🕒 Your schedule: <b>${esc(sc.label)}</b>. You can submit anytime.</div>`;
+  return ok
+    ? `<div class="notice" style="margin-bottom:12px">🕒 Your schedule: <b>${esc(sc.label)}</b>. You can submit now.</div>`
+    : `<div class="notice warn" style="margin-bottom:12px">⛔ Your schedule: <b>${esc(sc.label)}</b>. You can only submit your total output and errors during this time. If you do not submit within your schedule, your pay will be void.</div>`;
+}
+// Keeps the submit form in step with the clock without re-rendering (so typed values are not lost).
+function refreshShiftGate() {
+  if (!currentUser || !profile || isAdmin()) return;
+  const el = $('#shiftGate');
+  if (!el) return;
+  const sc = scheduleOf(profile), ok = inWindow(sc);
+  if (el.dataset.ok !== String(ok)) { el.dataset.ok = String(ok); el.innerHTML = shiftNoticeHtml(sc, ok); }
+  const b = $('#submissionForm [type=submit]');
+  if (b && b.dataset.noacct !== '1') b.disabled = !ok;
+}
+setInterval(refreshShiftGate, 30000);
+
+// Shown to every worker each time they sign in / open the app.
+function showShiftWarning() {
+  $('#shiftWarn')?.remove();
+  if (!currentUser || !profile || isAdmin()) return;
+  const sc = scheduleOf(profile);
+  const wrap = document.createElement('div');
+  wrap.className = 'sh-modal';
+  wrap.id = 'shiftWarn';
+  wrap.innerHTML = `<div class="sh-modal-card sh-confirm" role="alertdialog" aria-modal="true"><div class="sh-confirm-ico danger">⚠️</div><h3>Don't forget!</h3><p>Put your <b>total output</b> and <b>errors</b> before your shift ends.</p>${sc ? `<p class="muted">Your shift: <b>${esc(sc.label)}</b></p>` : ''}<p style="color:#c0392b;font-weight:600;margin-top:8px">If you cannot submit within your scheduled time, your salary will be void.</p><div class="sh-modal-actions"><button type="button" class="btn btn-primary" data-ok>I understand</button></div></div>`;
+  document.body.appendChild(wrap);
+  const ok = wrap.querySelector('[data-ok]');
+  ok.addEventListener('click', () => wrap.remove());
+  ok.focus();
+}
+
+/* ───────────────────────── Audit log, reminders, missed shifts, error rate ───────────────────────── */
+const errWarnPct = () => num(data.settings.errorWarnPercent ?? DEFAULT_SETTINGS.errorWarnPercent);
+// Link to the work website. It is stored in Firestore (Pay settings), only http(s) links are accepted.
+const workUrl = () => { const u = String(data.settings.workUrl || '').trim(); return /^https?:\/\//i.test(u) ? u : ''; };
+const errRatePct = (p, e) => (num(p) + num(e) > 0 ? num(e) / (num(p) + num(e)) * 100 : 0);
+const liveUsers = () => data.users.filter(u => u.status !== 'deleted'); // deleted workers are kept only as hidden tombstones
+const ymd = d => `${d.getFullYear()}-${String(d.getMonth() + 1).padStart(2, '0')}-${String(d.getDate()).padStart(2, '0')}`;
+const dayStr = off => { const d = new Date(); d.setDate(d.getDate() + off); return ymd(d); };
+const rowAdminBtns = s => `<button class="small-btn" data-edit-counts="${esc(s.id)}">Edit counts</button>${s.status !== 'rejected' ? `<button class="small-btn" data-allow-resubmit="${esc(s.id)}">Allow resubmit</button>` : ''}`;
+
+// Records an admin action. Never blocks the action itself if the write fails.
+async function logAudit(action, details = '') {
+  if (!currentUser || !profile) return;
+  const item = { action, details: String(details).slice(0, 600), actorId: currentUser.uid, actorName: profile.displayName || currentUser.email || 'Admin' };
+  if (!configured) { data.audit.unshift({ ...item, id: 'local-' + Date.now(), createdAt: new Date() }); return; }
+  try {
+    await fb.addDoc(fb.collection(db, 'auditLogs'), { ...item, createdAt: fb.serverTimestamp() });
+  } catch (e) { console.warn('audit log write failed (check Firestore rules for /auditLogs)', e); }
+}
+
+// 30-minute reminder before the shift ends (only for workers who still have an account without a submission)
+function showShiftReminder(mins, sc, names) {
+  $('#shiftRemind')?.remove();
+  const wrap = document.createElement('div');
+  wrap.className = 'sh-modal';
+  wrap.id = 'shiftRemind';
+  wrap.innerHTML = `<div class="sh-modal-card sh-confirm" role="alertdialog" aria-modal="true"><div class="sh-confirm-ico danger">⏰</div><h3>${mins} minute(s) left in your shift</h3><p>Submit your <b>total output</b> and <b>errors</b> for:</p><p><b>${names.map(esc).join(', ')}</b></p><p class="muted">Shift: ${esc(sc.label)}</p><p style="color:#c0392b;font-weight:600;margin-top:8px">No submission within your schedule means your salary will be void.</p><div class="sh-modal-actions"><button type="button" class="btn btn-ghost" data-later>Later</button><button type="button" class="btn btn-primary" data-go>Submit now</button></div></div>`;
+  document.body.appendChild(wrap);
+  wrap.querySelector('[data-later]').addEventListener('click', () => wrap.remove());
+  wrap.querySelector('[data-go]').addEventListener('click', () => { wrap.remove(); go('receipts'); });
+}
+function checkShiftReminder() {
+  if (!currentUser || !profile || isAdmin()) return;
+  if (configured && !loaded.submissions) return;
+  const sc = scheduleOf(profile);
+  if (!sc || sc.open || !inWindow(sc)) return;
+  const a = toMin(sc.from), b = toMin(sc.to);
+  if (a === b) return;
+  const now = new Date(), nm = now.getHours() * 60 + now.getMinutes();
+  const remaining = a < b ? b - nm : (nm >= a ? (1440 - nm) + b : b - nm);
+  if (remaining < 0 || remaining > 30) return;
+  const day = defaultShiftDate(sc);
+  const done = new Set(data.submissions.filter(s => s.status !== 'rejected' && s.workerId === currentUser.uid && s.shiftDate === day).map(s => s.accountId));
+  const missing = data.accounts.filter(x => x.isActive !== false && (!x.assignedWorkerIds || x.assignedWorkerIds.includes(currentUser.uid)) && !done.has(x.id));
+  if (!missing.length) return;
+  const key = `steivy_remind_${currentUser.uid}_${day}`;
+  try { if (localStorage.getItem(key)) return; localStorage.setItem(key, '1'); }
+  catch { if (window.__shiftRemindKey === key) return; window.__shiftRemindKey = key; }
+  showShiftReminder(Math.max(1, remaining), sc, missing.map(x => x.name));
+}
+setInterval(checkShiftReminder, 30000);
+
+// Missed shift report: a scheduled worker with no non-rejected submission for an ended shift, per assigned account.
+function shiftEndAt(sc, dateStr) {
+  const [y, m, d] = dateStr.split('-').map(Number);
+  if (sc.open) return new Date(y, m - 1, d + 1, 0, 0, 0);
+  const a = toMin(sc.from), b = toMin(sc.to);
+  return new Date(y, m - 1, d + (a >= b ? 1 : 0), Math.floor(b / 60), b % 60, 59);
+}
+function eachDay(from, to) {
+  const out = [];
+  if (!from || !to) return out;
+  const [y, m, d] = from.split('-').map(Number), [y2, m2, d2] = to.split('-').map(Number);
+  const cur = new Date(y, m - 1, d), end = new Date(y2, m2 - 1, d2);
+  while (cur <= end && out.length < 62) { out.push(ymd(cur)); cur.setDate(cur.getDate() + 1); }
+  return out;
+}
+function missedShifts(from, to) {
+  if (configured && !loaded.submissions) return [];
+  const now = new Date(), out = [];
+  const have = new Set(data.submissions.filter(s => s.status !== 'rejected').map(s => `${s.workerId}|${s.accountId}|${s.shiftDate}`));
+  liveUsers().filter(w => w.role === 'worker' && w.isActive !== false && (w.status || 'approved') === 'approved').forEach(w => {
+    const sc = scheduleOf(w);
+    if (!sc) return;
+    const since = w.shiftSchedule?.since || todayStr();
+    const accts = data.accounts.filter(a => a.isActive !== false && (a.assignedWorkerIds || []).includes(w.id));
+    eachDay(from, to).forEach(day => {
+      if (day < since) return;
+      const endsAt = shiftEndAt(sc, day);
+      if (endsAt > now) return;
+      accts.forEach(a => {
+        if (!have.has(`${w.id}|${a.id}|${day}`)) out.push({ date: day, workerId: w.id, worker: w.displayName || w.email || 'Worker', account: a.name, label: sc.label, endsAt });
+      });
+    });
+  });
+  return out.sort((a, b) => b.date.localeCompare(a.date) || a.worker.localeCompare(b.worker));
+}
+function missedNotice() {
+  const n = missedShifts(dayStr(-6), todayStr()).length;
+  return n ? `<br><b>${n}</b> missed shift(s) in the last 7 days. <button class="small-btn" data-page="missed">View report</button>` : '';
+}
+
+// Error-rate warning (limit is set by the admin in Pay settings)
+function errorWarningPanel() {
+  const lim = errWarnPct();
+  if (lim <= 0) return '';
+  if (isAdmin()) {
+    const list = rankings('month').rows.map(r => ({ ...r, rate: errRatePct(r.receipts, r.errors) })).filter(r => r.errors > 0 && r.rate >= lim).sort((a, b) => b.rate - a.rate);
+    if (!list.length) return '';
+    return `<div class="notice warn" style="margin-bottom:16px"><b>⚠ High error rate this month (limit ${lim}%)</b><br>${list.slice(0, 8).map(r => `${esc(r.name)} — ${r.rate.toFixed(1)}% (${r.errors.toLocaleString()} error(s) of ${(r.receipts + r.errors).toLocaleString()})`).join('<br>')}</div>`;
+  }
+  const key = monthKeyOf(0);
+  const rows = visibleSubmissions().filter(s => s.status !== 'rejected' && String(s.shiftDate || '').slice(0, 7) === key);
+  const p = rows.reduce((n, s) => n + num(s.receiptCount), 0), e = rows.reduce((n, s) => n + num(s.errorCount), 0);
+  const rt = errRatePct(p, e);
+  if (e === 0 || rt < lim) return '';
+  return `<div class="notice warn" style="margin-bottom:16px"><b>⚠ Warning: your error rate this month is ${rt.toFixed(1)}%</b> (limit ${lim}%). You have ${e.toLocaleString()} error(s) out of ${(p + e).toLocaleString()} receipts. Please double-check each receipt before submitting.</div>`;
+}
+
+function missedPage() {
+  const to = missedTo || todayStr(), from = missedFrom || dayStr(-6);
+  const list = missedShifts(from, to);
+  const people = new Set(list.map(x => x.workerId)).size;
+  const rows = list.map(x => `<tr><td>${esc(date(x.date))}</td><td><div class="person"><div class="avatar">${esc(initials(x.worker))}</div><strong>${esc(x.worker)}</strong></div></td><td>${esc(x.account)}</td><td>${esc(x.label)}</td><td>${esc(date(x.endsAt))} ${esc(fmtTime(x.endsAt))}</td></tr>`).join('')
+    || `<tr><td colspan="5"><div class="empty">✓<b>No missed shifts</b>Every scheduled worker submitted for this period.</div></td></tr>`;
+  return `<div class="welcome"><div><h2>Missed shifts</h2><p>Scheduled workers who did not submit total output and errors for their shift.</p></div></div><div class="stats">${stat('Missed shifts', list.length, `${esc(from)} to ${esc(to)}`, '⏱')}${stat('Workers affected', people, 'Unique workers', '♙')}</div><div class="panel"><div class="toolbar"><label class="muted">From <input type="date" id="missedFrom" value="${esc(from)}" max="${todayStr()}"></label><label class="muted">To <input type="date" id="missedTo" value="${esc(to)}" max="${todayStr()}"></label><span class="spacer"></span><span class="muted">${list.length} record(s)</span></div><div class="table-wrap"><table><thead><tr><th>Shift date</th><th>Worker</th><th>Account</th><th>Schedule</th><th>Shift ended</th></tr></thead><tbody>${rows}</tbody></table></div><div class="notice" style="margin-top:12px">Only workers with a saved shift schedule are checked, for each account assigned to them. A schedule counts from the day it was saved. Submissions that were reset with "Allow resubmit" count as missed until the worker submits again.</div></div>`;
+}
+
+function auditPage() {
+  const rows = data.audit.slice().sort((a, b) => timeVal(b.createdAt) - timeVal(a.createdAt));
+  const body = rows.map(a => `<tr><td>${esc(date(a.createdAt))}<small style="display:block;color:#8a958e;margin-top:4px">${esc(fmtTime(a.createdAt))}</small></td><td><strong>${esc(a.actorName || 'Admin')}</strong></td><td>${esc(a.action || '')}</td><td>${esc(a.details || '')}</td></tr>`).join('')
+    || `<tr><td colspan="4"><div class="empty">🧾<b>No activity recorded yet</b>Admin actions appear here. If nothing shows after an action, publish the latest firestore.rules.</div></td></tr>`;
+  return `<div class="welcome"><div><h2>Audit log</h2><p>Who changed what, and when. Latest 300 actions.</p></div></div><div class="panel"><div class="toolbar"><input id="auditSearch" placeholder="Search action, admin or details…"><span class="spacer"></span><span class="muted">${rows.length} record(s)</span></div><div class="table-wrap"><table><thead><tr><th>When</th><th>Admin</th><th>Action</th><th>Details</th></tr></thead><tbody>${body}</tbody></table></div></div>`;
+}
+
+// ADMIN: void a submission so the worker can submit that shift again
+async function allowResubmit(id) {
+  if (!isAdmin()) return;
+  const s = data.submissions.find(x => x.id === id);
+  if (!s) return toast('Submission not found.');
+  if (s.status === 'rejected') return toast('This shift is already open for resubmission.');
+  if (!await confirmBox('Allow resubmit?', `This voids ${s.workerName || 'the worker'}'s submission for ${s.accountName || 'this account'} on ${date(s.shiftDate)} so they can submit it again. Its pay is removed until they resubmit. Continue?`, 'Yes, allow resubmit', true)) return;
+  const reason = 'Reset by admin. Please submit this shift again.';
+  const info = `${s.workerName || 'Worker'} · ${s.accountName || ''} · ${s.shiftDate}`;
+  if (!configured) {
+    Object.assign(s, { status: 'rejected', rejectionReason: reason, resubmitAllowed: true });
+    detailId = null;
+    logAudit('Allowed resubmit', info);
+    toast('Demo: resubmit allowed.');
+    renderPage();
+    return;
+  }
+  try {
+    await fb.updateDoc(fb.doc(db, 'submissions', s.id), {
+      status: 'rejected', rejectionReason: reason, resubmitAllowed: true,
+      reviewedBy: currentUser.uid, reviewedAt: fb.serverTimestamp(), updatedAt: fb.serverTimestamp()
+    });
+    detailId = null;
+    $('#detailsPanel')?.remove();
+    logAudit('Allowed resubmit', info);
+    toast('Resubmit allowed. The worker can submit this shift again.');
+  } catch (e) { console.error(e); toast('Could not update submission. Check Firestore rules.'); }
+}
 
 let toastTimer;
 function toast(msg) {
@@ -124,6 +353,9 @@ button:disabled{opacity:.6;cursor:not-allowed}
 .ann-body{white-space:pre-wrap;line-height:1.55;margin:10px 0 14px;word-break:break-word}
 /* confirm dialog */
 #confirmBox{z-index:1300}
+#shiftWarn{z-index:1250}
+#shiftRemind{z-index:1260}
+.start-work{display:flex;align-items:center;justify-content:center;gap:8px;margin:14px 12px 0;text-decoration:none;text-align:center}
 .sh-confirm{max-width:400px;text-align:center}
 .sh-confirm p{margin:0 0 4px;line-height:1.5}
 .sh-confirm .sh-modal-actions{justify-content:center}
@@ -315,6 +547,7 @@ function addAnnouncement() {
         return;
       }
       await fb.addDoc(fb.collection(db, 'announcements'), { ...item, createdAt: fb.serverTimestamp() });
+      logAudit('Posted announcement', title || message.slice(0, 80));
       toast('Announcement posted. It will pop up for all users.');
     }, 'Post to all users');
 }
@@ -325,6 +558,7 @@ async function removeAnnouncement(id) {
   if (!configured) { data.announcements = data.announcements.filter(a => a.id !== id); renderPage(); return; }
   try {
     await fb.deleteDoc(fb.doc(db, 'announcements', id));
+    logAudit('Removed announcement', id);
     toast('Announcement removed.');
   } catch (e) { console.error(e); toast('Could not remove announcement. Check Firestore rules.'); }
 }
@@ -444,11 +678,14 @@ function listen(path, key, queryFn) {
   const stop = onSnapshot(ref, s => {
     data[key] = s.docs.map(d => ({ id: d.id, ...d.data() }));
     loaded[key] = true;
+    if (accessErr[key]) delete accessErr[key];
     if (key === 'submissions' || key === 'users') scheduleLbSync();
     requestRender();
   }, err => {
     console.error(path, err);
+    if (err?.code === 'permission-denied' && key !== 'audit') accessErr[key] = true;
     toast('Could not load ' + path + '. Check Firestore rules.');
+    requestRender();
   });
   unsubs.push(stop);
 }
@@ -462,20 +699,30 @@ async function loadData() {
   // Reset so nothing from a previous login can leak into this session.
   data.announcements = []; data.annRead = [];
   data.submissions = []; data.accounts = []; data.users = [];
-  data.messages = []; data.presence = []; data.leaderboard = [];
+  data.messages = []; data.presence = []; data.leaderboard = []; data.audit = [];
   data.settings = { ...DEFAULT_SETTINGS };
-  loaded = {}; chatReady = false; unreadChat = 0; lbError = false;
+  loaded = {}; chatReady = false; unreadChat = 0; lbError = false; accessErr = {};
 
   if (isAdmin()) {
     listen('accounts', 'accounts');
     listen('submissions', 'submissions');
     listen('users', 'users');
+    listen('auditLogs', 'audit', (ref, q) => q.query(ref, q.orderBy('createdAt', 'desc'), q.limit(300)));
   } else {
     // Workers only query what they are allowed to read.
     listen('accounts', 'accounts', (ref, q) => q.query(ref, q.where('assignedWorkerIds', 'array-contains', uid)));
     listen('submissions', 'submissions', (ref, q) => q.query(ref, q.where('workerId', '==', uid)));
     data.users = [];
   }
+
+  unsubs.push(onSnapshot(doc(db, 'users', uid), s => {
+    if (!s.exists() || !profile) return;
+    const next = s.data().shiftSchedule || null;
+    if (JSON.stringify(next) !== JSON.stringify(profile.shiftSchedule || null)) {
+      profile.shiftSchedule = next;
+      requestRender();
+    }
+  }, () => {}));
 
   unsubs.push(onSnapshot(doc(db, 'settings', 'paySettings'), s => {
     data.settings = { ...DEFAULT_SETTINGS, ...(s.exists() ? s.data() : {}) };
@@ -549,7 +796,7 @@ function boardRows(period) {
   });
   if (isAdmin() || !configured) {
     fromSubs(data.submissions);
-    const valid = new Set(data.users.filter(u => u.role !== 'admin').map(u => u.id)); // deleted workers are not ranked
+    const valid = new Set(liveUsers().filter(u => u.role !== 'admin').map(u => u.id)); // deleted workers are not ranked
     return [...map.values()].filter(r => valid.has(r.id));
   }
   data.leaderboard.forEach(d => {
@@ -573,7 +820,7 @@ async function syncLeaderboard() {
   if (!configured || !db || !currentUser || !loaded.leaderboard || !loaded.submissions) return;
   if (isAdmin() && !loaded.users) return;
   const uid = currentUser.uid, admin = isAdmin();
-  const validIds = admin ? new Set(data.users.filter(u => u.role !== 'admin').map(u => u.id)) : null;
+  const validIds = admin ? new Set(liveUsers().filter(u => u.role !== 'admin').map(u => u.id)) : null;
   const mine = (admin ? data.submissions : data.submissions.filter(s => s.workerId === uid)).filter(s => s.workerId && (!admin || validIds.has(s.workerId)));
   const want = new Map();
   mine.forEach(s => {
@@ -745,11 +992,14 @@ function demoSignIn(role) {
   data.messages = [{ id: 'm1', senderId: 'worker-2', senderName: 'Jamie Santos', text: 'Hi team, my shift submission is ready for review.', createdAt: new Date() }];
   data.presence = [{ id: 'demo-worker', displayName: 'Demo Worker', role: 'worker', demo: true }, { id: 'worker-2', displayName: 'Jamie Santos', role: 'worker', demo: true }];
   data.leaderboard = [];
+  data.audit = [];
   data.settings = { ...DEFAULT_SETTINGS };
+  accessErr = {};
   page = 'dashboard';
   unreadChat = 0;
   renderPage();
   toast('Demo mode: changes are not saved online.');
+  showShiftWarning();
 }
 
 /* ───────────────────────── Login ───────────────────────── */
@@ -769,6 +1019,8 @@ function renderLogin() {
   unlisten();
   closeModal();
   closeAnnPopup();
+  $('#shiftWarn')?.remove();
+  $('#shiftRemind')?.remove();
   $('#confirmBox')?.remove();
   $('#chatPopups')?.remove();
   unreadChat = 0;
@@ -791,28 +1043,36 @@ function renderLogin() {
 }
 
 /* ───────────────────────── Layout ───────────────────────── */
-const PAGE_TITLES = { dashboard: 'Dashboard', receipts: 'Receipt submissions', errors: 'Error processed', accounts: 'Account management', reports: 'Reports & earnings', chat: 'Team chat', workers: 'Worker management', settings: 'Pay settings' };
-const allowedPages = () => isAdmin() ? ['dashboard', 'receipts', 'errors', 'accounts', 'reports', 'chat', 'workers', 'settings'] : ['dashboard', 'receipts', 'errors', 'reports', 'chat'];
+const PAGE_TITLES = { dashboard: 'Dashboard', receipts: 'Receipt submissions', errors: 'Error processed', accounts: 'Account management', reports: 'Reports & earnings', chat: 'Team chat', workers: 'Worker management', settings: 'Pay settings', missed: 'Missed shifts', audit: 'Audit log' };
+const allowedPages = () => isAdmin() ? ['dashboard', 'receipts', 'errors', 'accounts', 'reports', 'chat', 'workers', 'settings', 'missed', 'audit'] : ['dashboard', 'receipts', 'errors', 'reports', 'chat'];
 
 function shell() {
   const items = [['dashboard', '⌂', 'Dashboard'], ['receipts', '▤', 'Submissions'], ['errors', '⚠', 'Error processed']];
   if (isAdmin()) items.push(['accounts', '▦', 'Accounts']);
   items.push(['reports', '▥', 'Reports'], ['chat', '☏', 'Team chat']);
-  if (isAdmin()) items.push(['workers', '♙', 'Workers'], ['settings', '⚙', 'Pay settings']);
+  if (isAdmin()) items.push(['workers', '♙', 'Workers'], ['settings', '⚙', 'Pay settings'], ['missed', '⏱', 'Missed shifts'], ['audit', '✎', 'Audit log']);
   const title = PAGE_TITLES[page] || 'Dashboard';
   const badge = k => k === 'chat' && unreadChat > 0 ? `<span class="nav-badge">${unreadChat > 9 ? '9+' : unreadChat}</span>` : '';
-  return `<div class="shell"><aside class="sidebar" id="sidebar"><div class="brand"><img src="assets/logo.jpg" alt=""><div><strong>STEIVY</strong><small>RECEIPT HUB</small></div></div><div class="nav-label">WORKSPACE</div><nav class="nav">${items.map(n => `<button data-nav="${n[0]}" class="${page === n[0] ? 'active' : ''}"><span class="ico">${n[1]}</span>${n[2]}${badge(n[0])}</button>`).join('')}</nav><div class="sidebar-bottom"><div class="user-mini"><div class="avatar">${esc(initials(profile?.displayName))}</div><div><strong>${esc(profile?.displayName || 'User')}</strong><small>${isAdmin() ? 'Administrator' : 'Worker'}</small></div></div><button class="btn btn-ghost btn-block" id="logout">↪ Sign out</button></div></aside><main class="main"><header class="topbar"><div class="right"><button class="btn btn-ghost mobile-menu" id="menuBtn">☰</button><div><div class="crumb">WORKSPACE / ${esc(title.toUpperCase())}</div><h1>${esc(title)}</h1></div></div><div class="top-actions"><span class="mode-pill">${configured ? '● Connected app' : '◉ Demo preview'}</span><div class="avatar">${esc(initials(profile?.displayName))}</div></div></header>${!configured ? '<div class="demo-banner">Demo preview — data is sample-only and will reset when you leave. Configure Firebase to use real accounts and save changes.</div>' : ''}<section class="content" id="pageContent"></section></main></div>`;
+  return `<div class="shell"><aside class="sidebar" id="sidebar"><div class="brand"><img src="assets/logo.jpg" alt=""><div><strong>STEIVY</strong><small>RECEIPT HUB</small></div></div><div class="nav-label">WORKSPACE</div><nav class="nav">${items.map(n => `<button data-nav="${n[0]}" class="${page === n[0] ? 'active' : ''}"><span class="ico">${n[1]}</span>${n[2]}${badge(n[0])}</button>`).join('')}</nav>${!isAdmin() && workUrl() ? `<a class="btn btn-primary start-work" id="startWork" href="${esc(workUrl())}" target="_blank" rel="noopener noreferrer">▶ Start work</a>` : ''}<div class="sidebar-bottom"><div class="user-mini"><div class="avatar">${esc(initials(profile?.displayName))}</div><div><strong>${esc(profile?.displayName || 'User')}</strong><small>${isAdmin() ? 'Administrator' : 'Worker'}</small></div></div><button class="btn btn-ghost btn-block" id="logout">↪ Sign out</button></div></aside><main class="main"><header class="topbar"><div class="right"><button class="btn btn-ghost mobile-menu" id="menuBtn">☰</button><div><div class="crumb">WORKSPACE / ${esc(title.toUpperCase())}</div><h1>${esc(title)}</h1></div></div><div class="top-actions"><span class="mode-pill">${configured ? '● Connected app' : '◉ Demo preview'}</span><div class="avatar">${esc(initials(profile?.displayName))}</div></div></header>${!configured ? '<div class="demo-banner">Demo preview — data is sample-only and will reset when you leave. Configure Firebase to use real accounts and save changes.</div>' : ''}<section class="content" id="pageContent"></section></main></div>`;
 }
 
 const stat = (label, value, sub, ico) => `<div class="stat"><div class="stat-head">${label}<span class="stat-icon">${ico}</span></div><strong>${value}</strong><small>${sub}</small></div>`;
 const status = s => `<span class="status ${esc(String(s || 'pending').toLowerCase())}">${esc(s || 'pending')}</span>`;
+
+// Shown to the admin when Firestore refuses to let them read the main collections.
+function accessBanner() {
+  if (!configured || !isAdmin()) return '';
+  const keys = Object.keys(accessErr);
+  if (!keys.length) return '';
+  return `<div class="notice warn" style="margin-bottom:16px"><b>Admin access is blocked by Firestore rules</b> (${esc(keys.join(', '))}).<br>1) Open Firestore → <code>users/${esc(currentUser?.uid || '')}</code> and make sure it has <code>role: "admin"</code>, <code>status: "approved"</code> and <code>isActive: true</code>.<br>2) Publish the latest <code>firestore.rules</code>, then sign out and sign in again.</div>`;
+}
 
 /* ───────────────────────── Pages ───────────────────────── */
 function submissionRows(rows) {
   if (!rows.length) return `<tr><td colspan="8"><div class="empty">▤<b>No submissions yet</b>Shift submissions will appear here.</div></td></tr>`;
   return rows.slice().sort((a, b) => timeVal(b.createdAt) - timeVal(a.createdAt)).map(s => {
     const err = num(s.errorCount);
-    return `<tr><td><div class="person"><div class="avatar">${esc(initials(s.workerName))}</div><div><strong>${esc(s.workerName || 'Worker')}</strong><small>${esc(s.accountName || 'No account')}</small></div></div></td><td>${esc(date(s.shiftDate))}</td><td>${esc(s.shiftType || '—')}<small style="display:block;color:#8a958e;margin-top:4px">${esc(s.startTime || '')} – ${esc(s.endTime || '')}</small></td><td>${num(s.receiptCount).toLocaleString()}</td><td${err > 0 ? ' style="color:#c0392b;font-weight:600"' : ''}>${err.toLocaleString()}</td><td>${money(s.netCents)}</td><td>${status(s.status)}</td><td><div class="sh-row-actions"><button class="small-btn" data-view="${esc(s.id)}">View</button>${isAdmin() ? `<button class="small-btn" data-edit-counts="${esc(s.id)}">Edit</button>` : ''}</div></td></tr>`;
+    return `<tr><td><div class="person"><div class="avatar">${esc(initials(s.workerName))}</div><div><strong>${esc(s.workerName || 'Worker')}</strong><small>${esc(s.accountName || 'No account')}</small></div></div></td><td>${esc(date(s.shiftDate))}</td><td>${esc(s.shiftType || '—')}<small style="display:block;color:#8a958e;margin-top:4px">${esc(s.startTime || '')} – ${esc(s.endTime || '')}</small></td><td>${num(s.receiptCount).toLocaleString()}</td><td${err > 0 ? ' style="color:#c0392b;font-weight:600"' : ''}>${err.toLocaleString()}</td><td>${money(s.netCents)}</td><td>${status(s.status)}</td><td><div class="sh-row-actions"><button class="small-btn" data-view="${esc(s.id)}">View</button>${isAdmin() ? rowAdminBtns(s) : ''}</div></td></tr>`;
   }).join('');
 }
 
@@ -825,7 +1085,7 @@ function dashboard() {
   const earned = approved.reduce((n, s) => n + num(s.netCents), 0);
   const recent = rows.slice().sort((a, b) => timeVal(b.createdAt) - timeVal(a.createdAt)).slice(0, 5);
   const first = esc((profile.displayName || 'there').split(' ')[0]);
-  return `<div class="welcome"><div><h2>${isAdmin() ? 'Good day, Administrator' : 'Welcome back, ' + first + ' 👋'}</h2><p>Here’s what’s happening with ${isAdmin() ? 'your team' : 'your shifts'} today.</p></div>${messageTicker()}${!isAdmin() ? '<button class="btn btn-primary" data-page="receipts">＋ Submit shift</button>' : '<button class="btn btn-primary" data-page="receipts">Review submissions →</button>'}</div>${performanceSection()}${onlineStrip()}<div class="stats">${stat(isAdmin() ? 'Total submissions' : 'My submissions', rows.length, isAdmin() ? 'All recorded shifts' : 'Your recorded shifts', '▤')}${stat('Receipts processed', total.toLocaleString(), `${errTotal.toLocaleString()} error(s) recorded`, '▧')}${stat('Pending review', pending.length, 'Awaiting a decision', '◷')}${stat(isAdmin() ? 'Approved net pay' : 'Approved earnings', money(earned), 'After configured deductions', '₱')}</div>${monthStats(rows)}${liveChatPanel()}${isAdmin() ? announcementsPanel() : ''}<div class="grid-2"><div class="panel"><div class="panel-head"><div><h3>Recent submissions</h3><p>Latest shift records and review status</p></div><button class="small-btn" data-page="receipts">View all →</button></div><div class="table-wrap"><table><thead><tr><th>Worker / account</th><th>Shift date</th><th>Shift</th><th>Processed</th><th>Errors</th><th>Net pay</th><th>Status</th><th></th></tr></thead><tbody>${submissionRows(recent)}</tbody></table></div></div><div class="panel"><div class="panel-head"><div><h3>Quick actions</h3><p>Common tasks, one click away</p></div></div><div class="quick-grid"><button class="quick" data-page="receipts"><span>🧾</span><strong>Submit shift</strong><small>Record receipt count</small></button><button class="quick" data-page="errors"><span>⚠️</span><strong>Error processed</strong><small>Review error receipts</small></button><button class="quick" data-page="reports"><span>📊</span><strong>View reports</strong><small>Track your totals</small></button><button class="quick" data-page="chat"><span>💬</span><strong>Team chat</strong><small>Message your team</small></button>${isAdmin() ? '<button class="quick" data-page="workers"><span>👥</span><strong>Manage workers</strong><small>Review team accounts</small></button>' : ''}</div><div class="notice">${isAdmin() ? `You have <b>${pending.length}</b> submission(s) waiting for review.` : `Your approved submissions show in earnings. If a shift is rejected, check the reason and submit a correction.`}</div></div></div>`;
+  return `<div class="welcome"><div><h2>${isAdmin() ? 'Good day, Administrator' : 'Welcome back, ' + first + ' 👋'}</h2><p>Here’s what’s happening with ${isAdmin() ? 'your team' : 'your shifts'} today.</p></div>${messageTicker()}${!isAdmin() ? '<button class="btn btn-primary" data-page="receipts">＋ Submit shift</button>' : '<button class="btn btn-primary" data-page="receipts">Review submissions →</button>'}</div>${performanceSection()}${errorWarningPanel()}${onlineStrip()}<div class="stats">${stat(isAdmin() ? 'Total submissions' : 'My submissions', rows.length, isAdmin() ? 'All recorded shifts' : 'Your recorded shifts', '▤')}${stat('Receipts processed', total.toLocaleString(), `${errTotal.toLocaleString()} error(s) recorded`, '▧')}${stat('Pending review', pending.length, 'Awaiting a decision', '◷')}${stat(isAdmin() ? 'Approved net pay' : 'Approved earnings', money(earned), 'After configured deductions', '₱')}</div>${monthStats(rows)}${liveChatPanel()}${isAdmin() ? announcementsPanel() : ''}<div class="grid-2"><div class="panel"><div class="panel-head"><div><h3>Recent submissions</h3><p>Latest shift records and review status</p></div><button class="small-btn" data-page="receipts">View all →</button></div><div class="table-wrap"><table><thead><tr><th>Worker / account</th><th>Shift date</th><th>Shift</th><th>Processed</th><th>Errors</th><th>Net pay</th><th>Status</th><th></th></tr></thead><tbody>${submissionRows(recent)}</tbody></table></div></div><div class="panel"><div class="panel-head"><div><h3>Quick actions</h3><p>Common tasks, one click away</p></div></div><div class="quick-grid"><button class="quick" data-page="receipts"><span>🧾</span><strong>Submit shift</strong><small>Record receipt count</small></button><button class="quick" data-page="errors"><span>⚠️</span><strong>Error processed</strong><small>Review error receipts</small></button><button class="quick" data-page="reports"><span>📊</span><strong>View reports</strong><small>Track your totals</small></button><button class="quick" data-page="chat"><span>💬</span><strong>Team chat</strong><small>Message your team</small></button>${isAdmin() ? '<button class="quick" data-page="workers"><span>👥</span><strong>Manage workers</strong><small>Review team accounts</small></button>' : ''}</div><div class="notice">${isAdmin() ? `You have <b>${pending.length}</b> submission(s) waiting for review.${missedNotice()}` : `Your approved submissions show in earnings. If a shift is rejected, check the reason and submit a correction.`}</div></div></div>`;
 }
 
 function filteredSubmissions() {
@@ -837,7 +1097,9 @@ function filteredSubmissions() {
 function submissionForm() {
   const uid = currentUser.uid;
   const accts = data.accounts.filter(a => a.isActive !== false && (!a.assignedWorkerIds || a.assignedWorkerIds.includes(uid)));
-  return `<div class="panel" id="submissionFormPanel"><div class="panel-head"><div><h3>Submit completed shift</h3><p>Enter your shift details. Pay is calculated on processed receipts using current settings; error receipts are not paid.</p></div></div><form id="submissionForm"><div class="form-grid"><div class="field"><label>ACCOUNT</label><select name="accountId" required>${accts.map(a => `<option value="${esc(a.id)}">${esc(a.name)} (${esc(a.code || '')})</option>`).join('') || '<option value="">No active accounts assigned</option>'}</select></div><div class="field"><label>SHIFT DATE</label><input name="shiftDate" type="date" value="${todayStr()}" max="${todayStr()}" required></div><div class="field"><label>SHIFT</label><select name="shiftType"><option>Morning</option><option>Afternoon</option><option>Night</option><option>Custom</option></select></div><div class="field"><label>PROCESSED RECEIPTS</label><input name="receiptCount" type="number" min="0" step="1" placeholder="e.g. 125" required></div><div class="field"><label>ERROR COUNT</label><input name="errorCount" type="number" min="0" step="1" value="0" placeholder="e.g. 3" required></div><div class="field"><label>START TIME</label><input name="startTime" type="time" value="06:00" required></div><div class="field"><label>END TIME</label><input name="endTime" type="time" value="14:00" required></div><div class="full right" style="justify-content:flex-end;margin:0 0 8px"><button class="btn btn-primary" type="submit" ${accts.length ? '' : 'disabled'}>Submit for review →</button></div></div></form></div>`;
+  const sc = scheduleOf(profile), inWin = inWindow(sc);
+  const defFrom = sc && !sc.open ? sc.from : '06:00', defTo = sc && !sc.open ? sc.to : '14:00';
+  return `<div class="panel" id="submissionFormPanel"><div class="panel-head"><div><h3>Submit completed shift</h3><p>Enter your shift details. Pay is calculated on processed receipts using current settings; error receipts are not paid. You can submit only once per shift for each account.</p></div></div><div id="shiftGate" data-ok="${inWin}">${shiftNoticeHtml(sc, inWin)}</div><form id="submissionForm"><div class="form-grid"><div class="field"><label>ACCOUNT</label><select name="accountId" required>${accts.map(a => `<option value="${esc(a.id)}">${esc(a.name)} (${esc(a.code || '')})</option>`).join('') || '<option value="">No active accounts assigned</option>'}</select></div><div class="field"><label>SHIFT DATE</label><input name="shiftDate" type="date" value="${defaultShiftDate(sc)}" max="${todayStr()}" ${sc && !sc.open ? 'readonly' : ''} required></div>${sc && !sc.open ? `<div class="field"><label>SHIFT</label><input value="${esc(sc.label)}" readonly></div>` : '<div class="field"><label>SHIFT</label><select name="shiftType"><option>Morning</option><option>Afternoon</option><option>Night</option><option>Custom</option></select></div>'}<div class="field"><label>PROCESSED RECEIPTS</label><input name="receiptCount" type="number" min="0" step="1" placeholder="e.g. 125" required></div><div class="field"><label>ERROR COUNT</label><input name="errorCount" type="number" min="0" step="1" value="0" placeholder="e.g. 3" required></div><div class="field"><label>START TIME</label><input name="startTime" type="time" value="${defFrom}" ${sc && !sc.open ? 'readonly' : ''} required></div><div class="field"><label>END TIME</label><input name="endTime" type="time" value="${defTo}" ${sc && !sc.open ? 'readonly' : ''} required></div><div class="full right" style="justify-content:flex-end;margin:0 0 8px"><button class="btn btn-primary" type="submit" data-noacct="${accts.length ? '0' : '1'}" ${accts.length && inWin ? '' : 'disabled'}>Submit for review →</button></div></div></form></div>`;
 }
 
 function receipts() {
@@ -904,7 +1166,7 @@ function errorsPage() {
   const body = rows.length ? rows.map(s => {
     const p = num(s.receiptCount), er = num(s.errorCount);
     const rt = p + er > 0 ? (er / (p + er) * 100).toFixed(1) : '0.0';
-    return `<tr><td><div class="person"><div class="avatar">${esc(initials(s.workerName))}</div><div><strong>${esc(s.workerName || 'Worker')}</strong><small>${esc(s.accountName || 'No account')}</small></div></div></td><td>${esc(date(s.shiftDate))}</td><td>${esc(s.shiftType || '—')}</td><td>${p.toLocaleString()}</td><td style="color:#c0392b;font-weight:600">${er.toLocaleString()}</td><td>${rt}%</td><td>${esc(s.errorNote || '—')}</td><td>${status(s.status)}</td><td><div class="sh-row-actions"><button class="small-btn" data-view="${esc(s.id)}">View</button>${isAdmin() ? `<button class="small-btn" data-edit-counts="${esc(s.id)}">Edit</button>` : ''}</div></td></tr>`;
+    return `<tr><td><div class="person"><div class="avatar">${esc(initials(s.workerName))}</div><div><strong>${esc(s.workerName || 'Worker')}</strong><small>${esc(s.accountName || 'No account')}</small></div></div></td><td>${esc(date(s.shiftDate))}</td><td>${esc(s.shiftType || '—')}</td><td>${p.toLocaleString()}</td><td style="color:#c0392b;font-weight:600">${er.toLocaleString()}</td><td${errWarnPct() > 0 && errRatePct(p, er) >= errWarnPct() ? ' style="color:#c0392b;font-weight:600"' : ''}>${rt}%${errWarnPct() > 0 && errRatePct(p, er) >= errWarnPct() ? ' ⚠' : ''}</td><td>${esc(s.errorNote || '—')}</td><td>${status(s.status)}</td><td><div class="sh-row-actions"><button class="small-btn" data-view="${esc(s.id)}">View</button>${isAdmin() ? rowAdminBtns(s) : ''}</div></td></tr>`;
   }).join('') : `<tr><td colspan="9"><div class="empty">✓<b>No errors recorded</b>Submissions with an error count above zero will appear here.</div></td></tr>`;
 
   return `<div class="welcome"><div><h2>${isAdmin() ? 'Error processed' : 'My error processed'}</h2><p>${isAdmin() ? 'Shifts with error receipts. Use Edit to correct processed or error counts.' : 'Shifts where you recorded error receipts.'}</p></div></div><div class="stats">${stat('Total errors', totalErr.toLocaleString(), 'Across listed submissions', '⚠')}${stat('Shifts with errors', rows.length, `of ${all.length} submission(s)`, '▤')}${stat('Error rate', overall + '%', 'Errors ÷ (processed + errors)', '%')}${stat('Processed receipts', totalProcessed.toLocaleString(), 'Paid receipts', '✓')}</div><div class="panel"><div class="table-wrap"><table><thead><tr><th>Worker / account</th><th>Shift date</th><th>Shift</th><th>Processed</th><th>Errors</th><th>Error rate</th><th>Note</th><th>Status</th><th>Action</th></tr></thead><tbody>${body}</tbody></table></div></div>`;
@@ -936,10 +1198,10 @@ function reports() {
 }
 
 function workers() {
-  const users = data.users.filter(u => u.role !== 'admin');
+  const users = liveUsers().filter(u => u.role !== 'admin');
   const actions = u => {
     const st = u.status || 'approved';
-    const b = [`<button class="small-btn" data-worker="${esc(u.id)}">View</button>`, `<button class="small-btn" data-worker-action="edit" data-id="${esc(u.id)}">Edit</button>`];
+    const b = [`<button class="small-btn" data-worker="${esc(u.id)}">View</button>`, `<button class="small-btn" data-worker-action="edit" data-id="${esc(u.id)}">Edit</button>`, `<button class="small-btn" data-worker-action="schedule" data-id="${esc(u.id)}">Shift</button>`];
     if (st === 'pending' || st === 'rejected') b.push(`<button class="small-btn" data-worker-action="approve" data-id="${esc(u.id)}">Approve</button>`);
     if (st === 'pending') b.push(`<button class="small-btn" data-worker-action="reject" data-id="${esc(u.id)}">Reject</button>`);
     if (st === 'approved') b.push(u.isActive === false
@@ -948,11 +1210,11 @@ function workers() {
     b.push(`<button class="btn btn-danger" data-worker-action="delete" data-id="${esc(u.id)}">Delete</button>`);
     return `<div class="sh-row-actions">${b.join('')}</div>`;
   };
-  return `<div class="welcome"><div><h2>Worker management</h2><p>Review worker profiles and account status.</p></div><button class="btn btn-primary" id="addWorker">＋ Create worker</button></div><div class="panel"><div class="toolbar"><input id="workerSearch" placeholder="Search name or email…"><span class="spacer"></span><span class="muted">${users.length} worker(s)</span></div><div class="table-wrap"><table><thead><tr><th>Worker</th><th>Email</th><th>Status</th><th>Assigned accounts</th><th>Action</th></tr></thead><tbody>${users.map(u => `<tr><td><div class="person"><div class="avatar">${esc(initials(u.displayName))}</div><strong>${esc(u.displayName || 'Unnamed')}</strong></div></td><td>${esc(u.email)}</td><td>${status(u.isActive === false ? 'inactive' : (u.status || 'approved'))}</td><td>${(u.assignedAccountIds || []).length}</td><td>${actions(u)}</td></tr>`).join('') || '<tr><td colspan="5"><div class="empty">No worker profiles found.</div></td></tr>'}</tbody></table></div></div>`;
+  return `<div class="welcome"><div><h2>Worker management</h2><p>Review worker profiles and account status.</p></div><button class="btn btn-primary" id="addWorker">＋ Create worker</button></div><div class="panel"><div class="toolbar"><input id="workerSearch" placeholder="Search name or email…"><span class="spacer"></span><span class="muted">${users.length} worker(s)</span></div><div class="table-wrap"><table><thead><tr><th>Worker</th><th>Email</th><th>Status</th><th>Assigned accounts</th><th>Shift schedule</th><th>Action</th></tr></thead><tbody>${users.map(u => `<tr><td><div class="person"><div class="avatar">${esc(initials(u.displayName))}</div><strong>${esc(u.displayName || 'Unnamed')}</strong></div></td><td>${esc(u.email)}</td><td>${status(u.isActive === false ? 'inactive' : (u.status || 'approved'))}</td><td>${(u.assignedAccountIds || []).length}</td><td>${esc(scheduleOf(u)?.label || 'Not set')}</td><td>${actions(u)}</td></tr>`).join('') || '<tr><td colspan="6"><div class="empty">No worker profiles found.</div></td></tr>'}</tbody></table></div></div>`;
 }
 
 function settings() {
-  return `<div class="welcome"><div><h2>Pay settings</h2><p>Configure receipt rate and deductions for future submissions.</p></div></div><div class="panel" style="max-width:650px"><form id="settingsForm"><div class="field"><label>GROSS RATE PER RECEIPT (PHP)</label><input name="rate" type="number" min="0" step="0.01" value="${(rate() / 100).toFixed(2)}" required></div><div class="field"><label>DEDUCTION PERCENT (%)</label><input name="deduction" type="number" min="0" max="100" step="0.1" value="${dedPct()}" required></div><div class="notice">These values are used for new submissions. Updating settings does not automatically recalculate historical submissions.</div><button class="btn btn-primary" type="submit">Save settings</button></form></div>`;
+  return `<div class="welcome"><div><h2>Pay settings</h2><p>Configure receipt rate and deductions for future submissions.</p></div></div><div class="panel" style="max-width:650px"><form id="settingsForm"><div class="field"><label>GROSS RATE PER RECEIPT (PHP)</label><input name="rate" type="number" min="0" step="0.01" value="${(rate() / 100).toFixed(2)}" required></div><div class="field"><label>DEDUCTION PERCENT (%)</label><input name="deduction" type="number" min="0" max="100" step="0.1" value="${dedPct()}" required></div><div class="field"><label>ERROR RATE WARNING (%)</label><input name="errWarn" type="number" min="0" max="100" step="0.1" value="${errWarnPct()}" required></div><div class="field"><label>WORK WEBSITE LINK ("START WORK" BUTTON FOR WORKERS)</label><input name="workUrl" type="url" placeholder="https://…" value="${esc(data.settings.workUrl || '')}"></div><div class="notice">These values are used for new submissions. Updating settings does not automatically recalculate historical submissions.</div><button class="btn btn-primary" type="submit">Save settings</button></form></div>`;
 }
 
 function chatBubbles() {
@@ -981,7 +1243,7 @@ function renderPage() {
   if (!allowedPages().includes(page)) page = 'dashboard';
   if (page === 'chat') unreadChat = 0;
   $('#app').innerHTML = shell();
-  $('#pageContent').innerHTML = ({ dashboard, receipts, errors: errorsPage, accounts, reports, chat, workers, settings })[page]();
+  $('#pageContent').innerHTML = accessBanner() + ({ dashboard, receipts, errors: errorsPage, accounts, reports, chat, workers, settings, missed: missedPage, audit: auditPage })[page]();
   wireShell();
   wirePage();
   if (detailId) { const s = visibleSubmissions().find(x => x.id === detailId); if (s) viewSubmission(s.id, false); else detailId = null; }
@@ -1012,6 +1274,7 @@ function wireShell() {
     if ((el = t.closest('[data-lb-period]'))) { lbPeriod = el.dataset.lbPeriod; return renderPage(); }
     if ((el = t.closest('[data-page]'))) return go(el.dataset.page);
     if ((el = t.closest('[data-view]'))) return viewSubmission(el.dataset.view);
+    if ((el = t.closest('[data-allow-resubmit]'))) return allowResubmit(el.dataset.allowResubmit);
     if ((el = t.closest('[data-edit-counts]'))) return editCounts(el.dataset.editCounts);
     if ((el = t.closest('[data-del-announcement]'))) return removeAnnouncement(el.dataset.delAnnouncement);
     if ((el = t.closest('[data-worker]'))) return viewWorker(el.dataset.worker);
@@ -1034,6 +1297,12 @@ function wirePage() {
   $('#settingsForm')?.addEventListener('submit', saveSettings);
   $('#chatForm')?.addEventListener('submit', sendMessage);
   $('#exportCsv')?.addEventListener('click', exportCsv);
+  $('#missedFrom')?.addEventListener('change', e => { missedFrom = e.target.value; renderPage(); });
+  $('#missedTo')?.addEventListener('change', e => { missedTo = e.target.value; renderPage(); });
+  $('#auditSearch')?.addEventListener('input', e => {
+    const q = e.target.value.toLowerCase();
+    $$('#pageContent tbody tr').forEach(r => r.classList.toggle('hidden', !r.textContent.toLowerCase().includes(q)));
+  });
   $('#workerSearch')?.addEventListener('input', e => {
     const q = e.target.value.toLowerCase();
     $$('#pageContent tbody tr').forEach(r => r.classList.toggle('hidden', !r.textContent.toLowerCase().includes(q)));
@@ -1060,20 +1329,23 @@ async function submitShift(e) {
   if (btn.disabled) return;
   btn.disabled = true; // lock immediately so a double click cannot create two submissions
   const fail = msg => { toast(msg); btn.disabled = false; };
+  const sc = scheduleOf(profile);
+  if (!inWindow(sc)) return fail(`You can only submit during your scheduled shift (${sc.label}).`);
 
   const f = new FormData(form);
   const account = data.accounts.find(a => a.id === f.get('accountId'));
   if (!account) return fail('Select an active account first.');
-  const shiftDate = f.get('shiftDate');
+  const scheduled = !!(sc && !sc.open);
+  const shiftDate = scheduled ? defaultShiftDate(sc) : f.get('shiftDate');
   if (shiftDate > todayStr()) return fail('Shift date cannot be in the future.');
   const count = parseInt(f.get('receiptCount'), 10);
   if (!Number.isFinite(count) || count < 0) return fail('Enter a valid processed receipt count.');
   const errCount = parseInt(f.get('errorCount') || '0', 10);
   if (!Number.isFinite(errCount) || errCount < 0) return fail('Enter a valid error count.');
-  const shiftType = f.get('shiftType');
+  const shiftType = scheduled ? sc.label : f.get('shiftType');
 
-  const dup = visibleSubmissions().find(s => s.accountId === account.id && s.shiftDate === shiftDate && s.shiftType === shiftType && s.status !== 'rejected' && s.workerId === currentUser.uid);
-  if (dup && !await confirmBox('Duplicate shift?', 'You already submitted a ' + shiftType + ' shift for this account on this date. Submit another anyway?', 'Yes, submit again')) { btn.disabled = false; return; }
+  const dup = data.submissions.find(s => s.workerId === currentUser.uid && s.accountId === account.id && s.shiftDate === shiftDate && (scheduled || s.shiftType === shiftType) && s.status !== 'rejected');
+  if (dup) return fail(`You already submitted this shift for ${account.name}. Only one submission per shift per account is allowed. Ask your admin to "Allow resubmit" if it needs correcting.`);
 
   const rateCents = rate(), pct = dedPct();
   const gross = Math.round(count * rateCents);
@@ -1096,7 +1368,8 @@ async function submitShift(e) {
   }
   try {
     await fb.addDoc(fb.collection(db, 'submissions'), { ...item, createdAt: fb.serverTimestamp(), updatedAt: fb.serverTimestamp() });
-    toast('Shift submitted for review.');
+    const rt = errRatePct(count, errCount);
+    toast(errCount > 0 && errWarnPct() > 0 && rt >= errWarnPct() ? `Shift submitted. ⚠ Your error rate for this shift is ${rt.toFixed(1)}% (limit ${errWarnPct()}%). Please double-check your work.` : 'Shift submitted for review.');
     form.reset();
     renderPage();
   } catch (err) {
@@ -1113,14 +1386,17 @@ function viewSubmission(id, scroll = true) {
   const processed = num(s.receiptCount), errs = num(s.errorCount);
   const errRate = processed + errs > 0 ? (errs / (processed + errs) * 100).toFixed(1) + '%' : '0%';
   const actions = (isAdmin() ? `<button class="btn btn-secondary" id="editCountsBtn">Edit counts</button>` : '') +
+    (isAdmin() && s.status !== 'rejected' ? `<button class="btn btn-ghost" id="allowResubmitBtn">Allow resubmit</button>` : '') +
     (isAdmin() && s.status === 'pending' ? `<button class="btn btn-primary" id="approveOne">Approve</button><button class="btn btn-danger" id="rejectOne">Reject</button>` : '');
   const reason = s.rejectionReason ? `<div class="notice warn">Rejection reason: ${esc(s.rejectionReason)}</div>` : '';
   const errNote = s.errorNote ? `<div class="notice">Error note: ${esc(s.errorNote)}</div>` : '';
-  const html = `<div class="panel"><div class="panel-head"><div><h3>Submission details</h3><p>${esc(s.id)}</p></div><button class="btn btn-ghost" id="closeDetails">Close</button></div><div class="form-grid"><div><p class="muted">Worker</p><b>${esc(s.workerName)}</b></div><div><p class="muted">Status</p>${status(s.status)}</div><div><p class="muted">Account</p><b>${esc(s.accountName)}</b></div><div><p class="muted">Shift date</p><b>${esc(date(s.shiftDate))}</b></div><div><p class="muted">Shift hours</p><b>${esc(s.startTime)} – ${esc(s.endTime)}</b></div><div><p class="muted">Processed receipts</p><b>${processed.toLocaleString()}</b></div><div><p class="muted">Error count</p><b${errs > 0 ? ' style="color:#c0392b"' : ''}>${errs.toLocaleString()}</b></div><div><p class="muted">Error rate</p><b>${errRate}</b></div><div><p class="muted">Gross pay</p><b>${money(s.grossCents)}</b></div><div><p class="muted">Deductions</p><b>${money(s.deductionCents)}</b></div><div><p class="muted">Net pay</p><b>${money(s.netCents)}</b></div></div>${errNote}${reason}<div class="right" style="justify-content:flex-end;margin-top:20px;gap:8px">${actions}</div></div>`;
+  const editedNote = s.editedByName ? `<div class="notice">Counts edited by ${esc(s.editedByName)}${s.editedAt ? ' on ' + esc(date(s.editedAt)) + ' ' + esc(fmtTime(s.editedAt)) : ''}.</div>` : '';
+  const html = `<div class="panel"><div class="panel-head"><div><h3>Submission details</h3><p>${esc(s.id)}</p></div><button class="btn btn-ghost" id="closeDetails">Close</button></div><div class="form-grid"><div><p class="muted">Worker</p><b>${esc(s.workerName)}</b></div><div><p class="muted">Status</p>${status(s.status)}</div><div><p class="muted">Account</p><b>${esc(s.accountName)}</b></div><div><p class="muted">Shift date</p><b>${esc(date(s.shiftDate))}</b></div><div><p class="muted">Shift hours</p><b>${esc(s.startTime)} – ${esc(s.endTime)}</b></div><div><p class="muted">Processed receipts</p><b>${processed.toLocaleString()}</b></div><div><p class="muted">Error count</p><b${errs > 0 ? ' style="color:#c0392b"' : ''}>${errs.toLocaleString()}</b></div><div><p class="muted">Error rate</p><b>${errRate}</b></div><div><p class="muted">Gross pay</p><b>${money(s.grossCents)}</b></div><div><p class="muted">Deductions</p><b>${money(s.deductionCents)}</b></div><div><p class="muted">Net pay</p><b>${money(s.netCents)}</b></div></div>${errNote}${reason}${editedNote}<div class="right" style="justify-content:flex-end;margin-top:20px;gap:8px">${actions}</div></div>`;
   $('#detailsPanel')?.remove();
   $('#pageContent').insertAdjacentHTML('afterbegin', `<div id="detailsPanel">${html}</div>`);
   $('#closeDetails').onclick = () => { detailId = null; $('#detailsPanel')?.remove(); };
   $('#editCountsBtn')?.addEventListener('click', () => editCounts(s.id));
+  $('#allowResubmitBtn')?.addEventListener('click', () => allowResubmit(s.id));
   $('#approveOne')?.addEventListener('click', async e => {
     const btn = e.currentTarget;
     if (!await confirmBox('Approve submission?', `Are you sure you want to approve ${s.workerName || 'this worker'}'s shift?`, 'Yes, approve')) return;
@@ -1153,6 +1429,7 @@ async function reviewSubmission(stale, statusValue, reason = '') {
   if (!configured) {
     s.status = statusValue; s.rejectionReason = reason;
     detailId = null;
+    logAudit(statusValue === 'approved' ? 'Approved submission' : 'Rejected submission', `${s.workerName || 'Worker'} · ${s.accountName || ''} · ${s.shiftDate}${reason ? ' · reason: ' + reason : ''}`);
     toast('Demo record updated only.');
     renderPage();
     return;
@@ -1163,6 +1440,7 @@ async function reviewSubmission(stale, statusValue, reason = '') {
       reviewedBy: currentUser.uid, reviewedAt: fb.serverTimestamp(), updatedAt: fb.serverTimestamp()
     });
     detailId = null;
+    logAudit(statusValue === 'approved' ? 'Approved submission' : 'Rejected submission', `${s.workerName || 'Worker'} · ${s.accountName || ''} · ${s.shiftDate}${reason ? ' · reason: ' + reason : ''}`);
     toast('Submission ' + statusValue + '.');
     $('#detailsPanel')?.remove();
   } catch (e) {
@@ -1206,15 +1484,18 @@ async function editCounts(id) {
         grossCents: gross, deductionCents: ded, netCents: gross - ded
       };
 
+      const auditMsg = `${s.workerName || 'Worker'} · ${s.accountName || ''} · ${s.shiftDate} — processed ${oldCount}→${processed}, errors ${num(s.errorCount)}→${errs}`;
       if (!configured) {
-        Object.assign(s, changes, { updatedAt: new Date() });
+        logAudit('Edited counts', auditMsg);
+        Object.assign(s, changes, { updatedAt: new Date(), editedByName: profile.displayName });
         toast('Demo counts updated (not saved online).');
         renderPage();
         return;
       }
       await fb.updateDoc(fb.doc(db, 'submissions', s.id), {
-        ...changes, editedBy: currentUser.uid, editedAt: fb.serverTimestamp(), updatedAt: fb.serverTimestamp()
+        ...changes, editedBy: currentUser.uid, editedByName: profile.displayName, editedAt: fb.serverTimestamp(), updatedAt: fb.serverTimestamp()
       });
+      logAudit('Edited counts', auditMsg);
       toast('Counts updated and pay recalculated.');
     }, 'Save changes');
 }
@@ -1238,6 +1519,7 @@ function addAccount() {
         return;
       }
       await fb.addDoc(fb.collection(db, 'accounts'), { ...item, createdAt: fb.serverTimestamp(), updatedAt: fb.serverTimestamp() });
+      logAudit('Created account', `${name}${code ? ' (' + code + ')' : ''}`);
       toast('Account created.');
     }, 'Create account');
 }
@@ -1269,6 +1551,7 @@ function editAccount(id) {
         return;
       }
       await fb.updateDoc(fb.doc(db, 'accounts', a.id), { name, code, notes, updatedAt: fb.serverTimestamp() });
+      logAudit('Edited account', name !== oldName ? `${oldName} → ${name}` : name);
       if (name !== oldName) {
         try {
           const ops = data.submissions.filter(s => s.accountId === a.id).map(s => b => b.update(fb.doc(db, 'submissions', s.id), { accountName: name }));
@@ -1299,6 +1582,7 @@ async function deleteAccount(id) {
       ops.push(b => b.update(fb.doc(db, 'users', u.id), { assignedAccountIds: fb.arrayRemove(id), updatedAt: fb.serverTimestamp() }));
     });
     await commitInChunks(ops);
+    logAudit('Deleted account', a.name);
     toast('Account deleted.');
   } catch (e) { console.error(e); toast('Could not delete account. Check Firestore rules.'); }
 }
@@ -1314,6 +1598,7 @@ async function toggleAccount(id) {
   if (!configured) { a.isActive = next; renderPage(); return; }
   try {
     await fb.updateDoc(fb.doc(db, 'accounts', id), { isActive: next, updatedAt: fb.serverTimestamp() });
+    logAudit(next ? 'Activated account' : 'Deactivated account', a.name);
     toast(next ? 'Account activated.' : 'Account deactivated.');
   } catch (e) { console.error(e); toast('Could not update account. Check Firestore rules.'); }
 }
@@ -1356,6 +1641,7 @@ function assignWorker(accountId) {
       batch.update(fb.doc(db, 'users', w.id), { assignedAccountIds: now ? fb.arrayUnion(account.id) : fb.arrayRemove(account.id), updatedAt: fb.serverTimestamp() });
     });
     await batch.commit();
+    logAudit('Assigned workers', `${account.name}: ${names.join(', ') || 'none'}`);
     toast('Assignments saved.');
   }, 'Save assignments');
 }
@@ -1397,6 +1683,7 @@ function editWorker(u) {
         return;
       }
       await fb.updateDoc(fb.doc(db, 'users', u.id), { displayName: name, updatedAt: fb.serverTimestamp() });
+      logAudit('Edited worker', name !== oldName ? `${oldName} → ${name}` : name);
       if (name !== oldName) {
         try {
           const ops = [];
@@ -1415,6 +1702,50 @@ function editWorker(u) {
     }, 'Save changes');
 }
 
+/* ADMIN: set a worker's shift schedule. The worker can only submit output/errors inside this time window. */
+function editSchedule(u) {
+  if (!isAdmin()) return;
+  const cur = u.shiftSchedule || {};
+  const curType = cur.type || 'none';
+  const radios = SHIFT_OPTIONS.map(o => `<label class="sh-check"><input type="radio" name="shift" value="${o.id}" ${curType === o.id ? 'checked' : ''}><span><b>${esc(o.label)}</b></span></label>`).join('');
+  openModal('Shift schedule',
+    `<p class="muted" style="margin-top:0">Choose the shift for <b>${esc(u.displayName || u.email)}</b>. The worker can only submit total output and errors during this time.</p>
+     ${radios}
+     <div class="form-grid" style="grid-template-columns:1fr 1fr;margin-top:12px">
+       <div class="field"><label>CUSTOM FROM</label><input type="time" name="from" value="${esc(cur.type === 'custom' ? (cur.from || '') : '')}"></div>
+       <div class="field"><label>CUSTOM TO</label><input type="time" name="to" value="${esc(cur.type === 'custom' ? (cur.to || '') : '')}"></div>
+     </div>
+     <div class="notice">Custom time is only used when "Custom time" is selected.</div>`,
+    async fd => {
+      const type = String(fd.get('shift') || '');
+      if (!type) { toast('Pick a shift first.'); return false; }
+      let schedule = null;
+      if (type === 'custom') {
+        const from = String(fd.get('from') || ''), to = String(fd.get('to') || '');
+        if (!from || !to) { toast('Enter both the From and To time.'); return false; }
+        if (from === to) { toast('From and To cannot be the same.'); return false; }
+        schedule = { type, from, to, label: `${fmt12(from)} – ${fmt12(to)}` };
+      } else if (type !== 'none') {
+        const o = SHIFT_OPTIONS.find(x => x.id === type);
+        schedule = { type, from: o.from, to: o.to, label: o.label };
+      }
+      if (schedule) {
+        const same = cur.type === type && (type !== 'custom' || (cur.from === schedule.from && cur.to === schedule.to));
+        schedule.since = same && cur.since ? cur.since : todayStr();
+      }
+      if (!await confirmBox('Save shift schedule?', `Are you sure you want to set ${u.displayName || u.email}'s shift to "${schedule ? schedule.label : 'No schedule'}"?`, 'Yes, save')) return false;
+      if (!configured) {
+        u.shiftSchedule = schedule;
+        toast('Demo schedule updated.');
+        renderPage();
+        return;
+      }
+      await fb.updateDoc(fb.doc(db, 'users', u.id), { shiftSchedule: schedule, updatedAt: fb.serverTimestamp() });
+      logAudit('Changed shift schedule', `${u.displayName || u.email}: ${schedule ? schedule.label : 'No schedule'}`);
+      toast('Shift schedule saved.');
+    }, 'Save schedule');
+}
+
 /* CREATE WORKER — admin creates a login + profile without being signed out */
 function addWorker() {
   if (!isAdmin()) return;
@@ -1427,7 +1758,7 @@ function addWorker() {
       const email = String(fd.get('email') || '').trim().toLowerCase();
       const password = String(fd.get('password') || '');
       if (!name || !email || password.length < 6) { toast('Fill in all fields (password min 6 characters).'); return false; }
-      if (data.users.some(u => (u.email || '').toLowerCase() === email)) { toast('A worker with that email already exists.'); return false; }
+      if (liveUsers().some(u => (u.email || '').toLowerCase() === email)) { toast('A worker with that email already exists.'); return false; }
 
       const profileDoc = { displayName: name, email, role: 'worker', status: 'approved', isActive: true, assignedAccountIds: [] };
 
@@ -1447,6 +1778,7 @@ function addWorker() {
           ...profileDoc, createdBy: currentUser.uid,
           createdAt: fb.serverTimestamp(), updatedAt: fb.serverTimestamp()
         });
+        logAudit('Created worker', `${name} · ${email}`);
         toast('Worker created.');
       } catch (err) {
         console.error(err);
@@ -1454,6 +1786,7 @@ function addWorker() {
           : err.code === 'auth/weak-password' ? 'Password is too weak.'
           : err.code === 'auth/invalid-email' ? 'Please enter a valid email address.'
           : 'Could not create worker. Check Firestore rules.');
+        if (err.code === 'auth/email-already-in-use') toast('That email still has a login. If this worker was deleted, the login clears the next time that person opens the app and signs in (or remove it in Firebase Console → Authentication).');
         return false;
       } finally {
         try { await fb.signOut(secAuth); } catch {}
@@ -1466,7 +1799,7 @@ function addWorker() {
 async function deleteWorker(u) {
   if (!isAdmin()) return;
   if (u.id === currentUser.uid) return toast('You cannot delete yourself.');
-  if (!await confirmBox('Delete worker?', `Are you sure you want to delete ${u.displayName || u.email}? Their profile will be removed and they will lose access. Past submissions are kept. This cannot be undone.`, 'Yes, delete', true)) return;
+  if (!await confirmBox('Delete worker?', `Are you sure you want to delete ${u.displayName || u.email}? Their profile and login email will be removed (the email is cleared the next time they try to sign in) and they lose access. Past submissions are kept. This cannot be undone.`, 'Yes, delete', true)) return;
 
   if (!configured) {
     data.users = data.users.filter(x => x.id !== u.id);
@@ -1478,7 +1811,8 @@ async function deleteWorker(u) {
     return;
   }
   try {
-    const ops = [b => b.delete(fb.doc(db, 'users', u.id))];
+    // The profile is kept as a hidden "deleted" marker. When that person next tries to sign in, the app deletes their login (email) itself.
+    const ops = [b => b.update(fb.doc(db, 'users', u.id), { status: 'deleted', isActive: false, assignedAccountIds: [], shiftSchedule: null, deletedAt: fb.serverTimestamp(), deletedBy: currentUser.uid, updatedAt: fb.serverTimestamp() })];
     data.accounts.filter(a => (a.assignedWorkerIds || []).includes(u.id)).forEach(a => {
       ops.push(b => b.update(fb.doc(db, 'accounts', a.id), {
         assignedWorkerIds: fb.arrayRemove(u.id),
@@ -1489,7 +1823,8 @@ async function deleteWorker(u) {
     data.leaderboard.filter(d => d.workerId === u.id).forEach(d => ops.push(b => b.delete(fb.doc(db, 'leaderboard', d.id))));
     await commitInChunks(ops);
     try { await fb.deleteDoc(fb.doc(db, 'presence', u.id)); } catch {} // best effort: stop showing them as online
-    toast('Worker deleted.');
+    logAudit('Deleted worker', `${u.displayName || ''} · ${u.email || ''}`);
+    toast('Worker deleted. Their login email is cleared the next time they try to sign in.');
   } catch (e) { console.error(e); toast('Could not delete worker. Check Firestore rules.'); }
 }
 
@@ -1499,6 +1834,7 @@ async function workerAction(id, action) {
   if (!u) return;
   if (action === 'delete') return deleteWorker(u);
   if (action === 'edit') return editWorker(u);
+  if (action === 'schedule') return editSchedule(u);
   const changes = ({
     approve: { status: 'approved', isActive: true },
     reject: { status: 'rejected', isActive: false },
@@ -1513,6 +1849,7 @@ async function workerAction(id, action) {
   if (!configured) { Object.assign(u, changes); renderPage(); return; }
   try {
     await fb.updateDoc(fb.doc(db, 'users', id), { ...changes, updatedAt: fb.serverTimestamp() });
+    logAudit(`${labels[action]} worker`, who);
     toast('Worker updated.');
   } catch (e) { console.error(e); toast('Could not update worker. Check Firestore rules.'); }
 }
@@ -1521,22 +1858,25 @@ async function workerAction(id, action) {
 async function saveSettings(e) {
   e.preventDefault();
   const f = new FormData(e.currentTarget);
-  const rateVal = Number(f.get('rate')), deduction = Number(f.get('deduction'));
+  const rateVal = Number(f.get('rate')), deduction = Number(f.get('deduction')), errPct = Number(f.get('errWarn')), workLink = String(f.get('workUrl') || '').trim();
   if (!Number.isFinite(rateVal) || rateVal < 0) return toast('Enter a valid rate.');
   if (!Number.isFinite(deduction) || deduction < 0 || deduction > 100) return toast('Deduction must be between 0 and 100.');
+  if (!Number.isFinite(errPct) || errPct < 0 || errPct > 100) return toast('Error warning must be between 0 and 100.');
+  if (workLink && !/^https?:\/\//i.test(workLink)) return toast('The work link must start with https://');
   if (!await confirmBox('Save pay settings?', 'Are you sure you want to change the rate and deduction for future submissions?', 'Yes, save settings')) return;
   const gross = Math.round(rateVal * 100);
   if (!configured) {
-    data.settings = { grossRateCents: gross, deductionPercent: deduction };
+    data.settings = { grossRateCents: gross, deductionPercent: deduction, errorWarnPercent: errPct, workUrl: workLink };
     toast('Demo settings updated only.');
     renderPage();
     return;
   }
   try {
     await fb.setDoc(fb.doc(db, 'settings', 'paySettings'), {
-      id: 'paySettings', grossRateCents: gross, deductionPercent: deduction,
+      id: 'paySettings', grossRateCents: gross, deductionPercent: deduction, errorWarnPercent: errPct, workUrl: workLink,
       updatedBy: currentUser.uid, updatedAt: fb.serverTimestamp()
     }, { merge: true });
+    logAudit('Changed pay settings', `rate ₱${rateVal.toFixed(2)}, deduction ${deduction}%, error warning ${errPct}%`);
     toast('Pay settings saved.');
   } catch (err) { console.error(err); toast('Could not save settings. Check Firestore rules.'); }
 }
@@ -1593,6 +1933,8 @@ async function boot() {
     const token = ++authToken;
     unlisten();
     closeModal();
+    $('#shiftWarn')?.remove();
+    $('#shiftRemind')?.remove();
     $('#confirmBox')?.remove();
     $('#chatPopups')?.remove();
     if (!user) {
@@ -1613,6 +1955,13 @@ async function boot() {
       }
       const p = { id: snap.id, ...snap.data() };
       p.displayName = p.displayName || user.displayName || user.email || 'User';
+      if (p.status === 'deleted') {
+        let removed = false;
+        try { await fb.deleteUser(user); removed = true; } catch (e) { console.warn('could not delete login', e); }
+        if (!removed) { try { await fb.signOut(auth); } catch {} }
+        toast('Your account was deleted by the administrator.');
+        return;
+      }
       if (p.isActive === false || p.status === 'rejected' || p.status === 'pending') {
         toast(p.status === 'pending' ? 'Your account is awaiting approval.' : 'Your account is not active.');
         await fb.signOut(auth);
@@ -1631,6 +1980,7 @@ async function boot() {
       if (token !== authToken) return;
       startPresence();
       renderPage();
+      showShiftWarning();
     } catch (e) {
       console.error(e);
       toast('Could not load your profile. Check Firestore rules.');
