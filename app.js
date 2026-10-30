@@ -26,9 +26,12 @@ let lbPeriod = 'month', lbError = false, lbTimer = null;
 let loaded = {};
 let accessErr = {}; // collections the admin could not read (permission-denied)
 let missedFrom = '', missedTo = '';
+let chatConv = 'group', dmWith = '', dmUnsub = null, dmReady = false; // chat: 'group' (public) or 'dm' (private worker <-> admin)
+let auditUnsub = null, auditLimit = 50, auditMore = false, subLimit = 50;
 const filters = { q: '', status: 'all' };
 const DEFAULT_SETTINGS = { grossRateCents: 100, deductionPercent: 10, errorWarnPercent: 5, workUrl: '' };
-const data = { submissions: [], accounts: [], users: [], messages: [], presence: [], announcements: [], annRead: [], leaderboard: [], audit: [], settings: { ...DEFAULT_SETTINGS } };
+const CHAT_LIMIT = 50; // messages loaded per conversation (keeps reads small)
+const data = { submissions: [], accounts: [], users: [], messages: [], presence: [], announcements: [], annRead: [], leaderboard: [], audit: [], threads: [], dmMessages: [], settings: { ...DEFAULT_SETTINGS } };
 
 /* ───────────────────────── Helpers ───────────────────────── */
 const $ = s => document.querySelector(s);
@@ -268,7 +271,7 @@ function auditPage() {
   const rows = data.audit.slice().sort((a, b) => timeVal(b.createdAt) - timeVal(a.createdAt));
   const body = rows.map(a => `<tr><td>${esc(date(a.createdAt))}<small style="display:block;color:#8a958e;margin-top:4px">${esc(fmtTime(a.createdAt))}</small></td><td><strong>${esc(a.actorName || 'Admin')}</strong></td><td>${esc(a.action || '')}</td><td>${esc(a.details || '')}</td></tr>`).join('')
     || `<tr><td colspan="4"><div class="empty">🧾<b>No activity recorded yet</b>Admin actions appear here. If nothing shows after an action, publish the latest firestore.rules.</div></td></tr>`;
-  return `<div class="welcome"><div><h2>Audit log</h2><p>Who changed what, and when. Latest 300 actions.</p></div></div><div class="panel"><div class="toolbar"><input id="auditSearch" placeholder="Search action, admin or details…"><span class="spacer"></span><span class="muted">${rows.length} record(s)</span></div><div class="table-wrap"><table><thead><tr><th>When</th><th>Admin</th><th>Action</th><th>Details</th></tr></thead><tbody>${body}</tbody></table></div></div>`;
+  return `<div class="welcome"><div><h2>Audit log</h2><p>Who changed what, and when. Showing the latest ${rows.length} (50 at a time).</p></div></div><div class="panel"><div class="toolbar"><input id="auditSearch" placeholder="Search action, admin or details…"><span class="spacer"></span>${auditMore ? '<button type="button" class="small-btn" id="moreAudit">Load 50 more</button>' : ''}<span class="muted">${rows.length} record(s)</span></div><div class="table-wrap"><table><thead><tr><th>When</th><th>Admin</th><th>Action</th><th>Details</th></tr></thead><tbody>${body}</tbody></table></div></div>`;
 }
 
 // ADMIN: void a submission so the worker can submit that shift again
@@ -309,7 +312,7 @@ function toast(msg) {
   clearTimeout(toastTimer);
   toastTimer = setTimeout(() => el.classList.remove('show'), 3500);
 }
-function unlisten() { unsubs.forEach(fn => { try { fn(); } catch {} }); unsubs = []; }
+function unlisten() { unsubs.forEach(fn => { try { fn(); } catch {} }); unsubs = []; stopDm(); stopAudit(); }
 
 const isAdmin = () => profile?.role === 'admin';
 const visibleSubmissions = () => isAdmin() ? data.submissions : data.submissions.filter(s => s.workerId === currentUser?.uid);
@@ -356,6 +359,10 @@ button:disabled{opacity:.6;cursor:not-allowed}
 #shiftWarn{z-index:1250}
 #shiftRemind{z-index:1260}
 .start-work{display:flex;align-items:center;justify-content:center;gap:8px;margin:14px 12px 0;text-decoration:none;text-align:center}
+.sidebar{overflow-y:auto}
+.chat-list{overflow-y:auto;max-height:70vh}
+.chat-list button{position:relative}
+.chat-list .nav-badge{margin-left:auto}
 .sh-confirm{max-width:400px;text-align:center}
 .sh-confirm p{margin:0 0 4px;line-height:1.5}
 .sh-confirm .sh-modal-actions{justify-content:center}
@@ -700,6 +707,7 @@ async function loadData() {
   data.announcements = []; data.annRead = [];
   data.submissions = []; data.accounts = []; data.users = [];
   data.messages = []; data.presence = []; data.leaderboard = []; data.audit = [];
+  data.threads = []; data.dmMessages = []; chatConv = 'group'; dmWith = ''; auditLimit = 50; subLimit = 50;
   data.settings = { ...DEFAULT_SETTINGS };
   loaded = {}; chatReady = false; unreadChat = 0; lbError = false; accessErr = {};
 
@@ -707,16 +715,22 @@ async function loadData() {
     listen('accounts', 'accounts');
     listen('submissions', 'submissions');
     listen('users', 'users');
-    listen('auditLogs', 'audit', (ref, q) => q.query(ref, q.orderBy('createdAt', 'desc'), q.limit(300)));
+    startAudit();
   } else {
     // Workers only query what they are allowed to read.
     listen('accounts', 'accounts', (ref, q) => q.query(ref, q.where('assignedWorkerIds', 'array-contains', uid)));
     listen('submissions', 'submissions', (ref, q) => q.query(ref, q.where('workerId', '==', uid)));
     data.users = [];
   }
+  setupPrivateChat(uid);
 
   unsubs.push(onSnapshot(doc(db, 'users', uid), s => {
-    if (!s.exists() || !profile) return;
+    if (!profile) return;
+    if (!s.exists()) { if (!s.metadata.fromCache) forceLogout('Your account was removed by the administrator.'); return; }
+    const live = s.data();
+    if (live.status === 'deleted') { forceLogout('Your account was deleted by the administrator.', true); return; }
+    if (live.isActive === false || live.status === 'rejected' || live.status === 'pending') { forceLogout('Your account is no longer active.'); return; }
+    if (!['admin', 'worker'].includes(live.role) || live.role !== profile.role) { forceLogout('Your access changed. Please sign in again.'); return; }
     const next = s.data().shiftSchedule || null;
     if (JSON.stringify(next) !== JSON.stringify(profile.shiftSchedule || null)) {
       profile.shiftSchedule = next;
@@ -761,7 +775,7 @@ async function loadData() {
     requestRender();
   }));
 
-  const msgQuery = query(collection(db, 'conversations', 'company_group', 'messages'), orderBy('createdAt', 'desc'), limit(150));
+  const msgQuery = query(collection(db, 'conversations', 'company_group', 'messages'), orderBy('createdAt', 'desc'), limit(CHAT_LIMIT));
   unsubs.push(onSnapshot(msgQuery, s => {
     // Popup for brand-new messages from other people (skip the very first load)
     if (chatReady) {
@@ -911,10 +925,11 @@ function showChatPopup(m) {
   const t = String(m.text || m.message || '');
   const el = document.createElement('div');
   el.className = 'chat-pop';
-  el.innerHTML = `<div class="avatar">${esc(initials(m.senderName))}</div><div class="chat-pop-body"><b>💬 ${esc(m.senderName || 'Team member')}</b><span>${esc(t.length > 160 ? t.slice(0, 160) + '…' : t)}</span><small>New team message · click to open chat</small></div><button type="button" class="chat-pop-x" aria-label="Dismiss">×</button>`;
+  el.innerHTML = `<div class="avatar">${esc(initials(m.senderName))}</div><div class="chat-pop-body"><b>${m.dm ? '🔒 Private · ' : '💬 '}${esc(m.senderName || 'Team member')}</b><span>${esc(t.length > 160 ? t.slice(0, 160) + '…' : t)}</span><small>${m.dm ? 'Private message' : 'New team message'} · click to open chat</small></div><button type="button" class="chat-pop-x" aria-label="Dismiss">×</button>`;
   el.addEventListener('click', e => {
     if (e.target.closest('.chat-pop-x')) { el.remove(); return; }
     el.remove();
+    if (m.dm) { chatConv = 'dm'; if (isAdmin()) { dmWith = m.dmId; startDm(); } } else { chatConv = 'group'; }
     go('chat');
   });
   box.appendChild(el);
@@ -923,7 +938,7 @@ function showChatPopup(m) {
 
 function onIncomingMessage(m) {
   if (!currentUser || !profile) return;
-  if (page === 'chat' && !document.hidden) return; // already reading the chat
+  if (page === 'chat' && chatConv === 'group' && !document.hidden) return; // already reading the public chat
   unreadChat++;
   updateChatBadge();
   showChatPopup(m);
@@ -974,6 +989,154 @@ function updateTicker() {
   el.querySelector('.msg-ticker-view').innerHTML = tickerInner();
 }
 
+/* ───────────────────────── Session check, audit listener, private chat ───────────────────────── */
+// Signs the user out when their account is deactivated / deleted / changed while they are logged in.
+async function forceLogout(msg, deleteLogin = false) {
+  clearPresenceTimers();
+  unlisten();
+  if (configured && auth) {
+    if (deleteLogin && auth.currentUser) { try { await fb.deleteUser(auth.currentUser); } catch (e) { console.warn('could not delete login', e); } }
+    try { await fb.signOut(auth); } catch {}
+  }
+  currentUser = null; profile = null; page = 'dashboard'; detailId = null;
+  renderLogin();
+  if (msg) toast(msg);
+}
+
+function startAudit() {
+  stopAudit();
+  if (!configured || !db || !isAdmin()) return;
+  const { collection, onSnapshot, query, orderBy, limit } = fb;
+  auditUnsub = onSnapshot(query(collection(db, 'auditLogs'), orderBy('createdAt', 'desc'), limit(auditLimit)), s => {
+    data.audit = s.docs.map(d => ({ id: d.id, ...d.data() }));
+    auditMore = s.size >= auditLimit;
+    if (page === 'audit') requestRender();
+  }, err => { console.warn('audit listener (check Firestore rules for /auditLogs)', err); toast('Could not load audit log. Check Firestore rules.'); });
+}
+function stopAudit() { if (auditUnsub) { try { auditUnsub(); } catch {} auditUnsub = null; } }
+
+// Private chat = one thread per worker (worker <-> admins). Workers can never read each other's threads.
+const dmId = () => isAdmin() ? dmWith : currentUser?.uid;
+const chatPeerName = () => { const u = data.users.find(x => x.id === dmWith); return u?.displayName || u?.email || 'Worker'; };
+function stopDm() { if (dmUnsub) { try { dmUnsub(); } catch {} dmUnsub = null; } }
+function startDm() {
+  stopDm();
+  data.dmMessages = [];
+  dmReady = false;
+  const id = dmId();
+  if (!configured || !db || !id || !currentUser) return;
+  const { collection, onSnapshot, query, orderBy, limit } = fb;
+  dmUnsub = onSnapshot(query(collection(db, 'privateThreads', id, 'messages'), orderBy('createdAt', 'desc'), limit(CHAT_LIMIT)), s => {
+    if (dmReady && !isAdmin()) { // workers get a popup for admin replies (admins are notified from the thread list)
+      s.docChanges().forEach(ch => {
+        if (ch.type !== 'added' || ch.doc.metadata.hasPendingWrites) return;
+        const m = { id: ch.doc.id, ...ch.doc.data() };
+        if (m.senderId === currentUser?.uid) return;
+        if (page === 'chat' && chatConv === 'dm' && !document.hidden) return;
+        unreadChat++;
+        updateChatBadge();
+        showChatPopup({ ...m, dm: true, dmId: id });
+      });
+    }
+    dmReady = true;
+    data.dmMessages = s.docs.map(d => ({ id: d.id, ...d.data() })).sort((a, b) => timeVal(a.createdAt) - timeVal(b.createdAt));
+    requestRender('chat');
+  }, err => { console.warn('private messages (check Firestore rules for /privateThreads)', err); toast('Could not load private messages. Check Firestore rules.'); });
+}
+function setupPrivateChat(uid) {
+  const { collection, doc, onSnapshot } = fb;
+  if (isAdmin()) {
+    let ready = false;
+    unsubs.push(onSnapshot(collection(db, 'privateThreads'), s => {
+      if (ready) {
+        s.docChanges().forEach(ch => {
+          if (ch.type === 'removed' || ch.doc.metadata.hasPendingWrites) return;
+          const t = ch.doc.data();
+          if (!t.adminUnread || t.lastSenderId === uid) return;
+          if (page === 'chat' && chatConv === 'dm' && dmWith === ch.doc.id && !document.hidden) return;
+          unreadChat++;
+          updateChatBadge();
+          showChatPopup({ senderName: t.lastSenderName || t.workerName, text: t.lastText, dm: true, dmId: ch.doc.id });
+        });
+      }
+      ready = true;
+      data.threads = s.docs.map(d => ({ id: d.id, ...d.data() }));
+      requestRender('chat');
+    }, err => console.warn('privateThreads listener (check Firestore rules)', err)));
+  } else {
+    startDm();
+    unsubs.push(onSnapshot(doc(db, 'privateThreads', uid), s => {
+      data.threads = s.exists() ? [{ id: s.id, ...s.data() }] : [];
+      requestRender('chat');
+    }, err => console.warn('private thread listener (check Firestore rules)', err)));
+  }
+}
+function markDmRead() {
+  if (!configured || !db || page !== 'chat' || chatConv !== 'dm' || document.hidden) return;
+  const id = dmId();
+  const t = data.threads.find(x => x.id === id);
+  const flag = isAdmin() ? 'adminUnread' : 'workerUnread';
+  if (!t || !t[flag]) return;
+  t[flag] = false; // avoid repeating while the write is in flight
+  fb.updateDoc(fb.doc(db, 'privateThreads', id), { [flag]: false }).catch(() => {});
+}
+function chatListHtml() {
+  const btn = (conv, id, ico, title, sub, active, unread) => `<button type="button" class="${active ? 'active' : ''}" data-chat-conv="${conv}" data-chat-id="${esc(id)}"><div class="avatar">${ico}</div><div><strong>${esc(title)}</strong><small>${esc(sub)}</small></div>${unread ? '<span class="nav-badge">●</span>' : ''}</button>`;
+  let h = btn('group', '', '👥', 'Company group', 'Public · everyone can read', chatConv === 'group', false);
+  if (isAdmin()) {
+    const th = new Map(data.threads.map(t => [t.id, t]));
+    const at = id => (th.get(id)?.lastAt ? timeVal(th.get(id).lastAt) : 0);
+    const ws = liveUsers().filter(u => u.role === 'worker' && (u.status || 'approved') === 'approved')
+      .sort((a, b) => at(b.id) - at(a.id) || (a.displayName || '').localeCompare(b.displayName || ''));
+    h += ws.map(w => btn('dm', w.id, '🔒', w.displayName || w.email || 'Worker', th.get(w.id)?.lastText || 'Private message', chatConv === 'dm' && dmWith === w.id, !!th.get(w.id)?.adminUnread)).join('');
+  } else {
+    h += btn('dm', currentUser.uid, '🔒', 'Admin', 'Private · only you and admin', chatConv === 'dm', !!data.threads[0]?.workerUnread);
+  }
+  return h;
+}
+function openChat(conv, id) {
+  if (conv === 'group') {
+    chatConv = 'group';
+    if (isAdmin()) stopDm();
+  } else {
+    chatConv = 'dm';
+    if (isAdmin() && (dmWith !== id || !dmUnsub)) { dmWith = id; startDm(); }
+  }
+  renderPage();
+}
+async function sendDm(item, input) {
+  const id = dmId();
+  if (!id) { toast('Pick a worker first.'); return; }
+  if (!configured) {
+    data.dmMessages.push({ ...item, id: 'd' + Date.now(), createdAt: new Date() });
+    input.value = '';
+    updateChat();
+    return;
+  }
+  input.value = '';
+  try {
+    const w = data.users.find(u => u.id === id);
+    const b = fb.writeBatch(db);
+    b.set(fb.doc(fb.collection(db, 'privateThreads', id, 'messages')), { ...item, createdAt: fb.serverTimestamp() });
+    b.set(fb.doc(db, 'privateThreads', id), {
+      workerId: id, workerName: isAdmin() ? (w?.displayName || w?.email || 'Worker') : profile.displayName,
+      lastText: item.text.slice(0, 200), lastSenderId: currentUser.uid, lastSenderName: profile.displayName,
+      lastAt: fb.serverTimestamp(), adminUnread: !isAdmin(), workerUnread: isAdmin()
+    }, { merge: true });
+    await b.commit();
+  } catch (err) {
+    console.error(err);
+    input.value = item.text; // restore so nothing is lost
+    toast('Could not send private message. Check Firestore rules.');
+  }
+}
+// Table rows, 50 at a time
+function submissionRowsPaged(rows) {
+  const sorted = rows.slice().sort((a, b) => timeVal(b.createdAt) - timeVal(a.createdAt));
+  const more = sorted.length > subLimit ? `<tr><td colspan="8" style="text-align:center"><button type="button" class="small-btn" data-more-subs>Show 50 more (${sorted.length - subLimit} left)</button></td></tr>` : '';
+  return submissionRows(sorted.slice(0, subLimit)) + more;
+}
+
 /* ───────────────────────── Demo mode ───────────────────────── */
 function demoSignIn(role) {
   unlisten();
@@ -993,6 +1156,7 @@ function demoSignIn(role) {
   data.presence = [{ id: 'demo-worker', displayName: 'Demo Worker', role: 'worker', demo: true }, { id: 'worker-2', displayName: 'Jamie Santos', role: 'worker', demo: true }];
   data.leaderboard = [];
   data.audit = [];
+  data.threads = []; data.dmMessages = []; chatConv = 'group'; dmWith = '';
   data.settings = { ...DEFAULT_SETTINGS };
   accessErr = {};
   page = 'dashboard';
@@ -1053,7 +1217,7 @@ function shell() {
   if (isAdmin()) items.push(['workers', '♙', 'Workers'], ['settings', '⚙', 'Pay settings'], ['missed', '⏱', 'Missed shifts'], ['audit', '✎', 'Audit log']);
   const title = PAGE_TITLES[page] || 'Dashboard';
   const badge = k => k === 'chat' && unreadChat > 0 ? `<span class="nav-badge">${unreadChat > 9 ? '9+' : unreadChat}</span>` : '';
-  return `<div class="shell"><aside class="sidebar" id="sidebar"><div class="brand"><img src="assets/logo.jpg" alt=""><div><strong>STEIVY</strong><small>RECEIPT HUB</small></div></div><div class="nav-label">WORKSPACE</div><nav class="nav">${items.map(n => `<button data-nav="${n[0]}" class="${page === n[0] ? 'active' : ''}"><span class="ico">${n[1]}</span>${n[2]}${badge(n[0])}</button>`).join('')}</nav>${!isAdmin() && workUrl() ? `<a class="btn btn-primary start-work" id="startWork" href="${esc(workUrl())}" target="_blank" rel="noopener noreferrer">▶ Start work</a>` : ''}<div class="sidebar-bottom"><div class="user-mini"><div class="avatar">${esc(initials(profile?.displayName))}</div><div><strong>${esc(profile?.displayName || 'User')}</strong><small>${isAdmin() ? 'Administrator' : 'Worker'}</small></div></div><button class="btn btn-ghost btn-block" id="logout">↪ Sign out</button></div></aside><main class="main"><header class="topbar"><div class="right"><button class="btn btn-ghost mobile-menu" id="menuBtn">☰</button><div><div class="crumb">WORKSPACE / ${esc(title.toUpperCase())}</div><h1>${esc(title)}</h1></div></div><div class="top-actions"><span class="mode-pill">${configured ? '● Connected app' : '◉ Demo preview'}</span><div class="avatar">${esc(initials(profile?.displayName))}</div></div></header>${!configured ? '<div class="demo-banner">Demo preview — data is sample-only and will reset when you leave. Configure Firebase to use real accounts and save changes.</div>' : ''}<section class="content" id="pageContent"></section></main></div>`;
+  return `<div class="shell"><aside class="sidebar" id="sidebar"><div class="brand"><img src="assets/logo.jpg" alt=""><div><strong>STEIVY</strong><small>RECEIPT HUB</small></div></div><div class="nav-label">WORKSPACE</div><nav class="nav">${items.map(n => `<button data-nav="${n[0]}" class="${page === n[0] ? 'active' : ''}"><span class="ico">${n[1]}</span>${n[2]}${badge(n[0])}</button>`).join('')}</nav>${!isAdmin() && workUrl() ? `<a class="btn btn-primary start-work" id="startWork" href="${esc(workUrl())}" target="_blank" rel="noopener noreferrer">▶ Start work</a>` : ''}<div class="sidebar-bottom"><div class="user-mini"><div class="avatar">${esc(initials(profile?.displayName))}</div><div><strong>${esc(profile?.displayName || 'User')}</strong><small>${isAdmin() ? 'Administrator' : 'Worker'}</small></div></div><button class="btn btn-ghost btn-block" id="logout">↪ Sign out</button></div></aside><main class="main"><header class="topbar"><div class="right"><button class="btn btn-ghost mobile-menu" id="menuBtn">☰</button><div><div class="crumb">WORKSPACE / ${esc(title.toUpperCase())}</div><h1>${esc(title)}</h1></div></div><div class="top-actions"><span class="mode-pill">${configured ? '● Connected app' : '◉ Demo preview'}</span><button type="button" class="btn btn-ghost" id="logoutTop">↪ Sign out</button><div class="avatar">${esc(initials(profile?.displayName))}</div></div></header>${!configured ? '<div class="demo-banner">Demo preview — data is sample-only and will reset when you leave. Configure Firebase to use real accounts and save changes.</div>' : ''}<section class="content" id="pageContent"></section></main></div>`;
 }
 
 const stat = (label, value, sub, ico) => `<div class="stat"><div class="stat-head">${label}<span class="stat-icon">${ico}</span></div><strong>${value}</strong><small>${sub}</small></div>`;
@@ -1105,7 +1269,7 @@ function submissionForm() {
 function receipts() {
   const rows = filteredSubmissions();
   const sel = v => filters.status === v ? 'selected' : '';
-  return `<div class="welcome"><div><h2>${isAdmin() ? 'Review submissions' : 'My shift submissions'}</h2><p>${isAdmin() ? 'Review worker activity, edit processed/error counts, and approve or reject shift records.' : 'Record a completed shift and track its status.'}</p></div>${!isAdmin() ? '<button class="btn btn-primary" id="newSubmission">＋ New submission</button>' : ''}</div>${!isAdmin() ? submissionForm() : ''}<div class="panel"><div class="toolbar"><input id="receiptSearch" placeholder="Search worker or account…" value="${esc(filters.q)}"><select id="statusFilter"><option value="all">All statuses</option><option ${sel('pending')}>pending</option><option ${sel('approved')}>approved</option><option ${sel('rejected')}>rejected</option></select><span class="spacer"></span><span class="muted" id="recordCount">${rows.length} record(s)</span></div><div class="table-wrap"><table><thead><tr><th>Worker / account</th><th>Shift date</th><th>Shift</th><th>Processed</th><th>Errors</th><th>Net pay</th><th>Status</th><th>Action</th></tr></thead><tbody id="submissionRows">${submissionRows(rows)}</tbody></table></div></div>`;
+  return `<div class="welcome"><div><h2>${isAdmin() ? 'Review submissions' : 'My shift submissions'}</h2><p>${isAdmin() ? 'Review worker activity, edit processed/error counts, and approve or reject shift records.' : 'Record a completed shift and track its status.'}</p></div>${!isAdmin() ? '<button class="btn btn-primary" id="newSubmission">＋ New submission</button>' : ''}</div>${!isAdmin() ? submissionForm() : ''}<div class="panel"><div class="toolbar"><input id="receiptSearch" placeholder="Search worker or account…" value="${esc(filters.q)}"><select id="statusFilter"><option value="all">All statuses</option><option ${sel('pending')}>pending</option><option ${sel('approved')}>approved</option><option ${sel('rejected')}>rejected</option></select><span class="spacer"></span><span class="muted" id="recordCount">${rows.length} record(s)</span></div><div class="table-wrap"><table><thead><tr><th>Worker / account</th><th>Shift date</th><th>Shift</th><th>Processed</th><th>Errors</th><th>Net pay</th><th>Status</th><th>Action</th></tr></thead><tbody id="submissionRows">${submissionRowsPaged(rows)}</tbody></table></div></div>`;
 }
 
 function workerNamesFor(a) {
@@ -1218,7 +1382,7 @@ function settings() {
 }
 
 function chatBubbles() {
-  const messages = data.messages || [];
+  const messages = (chatConv === 'dm' ? data.dmMessages : data.messages) || [];
   return messages.map(m => {
     const mine = m.senderId === currentUser?.uid;
     return `<div class="bubble ${mine ? 'mine' : ''}">${!mine ? `<b>${esc(m.senderName || 'Team member')}</b><br>` : ''}${esc(m.text || m.message || '')}<small>${esc(fmtTime(m.createdAt))}</small></div>`;
@@ -1227,13 +1391,18 @@ function chatBubbles() {
 function updateChat() {
   const box = $('#chatMessages');
   if (!box) return;
+  const lst = $('#chatList');
+  if (lst) lst.innerHTML = chatListHtml();
+  markDmRead();
   const nearBottom = box.scrollHeight - box.scrollTop - box.clientHeight < 120;
-  const lastMine = (data.messages || []).slice(-1)[0]?.senderId === currentUser?.uid;
+  const lastMine = ((chatConv === 'dm' ? data.dmMessages : data.messages) || []).slice(-1)[0]?.senderId === currentUser?.uid;
   box.innerHTML = chatBubbles();
   if (nearBottom || lastMine) box.scrollTo({ top: box.scrollHeight, behavior: 'smooth' });
 }
 function chat() {
-  return `<div class="welcome"><div><h2>Team conversation</h2><p>Share updates with your team.</p></div></div><div class="chat-layout"><div class="chat-list"><button class="active"><div class="avatar">👥</div><div><strong>Company group</strong><small>Team-wide conversation</small></div></button></div><div class="chat-window"><div class="chat-messages" id="chatMessages">${chatBubbles()}</div><form class="chat-compose" id="chatForm"><input name="message" placeholder="Write a message…" maxlength="2000" autocomplete="off" required><button class="btn btn-primary" type="submit">Send ↗</button></form></div></div>`;
+  if (isAdmin() && chatConv === 'dm' && !dmWith) chatConv = 'group';
+  const who = chatConv === 'group' ? 'Public group: everyone can read these messages.' : (isAdmin() ? `Private chat with ${esc(chatPeerName())}: only you and this worker can read it.` : 'Private chat with the admin: only you and the admin can read it.');
+  return `<div class="welcome"><div><h2>Team conversation</h2><p>${who}</p></div></div><div class="chat-layout"><div class="chat-list" id="chatList">${chatListHtml()}</div><div class="chat-window"><div class="chat-messages" id="chatMessages">${chatBubbles()}</div><form class="chat-compose" id="chatForm"><input name="message" placeholder="${chatConv === 'group' ? 'Message the whole team…' : 'Write a private message…'}" maxlength="2000" autocomplete="off" required><button class="btn btn-primary" type="submit">Send ↗</button></form></div></div>`;
 }
 
 /* ───────────────────────── Render + wiring ───────────────────────── */
@@ -1246,6 +1415,7 @@ function renderPage() {
   $('#pageContent').innerHTML = accessBanner() + ({ dashboard, receipts, errors: errorsPage, accounts, reports, chat, workers, settings, missed: missedPage, audit: auditPage })[page]();
   wireShell();
   wirePage();
+  if (page === 'chat') markDmRead();
   if (detailId) { const s = visibleSubmissions().find(x => x.id === detailId); if (s) viewSubmission(s.id, false); else detailId = null; }
   syncAnnouncementPopup();
 }
@@ -1260,13 +1430,15 @@ function go(p) {
 
 function wireShell() {
   $$('.nav button').forEach(b => b.addEventListener('click', () => go(b.dataset.nav)));
-  $('#logout')?.addEventListener('click', async () => {
+  const doLogout = async () => {
     await stopPresence();
     unlisten();
     if (configured && auth) { try { await fb.signOut(auth); } catch {} }
     currentUser = null; profile = null; page = 'dashboard'; detailId = null;
     renderLogin();
-  });
+  };
+  $('#logout')?.addEventListener('click', doLogout);
+  $('#logoutTop')?.addEventListener('click', doLogout);
   $('#menuBtn')?.addEventListener('click', () => $('#sidebar').classList.toggle('open'));
   $('#pageContent').addEventListener('click', e => {
     const t = e.target;
@@ -1274,6 +1446,8 @@ function wireShell() {
     if ((el = t.closest('[data-lb-period]'))) { lbPeriod = el.dataset.lbPeriod; return renderPage(); }
     if ((el = t.closest('[data-page]'))) return go(el.dataset.page);
     if ((el = t.closest('[data-view]'))) return viewSubmission(el.dataset.view);
+    if ((el = t.closest('[data-chat-conv]'))) return openChat(el.dataset.chatConv, el.dataset.chatId);
+    if ((el = t.closest('[data-more-subs]'))) { subLimit += 50; return filterRows(); }
     if ((el = t.closest('[data-allow-resubmit]'))) return allowResubmit(el.dataset.allowResubmit);
     if ((el = t.closest('[data-edit-counts]'))) return editCounts(el.dataset.editCounts);
     if ((el = t.closest('[data-del-announcement]'))) return removeAnnouncement(el.dataset.delAnnouncement);
@@ -1289,14 +1463,15 @@ function wireShell() {
 function wirePage() {
   $('#newSubmission')?.addEventListener('click', () => $('#submissionFormPanel')?.scrollIntoView({ behavior: 'smooth', block: 'start' }));
   $('#submissionForm')?.addEventListener('submit', submitShift);
-  $('#receiptSearch')?.addEventListener('input', e => { filters.q = e.target.value; filterRows(); });
-  $('#statusFilter')?.addEventListener('change', e => { filters.status = e.target.value; filterRows(); });
+  $('#receiptSearch')?.addEventListener('input', e => { filters.q = e.target.value; subLimit = 50; filterRows(); });
+  $('#statusFilter')?.addEventListener('change', e => { filters.status = e.target.value; subLimit = 50; filterRows(); });
   $('#addAccount')?.addEventListener('click', addAccount);
   $('#addWorker')?.addEventListener('click', addWorker);
   $('#addAnnouncement')?.addEventListener('click', addAnnouncement);
   $('#settingsForm')?.addEventListener('submit', saveSettings);
   $('#chatForm')?.addEventListener('submit', sendMessage);
   $('#exportCsv')?.addEventListener('click', exportCsv);
+  $('#moreAudit')?.addEventListener('click', () => { auditLimit += 50; startAudit(); });
   $('#missedFrom')?.addEventListener('change', e => { missedFrom = e.target.value; renderPage(); });
   $('#missedTo')?.addEventListener('change', e => { missedTo = e.target.value; renderPage(); });
   $('#auditSearch')?.addEventListener('input', e => {
@@ -1316,7 +1491,7 @@ function wirePage() {
 function filterRows() {
   const rows = filteredSubmissions();
   const body = $('#submissionRows');
-  if (body) body.innerHTML = submissionRows(rows);
+  if (body) body.innerHTML = submissionRowsPaged(rows);
   const c = $('#recordCount');
   if (c) c.textContent = rows.length + ' record(s)';
 }
@@ -1887,6 +2062,7 @@ async function sendMessage(e) {
   const text = input.value.trim();
   if (!text) return;
   const item = { senderId: currentUser.uid, senderName: profile.displayName, text };
+  if (chatConv === 'dm') return sendDm(item, input);
   if (!configured) {
     data.messages.push({ ...item, id: 'm' + Date.now(), createdAt: new Date() });
     input.value = '';
