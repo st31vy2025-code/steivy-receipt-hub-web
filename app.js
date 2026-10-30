@@ -251,7 +251,7 @@ function errorWarningPanel() {
     return `<div class="notice warn" style="margin-bottom:16px"><b>⚠ High error rate this month (limit ${lim}%)</b><br>${list.slice(0, 8).map(r => `${esc(r.name)} — ${r.rate.toFixed(1)}% (${r.errors.toLocaleString()} error(s) of ${(r.receipts + r.errors).toLocaleString()})`).join('<br>')}</div>`;
   }
   const key = monthKeyOf(0);
-  const rows = visibleSubmissions().filter(s => s.status !== 'rejected' && String(s.shiftDate || '').slice(0, 7) === key);
+  const rows = visibleSubmissions().filter(s => s.status === 'approved' && String(s.shiftDate || '').slice(0, 7) === key);
   const p = rows.reduce((n, s) => n + num(s.receiptCount), 0), e = rows.reduce((n, s) => n + num(s.errorCount), 0);
   const rt = errRatePct(p, e);
   if (e === 0 || rt < lim) return '';
@@ -574,7 +574,7 @@ async function removeAnnouncement(id) {
 function monthStats(rows) {
   const cur = monthKeyOf(0), prev = monthKeyOf(-1);
   const sum = key => rows
-    .filter(s => s.status !== 'rejected' && String(s.shiftDate || '').slice(0, 7) === key)
+    .filter(s => s.status === 'approved' && String(s.shiftDate || '').slice(0, 7) === key)
     .reduce((t, s) => ({ r: t.r + num(s.receiptCount), e: t.e + num(s.errorCount) }), { r: 0, e: 0 });
   const p = sum(prev), c = sum(cur);
   const pre = isAdmin() ? 'Team · ' : '';
@@ -804,7 +804,7 @@ function boardRows(period) {
     map.set(id, g);
   };
   const fromSubs = list => list.forEach(s => {
-    if (s.status === 'rejected' || !s.workerId) return;
+    if (s.status !== 'approved' || !s.workerId) return;
     if (!inPeriod(String(s.shiftDate || '').slice(0, 7), period)) return;
     add(s.workerId, s.workerName, num(s.receiptCount), num(s.errorCount), 1);
   });
@@ -838,7 +838,7 @@ async function syncLeaderboard() {
   const mine = (admin ? data.submissions : data.submissions.filter(s => s.workerId === uid)).filter(s => s.workerId && (!admin || validIds.has(s.workerId)));
   const want = new Map();
   mine.forEach(s => {
-    if (s.status === 'rejected') return;
+    if (s.status !== 'approved') return;
     const m = String(s.shiftDate || '').slice(0, 7);
     if (!/^\d{4}-\d{2}$/.test(m)) return;
     const id = `${s.workerId}_${m}`;
@@ -901,7 +901,7 @@ function performanceSection() {
   const rk = rankings(lbPeriod);
   const label = periodLabel(lbPeriod);
   const tabs = `<div class="lb-tabs">${[['month', 'This month'], ['prev', 'Last month'], ['all', 'All time']].map(([k, l]) => `<button type="button" class="lb-tab ${lbPeriod === k ? 'active' : ''}" data-lb-period="${k}">${l}</button>`).join('')}</div>`;
-  const head = `<div class="panel-head" style="margin:0 0 12px"><div><h3>🏆 ${isAdmin() ? 'Team performance' : 'My standing'}</h3><p>${esc(label)} · rejected shifts are not counted</p></div>${tabs}</div>`;
+  const head = `<div class="panel-head" style="margin:0 0 12px"><div><h3>🏆 ${isAdmin() ? 'Team performance' : 'My standing'}</h3><p>${esc(label)} · only approved shifts are counted</p></div>${tabs}</div>`;
   if (isAdmin()) {
     return `<div class="perf">${head}<div class="grid-2">${top5Panel('Top 5 performers', 'Most receipts processed · ' + esc(label), rk.byOut, 'out')}${top5Panel('Top 5 most errors', 'Highest error count · ' + esc(label), rk.byErr, 'err')}</div></div>`;
   }
@@ -1244,8 +1244,8 @@ function dashboard() {
   const rows = visibleSubmissions();
   const approved = rows.filter(s => s.status === 'approved');
   const pending = rows.filter(s => s.status === 'pending');
-  const total = rows.reduce((n, s) => n + num(s.receiptCount), 0);
-  const errTotal = rows.reduce((n, s) => n + num(s.errorCount), 0);
+  const total = approved.reduce((n, s) => n + num(s.receiptCount), 0);
+  const errTotal = approved.reduce((n, s) => n + num(s.errorCount), 0);
   const earned = approved.reduce((n, s) => n + num(s.netCents), 0);
   const recent = rows.slice().sort((a, b) => timeVal(b.createdAt) - timeVal(a.createdAt)).slice(0, 5);
   const first = esc((profile.displayName || 'there').split(' ')[0]);
@@ -1292,7 +1292,7 @@ function accountStats(accountId) {
   const cur = monthKeyOf(0), prev = monthKeyOf(-1);
   const r = { cur: { receipts: 0, errors: 0 }, prev: { receipts: 0, errors: 0 } };
   data.submissions.forEach(s => {
-    if (s.accountId !== accountId || s.status === 'rejected') return;
+    if (s.accountId !== accountId || s.status !== 'approved') return;
     const k = String(s.shiftDate || '').slice(0, 7);
     const b = k === cur ? r.cur : k === prev ? r.prev : null;
     if (!b) return;
@@ -1316,12 +1316,12 @@ function accounts() {
 
   const foot = `<tr style="font-weight:700;background:rgba(0,0,0,.03)"><td colspan="3">Total (all accounts)</td><td>${tot.pr.toLocaleString()}</td>${errCell(tot.pe)}<td>${tot.cr.toLocaleString()}</td>${errCell(tot.ce)}<td colspan="3"></td></tr>`;
 
-  return `<div class="welcome"><div><h2>Accounts</h2><p>Abukai accounts, worker assignments, and monthly receipt totals.</p></div>${isAdmin() ? '<button class="btn btn-primary" id="addAccount">＋ Add account</button>' : ''}</div><div class="panel">${data.accounts.length ? `<div class="table-wrap"><table><thead><tr><th colspan="3"></th><th colspan="2" style="text-align:center">Last month · ${esc(prevLabel)}</th><th colspan="2" style="text-align:center">This month · ${esc(curLabel)}</th><th colspan="3"></th></tr><tr><th>Account</th><th>Code</th><th>Assigned workers</th><th>Receipts</th><th>Errors</th><th>Receipts</th><th>Errors</th><th>Status</th><th>Notes</th><th>Action</th></tr></thead><tbody>${body}</tbody><tfoot>${foot}</tfoot></table></div><div class="notice" style="margin-top:12px">Totals use the shift date and count processed receipts and errors from pending and approved submissions. Rejected submissions are not counted.</div>` : `<div class="empty">▦<b>No accounts available</b>Ask an administrator to create an account and assign workers.</div>`}</div>`;
+  return `<div class="welcome"><div><h2>Accounts</h2><p>Abukai accounts, worker assignments, and monthly receipt totals.</p></div>${isAdmin() ? '<button class="btn btn-primary" id="addAccount">＋ Add account</button>' : ''}</div><div class="panel">${data.accounts.length ? `<div class="table-wrap"><table><thead><tr><th colspan="3"></th><th colspan="2" style="text-align:center">Last month · ${esc(prevLabel)}</th><th colspan="2" style="text-align:center">This month · ${esc(curLabel)}</th><th colspan="3"></th></tr><tr><th>Account</th><th>Code</th><th>Assigned workers</th><th>Receipts</th><th>Errors</th><th>Receipts</th><th>Errors</th><th>Status</th><th>Notes</th><th>Action</th></tr></thead><tbody>${body}</tbody><tfoot>${foot}</tfoot></table></div><div class="notice" style="margin-top:12px">Totals use the shift date and count processed receipts and errors from approved submissions only. Pending and rejected submissions are not counted.</div>` : `<div class="empty">▦<b>No accounts available</b>Ask an administrator to create an account and assign workers.</div>`}</div>`;
 }
 
 /* ───────────────────────── Error processed ───────────────────────── */
 function errorsPage() {
-  const all = visibleSubmissions();
+  const all = visibleSubmissions().filter(s => s.status === 'approved');
   const rows = all.filter(s => num(s.errorCount) > 0).sort((a, b) => timeVal(b.createdAt) - timeVal(a.createdAt));
   const totalErr = rows.reduce((n, s) => n + num(s.errorCount), 0);
   const totalProcessed = all.reduce((n, s) => n + num(s.receiptCount), 0);
