@@ -1361,7 +1361,9 @@ function reports() {
 
   return `<div class="welcome"><div><h2>${isAdmin() ? 'Team reports' : 'My earnings'}</h2><p>Approved submissions only are included in pay totals.</p></div><button class="btn btn-ghost" id="exportCsv">↓ Export CSV</button></div><div class="stats">${stat('Gross pay', money(gross), 'Before deductions', '₱')}${stat('Deductions', money(deduct), `${dedPct()}% configured rate`, '−')}${stat('Net payable', money(net), 'Approved records', '✓')}${stat('Approved shifts', approved.length, 'Completed and approved', '▤')}</div><div class="grid-2"><div class="panel"><div class="panel-head"><div><h3>Monthly net pay</h3><p>By shift date, approved submissions</p></div></div><div class="report-bars">${Object.entries(months).sort((a, b) => a[0].localeCompare(b[0])).slice(-8).map(([m, v]) => `<div class="bar-line"><span>${esc(m)}</span><div class="bar-track"><div class="bar-fill" style="width:${(v / max * 100).toFixed(1)}%"></div></div><b>${money(v)}</b></div>`).join('') || '<div class="empty">No approved earnings to chart yet.</div>'}</div></div><div class="panel"><div class="panel-head"><div><h3>Calculation details</h3><p>Based on current pay settings</p></div></div><div class="right" style="justify-content:space-between;padding:14px 0;border-bottom:1px solid var(--line)"><span class="muted">Rate per receipt</span><b>${money(rate())}</b></div><div class="right" style="justify-content:space-between;padding:14px 0;border-bottom:1px solid var(--line)"><span class="muted">Deduction rate</span><b>${dedPct()}%</b></div><div class="right" style="justify-content:space-between;padding:14px 0"><span class="muted">Net after deductions</span><b>${money(net)}</b></div><div class="notice">Totals update from Firestore when Firebase is configured. Demo data is illustrative only.</div></div></div>${perWorker}`;
 }
-
+const agreementLabel = u => u.agreement?.version === AGREEMENT_VERSION
+  ? `✅ Accepted ${date(u.agreement.acceptedAt)}`
+  : (u.agreement ? '⚠ Old version, must re-accept' : '⏳ Not yet accepted');
 function workers() {
   const users = liveUsers().filter(u => u.role !== 'admin');
   const actions = u => {
@@ -1375,7 +1377,7 @@ function workers() {
     b.push(`<button class="btn btn-danger" data-worker-action="delete" data-id="${esc(u.id)}">Delete</button>`);
     return `<div class="sh-row-actions">${b.join('')}</div>`;
   };
-  return `<div class="welcome"><div><h2>Worker management</h2><p>Review worker profiles and account status.</p></div><button class="btn btn-primary" id="addWorker">＋ Create worker</button></div><div class="panel"><div class="toolbar"><input id="workerSearch" placeholder="Search name or email…"><span class="spacer"></span><span class="muted">${users.length} worker(s)</span></div><div class="table-wrap"><table><thead><tr><th>Worker</th><th>Email</th><th>Status</th><th>Assigned accounts</th><th>Shift schedule</th><th>Action</th></tr></thead><tbody>${users.map(u => `<tr><td><div class="person"><div class="avatar">${esc(initials(u.displayName))}</div><strong>${esc(u.displayName || 'Unnamed')}</strong></div></td><td>${esc(u.email)}</td><td>${status(u.isActive === false ? 'inactive' : (u.status || 'approved'))}</td><td>${(u.assignedAccountIds || []).length}</td><td>${esc(scheduleOf(u)?.label || 'Not set')}</td><td>${actions(u)}</td></tr>`).join('') || '<tr><td colspan="6"><div class="empty">No worker profiles found.</div></td></tr>'}</tbody></table></div></div>`;
+  return `<div class="welcome"><div><h2>Worker management</h2><p>Review worker profiles and account status.</p></div><button class="btn btn-primary" id="addWorker">＋ Create worker</button></div><div class="panel"><div class="toolbar"><input id="workerSearch" placeholder="Search name or email…"><span class="spacer"></span><span class="muted">${users.length} worker(s)</span></div><div class="table-wrap"><table><thead><tr><th>Worker</th><th>Email</th><th>Status</th><th>Assigned accounts</th><th>Shift schedule</th><th>Agreement</th><th>Action</th></tr></thead><tbody>${users.map(u => `<tr><td><div class="person"><div class="avatar">${esc(initials(u.displayName))}</div><strong>${esc(u.displayName || 'Unnamed')}</strong></div></td><td>${esc(u.email)}</td><td>${status(u.isActive === false ? 'inactive' : (u.status || 'approved'))}</td><td>${(u.assignedAccountIds || []).length}</td><td>${esc(scheduleOf(u)?.label || 'Not set')}</td><td>${esc(agreementLabel(u))}</td><td>${actions(u)}</td></tr>`).join('') || '<tr><td colspan="7"><div class="empty">No worker profiles found.</div></td></tr>'}</tbody></table></div></div>`;
 }
 
 function settings() {
@@ -1963,7 +1965,8 @@ function viewWorker(id) {
     <div><p class="muted">Name</p><b>${esc(u.displayName || 'Unnamed')}</b></div>
     <div><p class="muted">Email</p><b>${esc(u.email || '—')}</b></div>
     <div><p class="muted">Role / status</p><b>${esc(u.role || 'worker')} · ${esc(u.status || 'approved')} · ${u.isActive === false ? 'inactive' : 'active'}</b></div>
-    <div><p class="muted">Assigned accounts</p><b>${esc(accts.join(', ') || 'None')}</b></div></div>`, null);
+    <div><p class="muted">Assigned accounts</p><b>${esc(accts.join(', ') || 'None')}</b></div>
+    <div><p class="muted">Agreement</p><b>${esc(agreementLabel(u))}${u.agreement?.signedName ? ' · signed as ' + esc(u.agreement.signedName) : ''}</b></div></div>`, null);
 }
 
 /* ADMIN: edit a worker's name (e.g. fix spelling). Login email cannot be changed from the browser for another user. */
