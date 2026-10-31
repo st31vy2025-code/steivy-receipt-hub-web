@@ -1,6 +1,7 @@
 // Steivy Receipt Hub — app.js
 // Features: Create/Edit/Delete worker, Add/Edit/Delete account, "Are you sure?" confirmations,
-// Team-chat popups + live chat feed, Top performers / Top errors leaderboards, Error Processed, Admin edit counts.
+// Team-chat popups + live chat feed, Top performers / Top errors leaderboards, Error Processed, Admin edit counts,
+// User agreement (accept before use), Shift tracker (Start shift / End shift from pasted Abukai stats, one running shift per account).
 // Load with: <script type="module" src="app.js"></script>
 
 let firebaseConfig = {};
@@ -28,10 +29,11 @@ let accessErr = {}; // collections the admin could not read (permission-denied)
 let missedFrom = '', missedTo = '';
 let chatConv = 'group', dmWith = '', dmUnsub = null, dmReady = false; // chat: 'group' (public) or 'dm' (private worker <-> admin)
 let auditUnsub = null, auditLimit = 50, auditMore = false, subLimit = 50;
+let trackerErr = false; // could not read /activeShifts (Firestore rules)
 const filters = { q: '', status: 'all' };
 const DEFAULT_SETTINGS = { grossRateCents: 100, deductionPercent: 10, errorWarnPercent: 5, workUrl: '' };
 const CHAT_LIMIT = 50; // messages loaded per conversation (keeps reads small)
-const data = { submissions: [], accounts: [], users: [], messages: [], presence: [], announcements: [], annRead: [], leaderboard: [], audit: [], threads: [], dmMessages: [], settings: { ...DEFAULT_SETTINGS } };
+const data = { submissions: [], accounts: [], users: [], messages: [], presence: [], announcements: [], annRead: [], leaderboard: [], audit: [], threads: [], dmMessages: [], activeShifts: [], settings: { ...DEFAULT_SETTINGS } };
 
 /* ───────────────────────── Helpers ───────────────────────── */
 const $ = s => document.querySelector(s);
@@ -120,15 +122,16 @@ function shiftNoticeHtml(sc, ok) {
   if (sc.open) return `<div class="notice" style="margin-bottom:12px">🕒 Your schedule: <b>${esc(sc.label)}</b>. You can submit anytime.</div>`;
   return ok
     ? `<div class="notice" style="margin-bottom:12px">🕒 Your schedule: <b>${esc(sc.label)}</b>. You can submit now.</div>`
-    : `<div class="notice warn" style="margin-bottom:12px">⛔ Your schedule: <b>${esc(sc.label)}</b>. You can only submit your total output and errors during this time. If you do not submit within your schedule, your pay will be void.</div>`;
+    : `<div class="notice warn" style="margin-bottom:12px">⛔ Your schedule: <b>${esc(sc.label)}</b>. You can only start and end your shift (total output and errors) during this time. If you do not submit within your schedule, your pay will be void.</div>`;
 }
-// Keeps the submit form in step with the clock without re-rendering (so typed values are not lost).
+// Keeps the shift tracker in step with the clock without re-rendering (so typed values are not lost).
 function refreshShiftGate() {
   if (!currentUser || !profile || isAdmin()) return;
   const el = $('#shiftGate');
   if (!el) return;
   const sc = scheduleOf(profile), ok = inWindow(sc);
   if (el.dataset.ok !== String(ok)) { el.dataset.ok = String(ok); el.innerHTML = shiftNoticeHtml(sc, ok); }
+  $$('[data-start-shift]').forEach(b => { if (b.dataset.busy !== '1') b.disabled = !ok; });
   const b = $('#submissionForm [type=submit]');
   if (b && b.dataset.noacct !== '1') b.disabled = !ok;
 }
@@ -142,7 +145,7 @@ function showShiftWarning() {
   const wrap = document.createElement('div');
   wrap.className = 'sh-modal';
   wrap.id = 'shiftWarn';
-  wrap.innerHTML = `<div class="sh-modal-card sh-confirm" role="alertdialog" aria-modal="true"><div class="sh-confirm-ico danger">⚠️</div><h3>Don't forget!</h3><p>Put your <b>total output</b> and <b>errors</b> before your shift ends.</p>${sc ? `<p class="muted">Your shift: <b>${esc(sc.label)}</b></p>` : ''}<p style="color:#c0392b;font-weight:600;margin-top:8px">If you cannot submit within your scheduled time, your salary will be void.</p><div class="sh-modal-actions"><button type="button" class="btn btn-primary" data-ok>I understand</button></div></div>`;
+  wrap.innerHTML = `<div class="sh-modal-card sh-confirm" role="alertdialog" aria-modal="true"><div class="sh-confirm-ico danger">⚠️</div><h3>Don't forget!</h3><p>Press <b>End shift</b> (paste your Abukai stats) before your shift ends.</p>${sc ? `<p class="muted">Your shift: <b>${esc(sc.label)}</b></p>` : ''}<p style="color:#c0392b;font-weight:600;margin-top:8px">If you cannot submit within your scheduled time, your salary will be void.</p><div class="sh-modal-actions"><button type="button" class="btn btn-primary" data-ok>I understand</button></div></div>`;
   document.body.appendChild(wrap);
   const ok = wrap.querySelector('[data-ok]');
   ok.addEventListener('click', () => wrap.remove());
@@ -153,7 +156,8 @@ function showShiftWarning() {
 const errWarnPct = () => num(data.settings.errorWarnPercent ?? DEFAULT_SETTINGS.errorWarnPercent);
 // Link to the work website. It is stored in Firestore (Pay settings), only http(s) links are accepted.
 const workUrl = () => { const u = String(data.settings.workUrl || '').trim(); return /^https?:\/\//i.test(u) ? u : ''; };
-const errRatePct = (p, e) => (num(p) + num(e) > 0 ? num(e) / (num(p) + num(e)) * 100 : 0);
+// "Processed" is the total submitted receipts and already INCLUDES the receipts with errors, so rate = errors ÷ processed.
+const errRatePct = (p, e) => (num(p) > 0 ? num(e) / num(p) * 100 : 0);
 const liveUsers = () => data.users.filter(u => u.status !== 'deleted'); // deleted workers are kept only as hidden tombstones
 const ymd = d => `${d.getFullYear()}-${String(d.getMonth() + 1).padStart(2, '0')}-${String(d.getDate()).padStart(2, '0')}`;
 const dayStr = off => { const d = new Date(); d.setDate(d.getDate() + off); return ymd(d); };
@@ -175,7 +179,7 @@ function showShiftReminder(mins, sc, names) {
   const wrap = document.createElement('div');
   wrap.className = 'sh-modal';
   wrap.id = 'shiftRemind';
-  wrap.innerHTML = `<div class="sh-modal-card sh-confirm" role="alertdialog" aria-modal="true"><div class="sh-confirm-ico danger">⏰</div><h3>${mins} minute(s) left in your shift</h3><p>Submit your <b>total output</b> and <b>errors</b> for:</p><p><b>${names.map(esc).join(', ')}</b></p><p class="muted">Shift: ${esc(sc.label)}</p><p style="color:#c0392b;font-weight:600;margin-top:8px">No submission within your schedule means your salary will be void.</p><div class="sh-modal-actions"><button type="button" class="btn btn-ghost" data-later>Later</button><button type="button" class="btn btn-primary" data-go>Submit now</button></div></div>`;
+  wrap.innerHTML = `<div class="sh-modal-card sh-confirm" role="alertdialog" aria-modal="true"><div class="sh-confirm-ico danger">⏰</div><h3>${mins} minute(s) left in your shift</h3><p>Press <b>End shift</b> (paste your Abukai stats) for:</p><p><b>${names.map(esc).join(', ')}</b></p><p class="muted">Shift: ${esc(sc.label)}</p><p style="color:#c0392b;font-weight:600;margin-top:8px">No submission within your schedule means your salary will be void.</p><div class="sh-modal-actions"><button type="button" class="btn btn-ghost" data-later>Later</button><button type="button" class="btn btn-primary" data-go>End shift now</button></div></div>`;
   document.body.appendChild(wrap);
   wrap.querySelector('[data-later]').addEventListener('click', () => wrap.remove());
   wrap.querySelector('[data-go]').addEventListener('click', () => { wrap.remove(); go('receipts'); });
@@ -248,14 +252,14 @@ function errorWarningPanel() {
   if (isAdmin()) {
     const list = rankings('month').rows.map(r => ({ ...r, rate: errRatePct(r.receipts, r.errors) })).filter(r => r.errors > 0 && r.rate >= lim).sort((a, b) => b.rate - a.rate);
     if (!list.length) return '';
-    return `<div class="notice warn" style="margin-bottom:16px"><b>⚠ High error rate this month (limit ${lim}%)</b><br>${list.slice(0, 8).map(r => `${esc(r.name)} — ${r.rate.toFixed(1)}% (${r.errors.toLocaleString()} error(s) of ${(r.receipts + r.errors).toLocaleString()})`).join('<br>')}</div>`;
+    return `<div class="notice warn" style="margin-bottom:16px"><b>⚠ High error rate this month (limit ${lim}%)</b><br>${list.slice(0, 8).map(r => `${esc(r.name)} — ${r.rate.toFixed(1)}% (${r.errors.toLocaleString()} error(s) of ${r.receipts.toLocaleString()} receipts)`).join('<br>')}</div>`;
   }
   const key = monthKeyOf(0);
   const rows = visibleSubmissions().filter(s => s.status === 'approved' && String(s.shiftDate || '').slice(0, 7) === key);
   const p = rows.reduce((n, s) => n + num(s.receiptCount), 0), e = rows.reduce((n, s) => n + num(s.errorCount), 0);
   const rt = errRatePct(p, e);
   if (e === 0 || rt < lim) return '';
-  return `<div class="notice warn" style="margin-bottom:16px"><b>⚠ Warning: your error rate this month is ${rt.toFixed(1)}%</b> (limit ${lim}%). You have ${e.toLocaleString()} error(s) out of ${(p + e).toLocaleString()} receipts. Please double-check each receipt before submitting.</div>`;
+  return `<div class="notice warn" style="margin-bottom:16px"><b>⚠ Warning: your error rate this month is ${rt.toFixed(1)}%</b> (limit ${lim}%). You have ${e.toLocaleString()} error(s) out of ${p.toLocaleString()} receipts. Please double-check each receipt before submitting.</div>`;
 }
 
 function missedPage() {
@@ -338,6 +342,11 @@ button:disabled{opacity:.6;cursor:not-allowed}
 .sh-modal-actions{display:flex;justify-content:flex-end;gap:8px;margin-top:18px}
 .sh-check{display:flex;align-items:center;gap:10px;padding:8px 0;border-bottom:1px solid #eee;cursor:pointer}
 .sh-row-actions{display:flex;gap:6px;flex-wrap:wrap}
+.trk-row{display:flex;gap:12px;align-items:center;justify-content:space-between;flex-wrap:wrap;padding:14px 0;border-top:1px solid var(--line,#eee)}
+.trk-info{min-width:0;flex:1 1 220px}
+.trk-info small{display:block;color:#8a958e;margin-top:4px;line-height:1.4}
+.trk-live{display:inline-flex;align-items:center;gap:6px;background:#e6f6ec;color:#1e8449;border-radius:999px;padding:3px 10px;font-size:12px;font-weight:700}
+.trk-free{display:inline-flex;align-items:center;gap:6px;background:#f1f4f2;color:#52605a;border-radius:999px;padding:3px 10px;font-size:12px;font-weight:700}
 .online-panel{padding:14px 18px;margin-bottom:16px}
 .online-head{display:flex;align-items:center;gap:8px;margin-bottom:10px;font-size:14px}
 .online-count{background:#e6f6ec;color:#1e8449;border-radius:999px;padding:2px 10px;font-size:12px;font-weight:700}
@@ -707,9 +716,9 @@ async function loadData() {
   data.announcements = []; data.annRead = [];
   data.submissions = []; data.accounts = []; data.users = [];
   data.messages = []; data.presence = []; data.leaderboard = []; data.audit = [];
-  data.threads = []; data.dmMessages = []; chatConv = 'group'; dmWith = ''; auditLimit = 50; subLimit = 50;
+  data.threads = []; data.dmMessages = []; data.activeShifts = []; chatConv = 'group'; dmWith = ''; auditLimit = 50; subLimit = 50;
   data.settings = { ...DEFAULT_SETTINGS };
-  loaded = {}; chatReady = false; unreadChat = 0; lbError = false; accessErr = {};
+  loaded = {}; chatReady = false; unreadChat = 0; lbError = false; accessErr = {}; trackerErr = false;
 
   if (isAdmin()) {
     listen('accounts', 'accounts');
@@ -760,6 +769,18 @@ async function loadData() {
     console.warn('presence listener (check Firestore rules for /presence)', err);
     presenceReadErr = true;
     updateOnline();
+  }));
+
+  // Running shifts: one document per account while somebody is working on it.
+  unsubs.push(onSnapshot(collection(db, 'activeShifts'), s => {
+    trackerErr = false;
+    data.activeShifts = s.docs.map(d => ({ id: d.id, ...d.data() }));
+    loaded.activeShifts = true;
+    requestRender();
+  }, err => {
+    console.warn('activeShifts listener (check Firestore rules for /activeShifts)', err);
+    trackerErr = true;
+    requestRender();
   }));
 
   // Leaderboard totals (one small doc per worker per month) so workers can see their rank without reading other workers' submissions.
@@ -888,13 +909,13 @@ function workerStandings(rk, period) {
   else if (rank === n && n > 1) out = { cls: 'warn', icon: '📉', title: 'You have the lowest output', text: `${me.receipts.toLocaleString()} receipts processed in ${label}. Let's aim higher on your next shift — you can do it!` };
   else out = { cls: 'info', icon: '📊', title: `You are ${ordinal(rank)} of ${n} in output`, text: `${me.receipts.toLocaleString()} receipts processed — ${gap.toLocaleString()} behind the top performer.` };
 
-   const er = rk.byErr.findIndex(r => r.id === uid) + 1;
-   let err;
-   if (me.errors === 0) err = { cls: 'good', icon: '✅', title: 'Zero errors — excellent accuracy!', text: `No error receipts recorded in ${label}. Keep up the clean work!` };
-   else if (er === 1) err = { cls: 'danger', icon: '😡', title: 'You have the MOST errors', text: `${me.errors.toLocaleString()} error(s) in ${label}, the highest in the team. Please double-check each receipt before submitting.` };
-   else if (er === 2) err = { cls: 'danger', icon: '😭', title: 'You have the 2nd highest errors', text: `${me.errors.toLocaleString()} error(s) in ${label}. Slow down a little and review your work to bring this down.` };
-   else if (er === 3) err = { cls: 'warn', icon: '😢', title: 'You have the 3rd highest errors', text: `${me.errors.toLocaleString()} error(s) in ${label}. A little more checking will bring this down.` };
-   else err = { cls: 'info', icon: '😕', title: `${me.errors.toLocaleString()} error(s) recorded`, text: `You are outside the top 3 for errors in ${label}. Keep your accuracy improving!` };
+  const er = rk.byErr.findIndex(r => r.id === uid) + 1;
+  let err;
+  if (me.errors === 0) err = { cls: 'good', icon: '✅', title: 'Zero errors — excellent accuracy!', text: `No error receipts recorded in ${label}. Keep up the clean work!` };
+  else if (er === 1) err = { cls: 'danger', icon: '😡', title: 'You have the MOST errors', text: `${me.errors.toLocaleString()} error(s) in ${label}, the highest in the team. Please double-check each receipt before submitting.` };
+  else if (er === 2) err = { cls: 'danger', icon: '😭', title: 'You have the 2nd highest errors', text: `${me.errors.toLocaleString()} error(s) in ${label}. Slow down a little and review your work to bring this down.` };
+  else if (er === 3) err = { cls: 'warn', icon: '😢', title: 'You have the 3rd highest errors', text: `${me.errors.toLocaleString()} error(s) in ${label}. A little more checking will bring this down.` };
+  else err = { cls: 'info', icon: '😕', title: `${me.errors.toLocaleString()} error(s) recorded`, text: `You are outside the top 3 for errors in ${label}. Keep your accuracy improving!` };
   return [out, err];
 }
 
@@ -1157,9 +1178,11 @@ function demoSignIn(role) {
   data.presence = [{ id: 'demo-worker', displayName: 'Demo Worker', role: 'worker', demo: true }, { id: 'worker-2', displayName: 'Jamie Santos', role: 'worker', demo: true }];
   data.leaderboard = [];
   data.audit = [];
+  data.activeShifts = [];
   data.threads = []; data.dmMessages = []; chatConv = 'group'; dmWith = '';
   data.settings = { ...DEFAULT_SETTINGS };
   accessErr = {};
+  trackerErr = false;
   page = 'dashboard';
   unreadChat = 0;
   renderPage();
@@ -1250,7 +1273,7 @@ function dashboard() {
   const earned = approved.reduce((n, s) => n + num(s.netCents), 0);
   const recent = rows.slice().sort((a, b) => timeVal(b.createdAt) - timeVal(a.createdAt)).slice(0, 5);
   const first = esc((profile.displayName || 'there').split(' ')[0]);
-  return `<div class="welcome"><div><h2>${isAdmin() ? 'Good day, Administrator' : 'Welcome back, ' + first + ' 👋'}</h2><p>Here’s what’s happening with ${isAdmin() ? 'your team' : 'your shifts'} today.</p></div>${messageTicker()}${!isAdmin() ? '<button class="btn btn-primary" data-page="receipts">＋ Submit shift</button>' : '<button class="btn btn-primary" data-page="receipts">Review submissions →</button>'}</div>${performanceSection()}${errorWarningPanel()}${onlineStrip()}<div class="stats">${stat(isAdmin() ? 'Total submissions' : 'My submissions', rows.length, isAdmin() ? 'All recorded shifts' : 'Your recorded shifts', '▤')}${stat('Receipts processed', total.toLocaleString(), `${errTotal.toLocaleString()} error(s) recorded`, '▧')}${stat('Pending review', pending.length, 'Awaiting a decision', '◷')}${stat(isAdmin() ? 'Approved net pay' : 'Approved earnings', money(earned), 'After configured deductions', '₱')}</div>${monthStats(rows)}${liveChatPanel()}${isAdmin() ? announcementsPanel() : ''}<div class="grid-2"><div class="panel"><div class="panel-head"><div><h3>Recent submissions</h3><p>Latest shift records and review status</p></div><button class="small-btn" data-page="receipts">View all →</button></div><div class="table-wrap"><table><thead><tr><th>Worker / account</th><th>Shift date</th><th>Shift</th><th>Processed</th><th>Errors</th><th>Net pay</th><th>Status</th><th></th></tr></thead><tbody>${submissionRows(recent)}</tbody></table></div></div><div class="panel"><div class="panel-head"><div><h3>Quick actions</h3><p>Common tasks, one click away</p></div></div><div class="quick-grid"><button class="quick" data-page="receipts"><span>🧾</span><strong>Submit shift</strong><small>Record receipt count</small></button><button class="quick" data-page="errors"><span>⚠️</span><strong>Error processed</strong><small>Review error receipts</small></button><button class="quick" data-page="reports"><span>📊</span><strong>View reports</strong><small>Track your totals</small></button><button class="quick" data-page="chat"><span>💬</span><strong>Team chat</strong><small>Message your team</small></button>${isAdmin() ? '<button class="quick" data-page="workers"><span>👥</span><strong>Manage workers</strong><small>Review team accounts</small></button>' : ''}</div><div class="notice">${isAdmin() ? `You have <b>${pending.length}</b> submission(s) waiting for review.${missedNotice()}` : `Your approved submissions show in earnings. If a shift is rejected, check the reason and submit a correction.`}</div></div></div>`;
+  return `<div class="welcome"><div><h2>${isAdmin() ? 'Good day, Administrator' : 'Welcome back, ' + first + ' 👋'}</h2><p>Here’s what’s happening with ${isAdmin() ? 'your team' : 'your shifts'} today.</p></div>${messageTicker()}${!isAdmin() ? '<button class="btn btn-primary" data-page="receipts">▶ Start / end shift</button>' : '<button class="btn btn-primary" data-page="receipts">Review submissions →</button>'}</div>${performanceSection()}${errorWarningPanel()}${onlineStrip()}<div class="stats">${stat(isAdmin() ? 'Total submissions' : 'My submissions', rows.length, isAdmin() ? 'All recorded shifts' : 'Your recorded shifts', '▤')}${stat('Receipts processed', total.toLocaleString(), `${errTotal.toLocaleString()} with errors (included)`, '▧')}${stat('Pending review', pending.length, 'Awaiting a decision', '◷')}${stat(isAdmin() ? 'Approved net pay' : 'Approved earnings', money(earned), 'After configured deductions', '₱')}</div>${monthStats(rows)}${liveChatPanel()}${isAdmin() ? announcementsPanel() : ''}<div class="grid-2"><div class="panel"><div class="panel-head"><div><h3>Recent submissions</h3><p>Latest shift records and review status</p></div><button class="small-btn" data-page="receipts">View all →</button></div><div class="table-wrap"><table><thead><tr><th>Worker / account</th><th>Shift date</th><th>Shift</th><th>Processed</th><th>Errors</th><th>Net pay</th><th>Status</th><th></th></tr></thead><tbody>${submissionRows(recent)}</tbody></table></div></div><div class="panel"><div class="panel-head"><div><h3>Quick actions</h3><p>Common tasks, one click away</p></div></div><div class="quick-grid"><button class="quick" data-page="receipts"><span>🧾</span><strong>${isAdmin() ? 'Submissions' : 'Start / end shift'}</strong><small>${isAdmin() ? 'Review shift records' : 'Track your output'}</small></button><button class="quick" data-page="errors"><span>⚠️</span><strong>Error processed</strong><small>Review error receipts</small></button><button class="quick" data-page="reports"><span>📊</span><strong>View reports</strong><small>Track your totals</small></button><button class="quick" data-page="chat"><span>💬</span><strong>Team chat</strong><small>Message your team</small></button>${isAdmin() ? '<button class="quick" data-page="workers"><span>👥</span><strong>Manage workers</strong><small>Review team accounts</small></button>' : ''}</div><div class="notice">${isAdmin() ? `You have <b>${pending.length}</b> submission(s) waiting for review.${missedNotice()}` : `Your approved submissions show in earnings. If a shift is rejected, check the reason and submit a correction.`}</div></div></div>`;
 }
 
 function filteredSubmissions() {
@@ -1259,18 +1282,218 @@ function filteredSubmissions() {
     (!q || `${x.workerName || ''} ${x.accountName || ''} ${x.shiftDate || ''}`.toLowerCase().includes(q)));
 }
 
+// (Old manual form. Workers now use the shift tracker below, so this is no longer shown. Kept for reference.)
 function submissionForm() {
   const uid = currentUser.uid;
   const accts = data.accounts.filter(a => a.isActive !== false && (!a.assignedWorkerIds || a.assignedWorkerIds.includes(uid)));
   const sc = scheduleOf(profile), inWin = inWindow(sc);
   const defFrom = sc && !sc.open ? sc.from : '06:00', defTo = sc && !sc.open ? sc.to : '14:00';
-  return `<div class="panel" id="submissionFormPanel"><div class="panel-head"><div><h3>Submit completed shift</h3><p>Enter your shift details. Pay is calculated on processed receipts using current settings; error receipts are not paid. You can submit only once per shift for each account.</p></div></div><div id="shiftGate" data-ok="${inWin}">${shiftNoticeHtml(sc, inWin)}</div><form id="submissionForm"><div class="form-grid"><div class="field"><label>ACCOUNT</label><select name="accountId" required>${accts.map(a => `<option value="${esc(a.id)}">${esc(a.name)} (${esc(a.code || '')})</option>`).join('') || '<option value="">No active accounts assigned</option>'}</select></div><div class="field"><label>SHIFT DATE</label><input name="shiftDate" type="date" value="${defaultShiftDate(sc)}" max="${todayStr()}" ${sc && !sc.open ? 'readonly' : ''} required></div>${sc && !sc.open ? `<div class="field"><label>SHIFT</label><input value="${esc(sc.label)}" readonly></div>` : '<div class="field"><label>SHIFT</label><select name="shiftType"><option>Morning</option><option>Afternoon</option><option>Night</option><option>Custom</option></select></div>'}<div class="field"><label>PROCESSED RECEIPTS</label><input name="receiptCount" type="number" min="0" step="1" placeholder="e.g. 125" required></div><div class="field"><label>ERROR COUNT</label><input name="errorCount" type="number" min="1" step="1" placeholder="e.g. 3" required></div><div class="field"><label>START TIME</label><input name="startTime" type="time" value="${defFrom}" ${sc && !sc.open ? 'readonly' : ''} required></div><div class="field"><label>END TIME</label><input name="endTime" type="time" value="${defTo}" ${sc && !sc.open ? 'readonly' : ''} required></div><div class="full right" style="justify-content:flex-end;margin:0 0 8px"><button class="btn btn-primary" type="submit" data-noacct="${accts.length ? '0' : '1'}" ${accts.length && inWin ? '' : 'disabled'}>Submit for review →</button></div></div></form></div>`;
+  return `<div class="panel" id="submissionFormPanel"><div class="panel-head"><div><h3>Submit completed shift</h3><p>Enter your shift details. Pay is calculated on processed receipts using current settings. You can submit only once per shift for each account.</p></div></div><div id="shiftGate" data-ok="${inWin}">${shiftNoticeHtml(sc, inWin)}</div><form id="submissionForm"><div class="form-grid"><div class="field"><label>ACCOUNT</label><select name="accountId" required>${accts.map(a => `<option value="${esc(a.id)}">${esc(a.name)} (${esc(a.code || '')})</option>`).join('') || '<option value="">No active accounts assigned</option>'}</select></div><div class="field"><label>SHIFT DATE</label><input name="shiftDate" type="date" value="${defaultShiftDate(sc)}" max="${todayStr()}" ${sc && !sc.open ? 'readonly' : ''} required></div>${sc && !sc.open ? `<div class="field"><label>SHIFT</label><input value="${esc(sc.label)}" readonly></div>` : '<div class="field"><label>SHIFT</label><select name="shiftType"><option>Morning</option><option>Afternoon</option><option>Night</option><option>Custom</option></select></div>'}<div class="field"><label>PROCESSED RECEIPTS</label><input name="receiptCount" type="number" min="0" step="1" placeholder="e.g. 125" required></div><div class="field"><label>ERROR COUNT</label><input name="errorCount" type="number" min="1" step="1" placeholder="e.g. 3" required></div><div class="field"><label>START TIME</label><input name="startTime" type="time" value="${defFrom}" ${sc && !sc.open ? 'readonly' : ''} required></div><div class="field"><label>END TIME</label><input name="endTime" type="time" value="${defTo}" ${sc && !sc.open ? 'readonly' : ''} required></div><div class="full right" style="justify-content:flex-end;margin:0 0 8px"><button class="btn btn-primary" type="submit" data-noacct="${accts.length ? '0' : '1'}" ${accts.length && inWin ? '' : 'disabled'}>Submit for review →</button></div></div></form></div>`;
+}
+
+/* ───────────────────────── Shift tracker (Start shift / End shift with pasted Abukai stats) ───────────────────────── */
+const STALE_MS = 18 * 3600 * 1000; // a running shift older than this is flagged "stale" so an admin can release it
+const activeShiftOf = accountId => data.activeShifts.find(s => s.id === accountId);
+const hhmm = d => `${String(d.getHours()).padStart(2, '0')}:${String(d.getMinutes()).padStart(2, '0')}`;
+
+// Reads the text copied from the Abukai "Processing Stats" page. Returns { submitted, errors } or null.
+function parseAbukaiStats(text) {
+  const t = String(text || '').replace(/\u00a0/g, ' ');
+  const n = s => Number(String(s).replace(/,/g, ''));
+  const a = t.match(/(\d[\d,]*)\s+submitted\s+receipt\(?s?\)?\s+this\s+month/i);
+  const b = t.match(/(\d[\d,]*)\s+submitted\s+receipt\(?s?\)?\s+with\s+errors?\s+this\s+month/i);
+  if (!a || !b) return null;
+  const submitted = n(a[1]), errors = n(b[1]);
+  if (!Number.isFinite(submitted) || !Number.isFinite(errors) || errors > submitted) return null;
+  return { submitted, errors };
+}
+
+// Worker view: one row per assigned account with Start / End shift.
+function trackerPanel() {
+  const uid = currentUser.uid;
+  const accts = data.accounts.filter(a => a.isActive !== false && (!a.assignedWorkerIds || a.assignedWorkerIds.includes(uid)));
+  const sc = scheduleOf(profile), inWin = inWindow(sc);
+  const warn = trackerErr ? `<div class="notice warn" style="margin-bottom:10px">The shift tracker could not be loaded. Publish the latest firestore.rules (collection "activeShifts").</div>` : '';
+  const rows = accts.map(a => {
+    const s = activeShiftOf(a.id);
+    const title = `<strong>${esc(a.name)}</strong>${a.code ? ` <span class="muted">(${esc(a.code)})</span>` : ''}`;
+    if (!s) {
+      return `<div class="trk-row"><div class="trk-info">${title}<small><span class="trk-free">Available</span></small></div><div class="sh-row-actions"><button class="btn btn-primary" data-start-shift="${esc(a.id)}" ${inWin ? '' : 'disabled'}>▶ Start shift</button></div></div>`;
+    }
+    const stale = Date.now() - timeVal(s.startedAt) > STALE_MS;
+    const since = `${esc(fmtTime(s.startedAt))}`;
+    if (s.workerId === uid) {
+      const b = s.startStats || {};
+      return `<div class="trk-row"><div class="trk-info">${title}<small><span class="trk-live">● Working (you)</span> · since ${since}<br>Baseline: ${num(b.submitted).toLocaleString()} submitted · ${num(b.errors).toLocaleString()} with errors</small></div><div class="sh-row-actions"><button class="btn btn-primary" data-end-shift="${esc(a.id)}">■ End shift</button><button class="small-btn" data-cancel-shift="${esc(a.id)}">Cancel</button></div></div>`;
+    }
+    return `<div class="trk-row"><div class="trk-info">${title}<small><span class="trk-live">● Working</span> · ${esc(s.workerName || 'Another worker')} · since ${since}${stale ? '<br>⚠ Running for a very long time. Ask the admin to release it if it was forgotten.' : ''}</small></div><div class="sh-row-actions"><button class="btn btn-secondary" disabled data-start-shift="${esc(a.id)}" data-busy="1">▶ Start shift (working)</button></div></div>`;
+  }).join('') || `<div class="empty">▦<b>No active accounts assigned</b>Ask your administrator to assign you to an account.</div>`;
+  return `<div class="panel" id="submissionFormPanel"><div class="panel-head"><div><h3>Shift tracker</h3><p>1) Copy the Abukai <b>Processing Stats</b> page (Ctrl+A, Ctrl+C). 2) Press <b>Start shift</b> and paste it. 3) When you finish, copy the stats again, press <b>End shift</b> and paste. Your output and errors are computed from the difference. Only one shift can run on an account at a time.</p></div></div><div id="shiftGate" data-ok="${inWin}">${shiftNoticeHtml(sc, inWin)}</div>${warn}${rows}</div>`;
+}
+
+// Admin view: who is working on which account right now (with a Release button for forgotten shifts).
+function activeShiftsPanel() {
+  const list = data.activeShifts.slice().sort((a, b) => timeVal(a.startedAt) - timeVal(b.startedAt));
+  const warn = trackerErr ? `<div class="notice warn" style="margin-bottom:10px">The shift tracker could not be loaded. Publish the latest firestore.rules (collection "activeShifts").</div>` : '';
+  const rows = list.map(s => {
+    const stale = Date.now() - timeVal(s.startedAt) > STALE_MS;
+    const b = s.startStats || {};
+    return `<div class="trk-row"><div class="trk-info"><strong>${esc(s.accountName || s.id)}</strong><small><span class="trk-live">● Working</span> · ${esc(s.workerName || 'Worker')} · since ${esc(date(s.startedAt))} ${esc(fmtTime(s.startedAt))}${stale ? ' · ⚠ stale' : ''}<br>Baseline: ${num(b.submitted).toLocaleString()} submitted · ${num(b.errors).toLocaleString()} with errors</small></div><div class="sh-row-actions"><button class="small-btn" data-release-shift="${esc(s.id)}">Release</button></div></div>`;
+  }).join('');
+  return `<div class="panel"><div class="panel-head"><div><h3>Running shifts</h3><p>Accounts that currently have a worker on shift. Release a shift only if the worker forgot to end it (nothing is submitted).</p></div></div>${warn}${rows || '<div class="empty">✓<b>No running shifts</b>Accounts are free.</div>'}</div>`;
+}
+
+function liveStatsPreview(boxSel, base) {
+  const ta = $('#trkPaste'), box = $(boxSel);
+  if (!ta || !box) return;
+  ta.addEventListener('input', () => {
+    const p = parseAbukaiStats(ta.value);
+    if (!p) { box.className = 'notice warn'; box.textContent = '⚠ Could not read the stats. Copy the whole Abukai Processing Stats page and paste it again.'; return; }
+    if (!base) { box.className = 'notice'; box.innerHTML = `✅ Baseline: <b>${p.submitted.toLocaleString()}</b> submitted · <b>${p.errors.toLocaleString()}</b> with errors`; return; }
+    const out = p.submitted - base.submitted, er = p.errors - base.errors;
+    if (out < 0 || er < 0) { box.className = 'notice warn'; box.textContent = '⚠ These totals are lower than your start totals (new month, or the wrong page).'; return; }
+    box.className = 'notice';
+    box.innerHTML = `✅ Output this shift: <b>${out.toLocaleString()}</b> receipts · <b>${er.toLocaleString()}</b> with errors`;
+  });
+}
+
+const PASTE_FIELD = `<div class="field"><label>ABUKAI PROCESSING STATS (PASTE HERE)</label><textarea name="stats" id="trkPaste" required placeholder="Statistics for … 381 submitted receipt(s) this month. 115 submitted receipt(s) with errors this month. …"></textarea></div><div id="trkPreview" class="notice">Waiting for the pasted stats…</div>`;
+
+function startShift(accountId) {
+  const a = data.accounts.find(x => x.id === accountId);
+  if (!a) return toast('Account not found.');
+  const sc = scheduleOf(profile);
+  if (!inWindow(sc)) return toast(`You can only start during your scheduled shift (${sc.label}).`);
+  const busy = activeShiftOf(a.id);
+  if (busy) return toast(`${busy.workerName || 'Another worker'} is still working on this account.`);
+  const scheduled = !!(sc && !sc.open);
+  const day = defaultShiftDate(sc);
+  const label = scheduled ? sc.label : (sc?.open ? sc.label : 'Open shift');
+  if (scheduled && data.submissions.some(s => s.workerId === currentUser.uid && s.accountId === a.id && s.shiftDate === day && s.status !== 'rejected')) {
+    return toast(`You already submitted this shift for ${a.name}. Ask your admin to "Allow resubmit" if it needs correcting.`);
+  }
+
+  openModal('Start shift · ' + a.name,
+    `<ol class="muted" style="margin:0 0 12px;padding-left:18px;line-height:1.55"><li>Open the Abukai <b>Processing Stats</b> page.</li><li>Select all (Ctrl+A) and copy (Ctrl+C).</li><li>Paste it below.</li></ol>${PASTE_FIELD}`,
+    async fd => {
+      const raw = String(fd.get('stats') || '');
+      const st = parseAbukaiStats(raw);
+      if (!st) { toast('Could not read the Abukai stats. Copy the whole Processing Stats page and paste again.'); return false; }
+      if (activeShiftOf(a.id)) { toast('Someone just started a shift on this account.'); return false; }
+      if (!await confirmBox('Start shift?', `Start your shift on "${a.name}" with a baseline of ${st.submitted.toLocaleString()} submitted / ${st.errors.toLocaleString()} with errors? Nobody else can start this account until you end your shift.`, 'Yes, start shift')) return false;
+      const item = { accountId: a.id, accountName: a.name, workerId: currentUser.uid, workerName: profile.displayName, shiftDate: day, shiftType: label, startStats: st, startRaw: raw.slice(0, 2000) };
+      if (!configured) {
+        data.activeShifts.push({ ...item, id: a.id, startedAt: new Date() });
+        toast('Demo shift started (not saved online).');
+        renderPage();
+        return;
+      }
+      try {
+        const ref = fb.doc(db, 'activeShifts', a.id);
+        await fb.runTransaction(db, async tx => {
+          const snap = await tx.get(ref);
+          if (snap.exists()) throw new Error('busy');
+          tx.set(ref, { ...item, startedAt: fb.serverTimestamp() });
+        });
+        toast('Shift started. Do not forget to press End shift when you finish.');
+      } catch (e) {
+        console.error(e);
+        toast(e?.message === 'busy' ? 'Someone just started a shift on this account.' : 'Could not start the shift. Check Firestore rules (activeShifts).');
+        return false;
+      }
+    }, 'Start shift');
+  liveStatsPreview('#trkPreview', null);
+}
+
+function endShift(accountId) {
+  const s = activeShiftOf(accountId);
+  if (!s || s.workerId !== currentUser.uid) return toast('You have no running shift on this account.');
+  const sc = scheduleOf(profile);
+  if (!inWindow(sc)) return toast(`You can only end and submit during your scheduled shift (${sc.label}). Ask the admin if you missed it.`);
+  const base = s.startStats || { submitted: 0, errors: 0 };
+
+  openModal('End shift · ' + (s.accountName || ''),
+    `<p class="muted" style="margin-top:0">Started ${esc(fmtTime(s.startedAt))} · baseline <b>${num(base.submitted).toLocaleString()}</b> submitted · <b>${num(base.errors).toLocaleString()}</b> with errors</p>
+     <ol class="muted" style="margin:0 0 12px;padding-left:18px;line-height:1.55"><li>Open the Abukai <b>Processing Stats</b> page again.</li><li>Select all (Ctrl+A) and copy (Ctrl+C).</li><li>Paste it below.</li></ol>${PASTE_FIELD}`,
+    async fd => {
+      const raw = String(fd.get('stats') || '');
+      const en = parseAbukaiStats(raw);
+      if (!en) { toast('Could not read the Abukai stats. Copy the whole Processing Stats page and paste again.'); return false; }
+      const count = en.submitted - num(base.submitted), errCount = en.errors - num(base.errors);
+      if (count < 0 || errCount < 0) { toast('These totals are lower than your start totals (new month, or the wrong page). Ask the admin to release this shift.'); return false; }
+      if (!inWindow(sc)) { toast('Your scheduled shift has already ended.'); return false; }
+      const warn = count === 0 ? ' Your output is 0, are you sure?' : '';
+      if (!await confirmBox('End shift and submit?', `Output: ${count.toLocaleString()} receipts, ${errCount.toLocaleString()} with errors. This will be sent for admin review.${warn}`, 'Yes, submit', count === 0)) return false;
+
+      const now = new Date(), startMs = timeVal(s.startedAt);
+      const rateCents = rate(), pct = dedPct();
+      const gross = Math.round(count * rateCents);
+      const ded = Math.round(gross * pct / 100);
+      const item = {
+        workerId: currentUser.uid, workerName: profile.displayName, workerEmail: currentUser.email,
+        accountId: s.accountId || s.id, accountName: s.accountName || '',
+        shiftDate: s.shiftDate, shiftType: s.shiftType || 'Open shift', startTime: hhmm(new Date(startMs)), endTime: hhmm(now),
+        receiptCount: count, errorCount: errCount, errorNote: '',
+        status: 'pending', rejectionReason: '',
+        rateCents, deductionPercent: pct,
+        grossCents: gross, deductionCents: ded, netCents: gross - ded,
+        source: 'abukai-paste',
+        startStats: { submitted: num(base.submitted), errors: num(base.errors) }, endStats: en,
+        startedAtMs: startMs, endedAtMs: now.getTime(),
+        startRaw: String(s.startRaw || '').slice(0, 2000), endRaw: raw.slice(0, 2000)
+      };
+      if (!configured) {
+        data.submissions.unshift({ ...item, id: 'local-' + Date.now(), createdAt: new Date(), updatedAt: new Date() });
+        data.activeShifts = data.activeShifts.filter(x => x.id !== s.id);
+        toast('Demo shift submitted (not saved online).');
+        renderPage();
+        return;
+      }
+      try {
+        const b = fb.writeBatch(db);
+        b.set(fb.doc(fb.collection(db, 'submissions')), { ...item, createdAt: fb.serverTimestamp(), updatedAt: fb.serverTimestamp() });
+        b.delete(fb.doc(db, 'activeShifts', s.id));
+        await b.commit();
+        const rt = errRatePct(count, errCount);
+        toast(errCount > 0 && errWarnPct() > 0 && rt >= errWarnPct() ? `Shift submitted. ⚠ Your error rate for this shift is ${rt.toFixed(1)}% (limit ${errWarnPct()}%). Please double-check your work.` : 'Shift submitted for review.');
+      } catch (e) {
+        console.error(e);
+        toast('Could not submit the shift. Check your connection and Firestore rules (submissions / activeShifts).');
+        return false;
+      }
+    }, 'End shift & submit');
+  liveStatsPreview('#trkPreview', base);
+}
+
+async function cancelShift(accountId) {
+  const s = activeShiftOf(accountId);
+  if (!s || s.workerId !== currentUser.uid) return;
+  if (!await confirmBox('Cancel this shift?', 'Your start baseline will be discarded and nothing will be submitted. Use this only if you started by mistake.', 'Yes, cancel shift', true)) return;
+  if (!configured) { data.activeShifts = data.activeShifts.filter(x => x.id !== s.id); renderPage(); return; }
+  try {
+    await fb.deleteDoc(fb.doc(db, 'activeShifts', s.id));
+    toast('Shift cancelled.');
+  } catch (e) { console.error(e); toast('Could not cancel the shift. Check Firestore rules.'); }
+}
+
+async function releaseShift(accountId) {
+  if (!isAdmin()) return;
+  const s = activeShiftOf(accountId);
+  if (!s) return;
+  if (!await confirmBox('Release this shift?', `${s.workerName || 'The worker'}'s running shift on "${s.accountName || 'this account'}" will be cancelled and nothing will be submitted. The account becomes free for others.`, 'Yes, release', true)) return;
+  const info = `${s.workerName || 'Worker'} · ${s.accountName || s.id} · started ${date(s.startedAt)} ${fmtTime(s.startedAt)}`;
+  if (!configured) { data.activeShifts = data.activeShifts.filter(x => x.id !== s.id); logAudit('Released running shift', info); renderPage(); return; }
+  try {
+    await fb.deleteDoc(fb.doc(db, 'activeShifts', s.id));
+    logAudit('Released running shift', info);
+    toast('Shift released.');
+  } catch (e) { console.error(e); toast('Could not release the shift. Check Firestore rules.'); }
 }
 
 function receipts() {
   const rows = filteredSubmissions();
   const sel = v => filters.status === v ? 'selected' : '';
-  return `<div class="welcome"><div><h2>${isAdmin() ? 'Review submissions' : 'My shift submissions'}</h2><p>${isAdmin() ? 'Review worker activity, edit processed/error counts, and approve or reject shift records.' : 'Record a completed shift and track its status.'}</p></div>${!isAdmin() ? '<button class="btn btn-primary" id="newSubmission">＋ New submission</button>' : ''}</div>${!isAdmin() ? submissionForm() : ''}<div class="panel"><div class="toolbar"><input id="receiptSearch" placeholder="Search worker or account…" value="${esc(filters.q)}"><select id="statusFilter"><option value="all">All statuses</option><option ${sel('pending')}>pending</option><option ${sel('approved')}>approved</option><option ${sel('rejected')}>rejected</option></select><span class="spacer"></span><span class="muted" id="recordCount">${rows.length} record(s)</span></div><div class="table-wrap"><table><thead><tr><th>Worker / account</th><th>Shift date</th><th>Shift</th><th>Processed</th><th>Errors</th><th>Net pay</th><th>Status</th><th>Action</th></tr></thead><tbody id="submissionRows">${submissionRowsPaged(rows)}</tbody></table></div></div>`;
+  return `<div class="welcome"><div><h2>${isAdmin() ? 'Review submissions' : 'My shifts'}</h2><p>${isAdmin() ? 'Review worker activity, edit processed/error counts, and approve or reject shift records.' : 'Start and end your shift here, and track the status of your submissions.'}</p></div>${!isAdmin() ? '<button class="btn btn-primary" id="newSubmission">▶ Shift tracker</button>' : ''}</div>${!isAdmin() ? trackerPanel() : activeShiftsPanel()}<div class="panel"><div class="toolbar"><input id="receiptSearch" placeholder="Search worker or account…" value="${esc(filters.q)}"><select id="statusFilter"><option value="all">All statuses</option><option ${sel('pending')}>pending</option><option ${sel('approved')}>approved</option><option ${sel('rejected')}>rejected</option></select><span class="spacer"></span><span class="muted" id="recordCount">${rows.length} record(s)</span></div><div class="table-wrap"><table><thead><tr><th>Worker / account</th><th>Shift date</th><th>Shift</th><th>Processed</th><th>Errors</th><th>Net pay</th><th>Status</th><th>Action</th></tr></thead><tbody id="submissionRows">${submissionRowsPaged(rows)}</tbody></table></div></div>`;
 }
 
 function workerNamesFor(a) {
@@ -1326,15 +1549,15 @@ function errorsPage() {
   const rows = all.filter(s => num(s.errorCount) > 0).sort((a, b) => timeVal(b.createdAt) - timeVal(a.createdAt));
   const totalErr = rows.reduce((n, s) => n + num(s.errorCount), 0);
   const totalProcessed = all.reduce((n, s) => n + num(s.receiptCount), 0);
-  const overall = totalProcessed + totalErr > 0 ? (totalErr / (totalProcessed + totalErr) * 100).toFixed(1) : '0.0';
+  const overall = totalProcessed > 0 ? (totalErr / totalProcessed * 100).toFixed(1) : '0.0';
 
   const body = rows.length ? rows.map(s => {
     const p = num(s.receiptCount), er = num(s.errorCount);
-    const rt = p + er > 0 ? (er / (p + er) * 100).toFixed(1) : '0.0';
+    const rt = p > 0 ? (er / p * 100).toFixed(1) : '0.0';
     return `<tr><td><div class="person"><div class="avatar">${esc(initials(s.workerName))}</div><div><strong>${esc(s.workerName || 'Worker')}</strong><small>${esc(s.accountName || 'No account')}</small></div></div></td><td>${esc(date(s.shiftDate))}</td><td>${esc(s.shiftType || '—')}</td><td>${p.toLocaleString()}</td><td style="color:#c0392b;font-weight:600">${er.toLocaleString()}</td><td${errWarnPct() > 0 && errRatePct(p, er) >= errWarnPct() ? ' style="color:#c0392b;font-weight:600"' : ''}>${rt}%${errWarnPct() > 0 && errRatePct(p, er) >= errWarnPct() ? ' ⚠' : ''}</td><td>${esc(s.errorNote || '—')}</td><td>${status(s.status)}</td><td><div class="sh-row-actions"><button class="small-btn" data-view="${esc(s.id)}">View</button>${isAdmin() ? rowAdminBtns(s) : ''}</div></td></tr>`;
   }).join('') : `<tr><td colspan="9"><div class="empty">✓<b>No errors recorded</b>Submissions with an error count above zero will appear here.</div></td></tr>`;
 
-  return `<div class="welcome"><div><h2>${isAdmin() ? 'Error processed' : 'My error processed'}</h2><p>${isAdmin() ? 'Shifts with error receipts. Use Edit to correct processed or error counts.' : 'Shifts where you recorded error receipts.'}</p></div></div><div class="stats">${stat('Total errors', totalErr.toLocaleString(), 'Across listed submissions', '⚠')}${stat('Shifts with errors', rows.length, `of ${all.length} submission(s)`, '▤')}${stat('Error rate', overall + '%', 'Errors ÷ (processed + errors)', '%')}${stat('Processed receipts', totalProcessed.toLocaleString(), 'Paid receipts', '✓')}</div><div class="panel"><div class="table-wrap"><table><thead><tr><th>Worker / account</th><th>Shift date</th><th>Shift</th><th>Processed</th><th>Errors</th><th>Error rate</th><th>Note</th><th>Status</th><th>Action</th></tr></thead><tbody>${body}</tbody></table></div></div>`;
+  return `<div class="welcome"><div><h2>${isAdmin() ? 'Error processed' : 'My error processed'}</h2><p>${isAdmin() ? 'Shifts with error receipts. Use Edit to correct processed or error counts.' : 'Shifts where you recorded error receipts.'}</p></div></div><div class="stats">${stat('Total errors', totalErr.toLocaleString(), 'Across listed submissions', '⚠')}${stat('Shifts with errors', rows.length, `of ${all.length} submission(s)`, '▤')}${stat('Error rate', overall + '%', 'Errors ÷ processed (errors are included in processed)', '%')}${stat('Processed receipts', totalProcessed.toLocaleString(), 'Basis of pay (includes error receipts)', '✓')}</div><div class="panel"><div class="table-wrap"><table><thead><tr><th>Worker / account</th><th>Shift date</th><th>Shift</th><th>Processed</th><th>Errors</th><th>Error rate</th><th>Note</th><th>Status</th><th>Action</th></tr></thead><tbody>${body}</tbody></table></div></div>`;
 }
 
 function reports() {
@@ -1361,6 +1584,7 @@ function reports() {
 
   return `<div class="welcome"><div><h2>${isAdmin() ? 'Team reports' : 'My earnings'}</h2><p>Approved submissions only are included in pay totals.</p></div><button class="btn btn-ghost" id="exportCsv">↓ Export CSV</button></div><div class="stats">${stat('Gross pay', money(gross), 'Before deductions', '₱')}${stat('Deductions', money(deduct), `${dedPct()}% configured rate`, '−')}${stat('Net payable', money(net), 'Approved records', '✓')}${stat('Approved shifts', approved.length, 'Completed and approved', '▤')}</div><div class="grid-2"><div class="panel"><div class="panel-head"><div><h3>Monthly net pay</h3><p>By shift date, approved submissions</p></div></div><div class="report-bars">${Object.entries(months).sort((a, b) => a[0].localeCompare(b[0])).slice(-8).map(([m, v]) => `<div class="bar-line"><span>${esc(m)}</span><div class="bar-track"><div class="bar-fill" style="width:${(v / max * 100).toFixed(1)}%"></div></div><b>${money(v)}</b></div>`).join('') || '<div class="empty">No approved earnings to chart yet.</div>'}</div></div><div class="panel"><div class="panel-head"><div><h3>Calculation details</h3><p>Based on current pay settings</p></div></div><div class="right" style="justify-content:space-between;padding:14px 0;border-bottom:1px solid var(--line)"><span class="muted">Rate per receipt</span><b>${money(rate())}</b></div><div class="right" style="justify-content:space-between;padding:14px 0;border-bottom:1px solid var(--line)"><span class="muted">Deduction rate</span><b>${dedPct()}%</b></div><div class="right" style="justify-content:space-between;padding:14px 0"><span class="muted">Net after deductions</span><b>${money(net)}</b></div><div class="notice">Totals update from Firestore when Firebase is configured. Demo data is illustrative only.</div></div></div>${perWorker}`;
 }
+
 const agreementLabel = u => u.agreement?.version === AGREEMENT_VERSION
   ? `✅ Accepted ${date(u.agreement.acceptedAt)}`
   : (u.agreement ? '⚠ Old version, must re-accept' : '⏳ Not yet accepted');
@@ -1407,6 +1631,7 @@ function chat() {
   const who = chatConv === 'group' ? 'Public group: everyone can read these messages.' : (isAdmin() ? `Private chat with ${esc(chatPeerName())}: only you and this worker can read it.` : 'Private chat with the admin: only you and the admin can read it.');
   return `<div class="welcome"><div><h2>Team conversation</h2><p>${who}</p></div></div><div class="chat-layout"><div class="chat-list" id="chatList">${chatListHtml()}</div><div class="chat-window"><div class="chat-messages" id="chatMessages">${chatBubbles()}</div><form class="chat-compose" id="chatForm"><input name="message" placeholder="${chatConv === 'group' ? 'Message the whole team…' : 'Write a private message…'}" maxlength="2000" autocomplete="off" required><button class="btn btn-primary" type="submit">Send ↗</button></form></div></div>`;
 }
+
 /* ───────────────────────── User agreement (must accept before using the app) ───────────────────────── */
 const AGREEMENT_VERSION = '2026-10-31'; // change this when you edit the text → everyone must accept again
 
@@ -1435,7 +1660,7 @@ const AGREEMENT = {
     'Accurately correct or enhance data as needed, based on the customer receipt and invoice and provided meta-information through ABUKAI’s internal review tools. Data may include the amount, date, vendor name, currency, city, state, country, flight itineraries and dates, hotel details (e.g. daily rate, Internet, phone, other expenses, meals, etc. ), parking dates, rental car dates, mileage information and itineraries, VAT amounts or % as might be required, cost category, additional details (e.g. lunch vs. breakfast vs. snack vs. drinks) and/or other data as required by ABUKAI’s systems and approach. The data required and tools provides are subject to change as ABUKAI deems fit.',
     'Participate in STEIVY RECIEPT CORRECTOR training sessions as required to learn how to best utilize ABUKAI’s tools an understand the expectation for data completeness, accuracy and quality.'
   ],
-    compensationIntro: 'Compensation. As consideration for the Services, STEIVY RECEIPT CORRECTOR will pay to you the following amounts, without duplication:',
+  compensationIntro: 'Compensation. As consideration for the Services, STEIVY RECEIPT CORRECTOR will pay to you the following amounts, without duplication:',
   compensation: [
     '1 php per Receipt accurately reviewed and corrected, as evaluated by ABUKAI.',
     'Ten percent (10%) of my total output (the total compensation computed under this Exhibit A) will be deducted as a service charge / transfer fee for the transfer of payment from ABUKAI to PayPal.',
@@ -1483,7 +1708,7 @@ function renderAgreement() {
     if (box.scrollTop + box.clientHeight >= box.scrollHeight - 8) {
       chk.disabled = false;
       $('#agrCheckWrap').style.opacity = '1';
-      $('#agrHint').remove();
+      $('#agrHint')?.remove();
       box.removeEventListener('scroll', checkScroll);
     }
   };
@@ -1545,6 +1770,7 @@ async function agreementSignOut() {
   currentUser = null; profile = null; page = 'dashboard'; detailId = null;
   renderLogin();
 }
+
 /* ───────────────────────── Render + wiring ───────────────────────── */
 function renderPage() {
   if (!currentUser || !profile) { renderLogin(); return; }
@@ -1586,6 +1812,10 @@ function wireShell() {
     let el;
     if ((el = t.closest('[data-lb-period]'))) { lbPeriod = el.dataset.lbPeriod; return renderPage(); }
     if ((el = t.closest('[data-page]'))) return go(el.dataset.page);
+    if ((el = t.closest('[data-start-shift]'))) { if (el.disabled) return; return startShift(el.dataset.startShift); }
+    if ((el = t.closest('[data-end-shift]'))) return endShift(el.dataset.endShift);
+    if ((el = t.closest('[data-cancel-shift]'))) return cancelShift(el.dataset.cancelShift);
+    if ((el = t.closest('[data-release-shift]'))) return releaseShift(el.dataset.releaseShift);
     if ((el = t.closest('[data-view]'))) return viewSubmission(el.dataset.view);
     if ((el = t.closest('[data-chat-conv]'))) return openChat(el.dataset.chatConv, el.dataset.chatId);
     if ((el = t.closest('[data-more-subs]'))) { subLimit += 50; return filterRows(); }
@@ -1603,7 +1833,6 @@ function wireShell() {
 
 function wirePage() {
   $('#newSubmission')?.addEventListener('click', () => $('#submissionFormPanel')?.scrollIntoView({ behavior: 'smooth', block: 'start' }));
-  $('#submissionForm')?.addEventListener('submit', submitShift);
   $('#receiptSearch')?.addEventListener('input', e => { filters.q = e.target.value; subLimit = 50; filterRows(); });
   $('#statusFilter')?.addEventListener('change', e => { filters.status = e.target.value; subLimit = 50; filterRows(); });
   $('#addAccount')?.addEventListener('click', addAccount);
@@ -1638,86 +1867,20 @@ function filterRows() {
 }
 
 /* ───────────────────────── Submissions ───────────────────────── */
-async function submitShift(e) {
-  e.preventDefault();
-  const form = e.currentTarget;
-  const btn = form.querySelector('[type=submit]');
-  if (btn.disabled) return;
-  btn.disabled = true; // lock immediately so a double click cannot create two submissions
-  const fail = msg => { toast(msg); btn.disabled = false; };
-  const sc = scheduleOf(profile);
-  if (!inWindow(sc)) return fail(`You can only submit during your scheduled shift (${sc.label}).`);
-
-  const f = new FormData(form);
-  const account = data.accounts.find(a => a.id === f.get('accountId'));
-  if (!account) return fail('Select an active account first.');
-  const scheduled = !!(sc && !sc.open);
-  const shiftDate = scheduled ? defaultShiftDate(sc) : f.get('shiftDate');
-  if (shiftDate > todayStr()) return fail('Shift date cannot be in the future.');
-  const count = parseInt(f.get('receiptCount'), 10);
-  if (!Number.isFinite(count) || count < 0) return fail('Enter a valid processed receipt count.');
-  const errCount = parseInt(f.get('errorCount') || '0', 10);
-  if (!Number.isFinite(errCount) || errCount < 0) return fail('Enter a valid error count.');
-  if (errCount === 0) {
-  btn.disabled = false;
-  await confirmBox(
-    'Error count cannot be zero',
-    'Zero errors is not accepted. Every shift has errors, so please do not forget and do not hide your errors. Check your work and enter your real error count before submitting.',
-    'OK, I will check',
-    true
-  );
-  return;
-}
-  const shiftType = scheduled ? sc.label : f.get('shiftType');
-
-  const dup = data.submissions.find(s => s.workerId === currentUser.uid && s.accountId === account.id && s.shiftDate === shiftDate && (scheduled || s.shiftType === shiftType) && s.status !== 'rejected');
-  if (dup) return fail(`You already submitted this shift for ${account.name}. Only one submission per shift per account is allowed. Ask your admin to "Allow resubmit" if it needs correcting.`);
-
-  const rateCents = rate(), pct = dedPct();
-  const gross = Math.round(count * rateCents);
-  const ded = Math.round(gross * pct / 100);
-  const item = {
-    workerId: currentUser.uid, workerName: profile.displayName, workerEmail: currentUser.email,
-    accountId: account.id, accountName: account.name,
-    shiftDate, shiftType, startTime: f.get('startTime'), endTime: f.get('endTime'),
-    receiptCount: count, errorCount: errCount, errorNote: '',
-    status: 'pending', rejectionReason: '',
-    rateCents, deductionPercent: pct,
-    grossCents: gross, deductionCents: ded, netCents: gross - ded
-  };
-
-  if (!configured) {
-    data.submissions.unshift({ ...item, id: 'local-' + Date.now(), createdAt: new Date(), updatedAt: new Date() });
-    toast('Demo submission added (not saved online).');
-    renderPage();
-    return;
-  }
-  try {
-    await fb.addDoc(fb.collection(db, 'submissions'), { ...item, createdAt: fb.serverTimestamp(), updatedAt: fb.serverTimestamp() });
-    const rt = errRatePct(count, errCount);
-    toast(errCount > 0 && errWarnPct() > 0 && rt >= errWarnPct() ? `Shift submitted. ⚠ Your error rate for this shift is ${rt.toFixed(1)}% (limit ${errWarnPct()}%). Please double-check your work.` : 'Shift submitted for review.');
-    form.reset();
-    renderPage();
-  } catch (err) {
-    console.error(err);
-    toast('Submission failed. Check Firestore permissions and assigned account.');
-    btn.disabled = false;
-  }
-}
-
 function viewSubmission(id, scroll = true) {
   const s = visibleSubmissions().find(x => x.id === id);
   if (!s) return;
   detailId = id;
   const processed = num(s.receiptCount), errs = num(s.errorCount);
-  const errRate = processed + errs > 0 ? (errs / (processed + errs) * 100).toFixed(1) + '%' : '0%';
+  const errRate = processed > 0 ? (errs / processed * 100).toFixed(1) + '%' : '0%';
   const actions = (isAdmin() ? `<button class="btn btn-secondary" id="editCountsBtn">Edit counts</button>` : '') +
     (isAdmin() && s.status !== 'rejected' ? `<button class="btn btn-ghost" id="allowResubmitBtn">Allow resubmit</button>` : '') +
     (isAdmin() && s.status === 'pending' ? `<button class="btn btn-primary" id="approveOne">Approve</button><button class="btn btn-danger" id="rejectOne">Reject</button>` : '');
   const reason = s.rejectionReason ? `<div class="notice warn">Rejection reason: ${esc(s.rejectionReason)}</div>` : '';
   const errNote = s.errorNote ? `<div class="notice">Error note: ${esc(s.errorNote)}</div>` : '';
   const editedNote = s.editedByName ? `<div class="notice">Counts edited by ${esc(s.editedByName)}${s.editedAt ? ' on ' + esc(date(s.editedAt)) + ' ' + esc(fmtTime(s.editedAt)) : ''}.</div>` : '';
-  const html = `<div class="panel"><div class="panel-head"><div><h3>Submission details</h3><p>${esc(s.id)}</p></div><button class="btn btn-ghost" id="closeDetails">Close</button></div><div class="form-grid"><div><p class="muted">Worker</p><b>${esc(s.workerName)}</b></div><div><p class="muted">Status</p>${status(s.status)}</div><div><p class="muted">Account</p><b>${esc(s.accountName)}</b></div><div><p class="muted">Shift date</p><b>${esc(date(s.shiftDate))}</b></div><div><p class="muted">Shift hours</p><b>${esc(s.startTime)} – ${esc(s.endTime)}</b></div><div><p class="muted">Processed receipts</p><b>${processed.toLocaleString()}</b></div><div><p class="muted">Error count</p><b${errs > 0 ? ' style="color:#c0392b"' : ''}>${errs.toLocaleString()}</b></div><div><p class="muted">Error rate</p><b>${errRate}</b></div><div><p class="muted">Gross pay</p><b>${money(s.grossCents)}</b></div><div><p class="muted">Deductions</p><b>${money(s.deductionCents)}</b></div><div><p class="muted">Net pay</p><b>${money(s.netCents)}</b></div></div>${errNote}${reason}${editedNote}<div class="right" style="justify-content:flex-end;margin-top:20px;gap:8px">${actions}</div></div>`;
+  const stats = s.startStats && s.endStats ? `<div class="notice">Abukai stats (pasted by the worker) · start: ${num(s.startStats.submitted).toLocaleString()} submitted / ${num(s.startStats.errors).toLocaleString()} errors → end: ${num(s.endStats.submitted).toLocaleString()} submitted / ${num(s.endStats.errors).toLocaleString()} errors.</div>` : '';
+  const html = `<div class="panel"><div class="panel-head"><div><h3>Submission details</h3><p>${esc(s.id)}</p></div><button class="btn btn-ghost" id="closeDetails">Close</button></div><div class="form-grid"><div><p class="muted">Worker</p><b>${esc(s.workerName)}</b></div><div><p class="muted">Status</p>${status(s.status)}</div><div><p class="muted">Account</p><b>${esc(s.accountName)}</b></div><div><p class="muted">Shift date</p><b>${esc(date(s.shiftDate))}</b></div><div><p class="muted">Shift hours</p><b>${esc(s.startTime)} – ${esc(s.endTime)}</b></div><div><p class="muted">Processed receipts</p><b>${processed.toLocaleString()}</b></div><div><p class="muted">Error count</p><b${errs > 0 ? ' style="color:#c0392b"' : ''}>${errs.toLocaleString()}</b></div><div><p class="muted">Error rate</p><b>${errRate}</b></div><div><p class="muted">Gross pay</p><b>${money(s.grossCents)}</b></div><div><p class="muted">Deductions</p><b>${money(s.deductionCents)}</b></div><div><p class="muted">Net pay</p><b>${money(s.netCents)}</b></div></div>${stats}${errNote}${reason}${editedNote}<div class="right" style="justify-content:flex-end;margin-top:20px;gap:8px">${actions}</div></div>`;
   $('#detailsPanel')?.remove();
   $('#pageContent').insertAdjacentHTML('afterbegin', `<div id="detailsPanel">${html}</div>`);
   $('#closeDetails').onclick = () => { detailId = null; $('#detailsPanel')?.remove(); };
@@ -1785,10 +1948,10 @@ async function editCounts(id) {
 
   openModal('Edit receipt counts',
     `<p class="muted" style="margin-top:0"><b>${esc(s.workerName || 'Worker')}</b> · ${esc(s.accountName || '')} · ${esc(date(s.shiftDate))} · ${esc(s.shiftType || '')}</p>
-     <div class="field"><label>PROCESSED RECEIPTS</label><input name="receiptCount" type="number" min="0" step="1" value="${num(s.receiptCount)}" required></div>
-     <div class="field"><label>ERROR COUNT</label><input name="errorCount" type="number" min="0" step="1" value="${num(s.errorCount)}" required></div>
+     <div class="field"><label>PROCESSED RECEIPTS (INCLUDING ERRORS)</label><input name="receiptCount" type="number" min="0" step="1" value="${num(s.receiptCount)}" required></div>
+     <div class="field"><label>ERROR COUNT (PART OF PROCESSED)</label><input name="errorCount" type="number" min="0" step="1" value="${num(s.errorCount)}" required></div>
      <div class="field"><label>ERROR NOTE (OPTIONAL)</label><input name="errorNote" maxlength="200" value="${esc(s.errorNote || '')}" placeholder="e.g. Blurry images, wrong amounts"></div>
-     <div class="notice">Pay is recalculated from the processed count using the rate saved on this submission. Error receipts are not paid.</div>`,
+     <div class="notice">Pay is recalculated from the processed count using the rate saved on this submission.</div>`,
     async fd => {
       const processed = parseInt(fd.get('receiptCount'), 10);
       const errs = parseInt(fd.get('errorCount'), 10);
@@ -1907,6 +2070,7 @@ async function deleteAccount(id) {
     data.users.filter(u => (u.assignedAccountIds || []).includes(id)).forEach(u => {
       ops.push(b => b.update(fb.doc(db, 'users', u.id), { assignedAccountIds: fb.arrayRemove(id), updatedAt: fb.serverTimestamp() }));
     });
+    if (activeShiftOf(id)) ops.push(b => b.delete(fb.doc(db, 'activeShifts', id))); // free any running shift on this account
     await commitInChunks(ops);
     logAudit('Deleted account', a.name);
     toast('Account deleted.');
@@ -2109,11 +2273,10 @@ function addWorker() {
         toast('Worker created.');
       } catch (err) {
         console.error(err);
-        toast(err.code === 'auth/email-already-in-use' ? 'That email already has a login.'
+        toast(err.code === 'auth/email-already-in-use' ? 'That email still has a login. If this worker was deleted, the login clears the next time that person opens the app and signs in (or remove it in Firebase Console → Authentication).'
           : err.code === 'auth/weak-password' ? 'Password is too weak.'
           : err.code === 'auth/invalid-email' ? 'Please enter a valid email address.'
           : 'Could not create worker. Check Firestore rules.');
-        if (err.code === 'auth/email-already-in-use') toast('That email still has a login. If this worker was deleted, the login clears the next time that person opens the app and signs in (or remove it in Firebase Console → Authentication).');
         return false;
       } finally {
         try { await fb.signOut(secAuth); } catch {}
@@ -2133,6 +2296,7 @@ async function deleteWorker(u) {
     data.accounts.forEach(a => {
       a.assignedWorkerIds = (a.assignedWorkerIds || []).filter(id => id !== u.id);
     });
+    data.activeShifts = data.activeShifts.filter(s => s.workerId !== u.id);
     toast('Demo worker deleted.');
     renderPage();
     return;
@@ -2146,6 +2310,8 @@ async function deleteWorker(u) {
         updatedAt: fb.serverTimestamp()
       }));
     });
+    // Free any account this worker was still working on.
+    data.activeShifts.filter(s => s.workerId === u.id).forEach(s => ops.push(b => b.delete(fb.doc(db, 'activeShifts', s.id))));
     // Remove their ranking totals so they no longer appear in team rankings.
     data.leaderboard.filter(d => d.workerId === u.id).forEach(d => ops.push(b => b.delete(fb.doc(db, 'leaderboard', d.id))));
     await commitInChunks(ops);
