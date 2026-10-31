@@ -1497,6 +1497,17 @@ function renderAgreement() {
 
 async function acceptAgreement(signedName, btn) {
   const rec = { version: AGREEMENT_VERSION, signedName };
+  const showErr = msg => {
+    let el = $('#agrErr');
+    if (!el) {
+      el = document.createElement('div');
+      el.id = 'agrErr';
+      el.className = 'notice warn';
+      el.style.marginTop = '12px';
+      btn.closest('.sh-modal-actions').before(el);
+    }
+    el.textContent = msg;
+  };
   if (!configured) {
     profile.agreement = { ...rec, acceptedAt: new Date() };
     finishAgreement();
@@ -1510,8 +1521,13 @@ async function acceptAgreement(signedName, btn) {
     profile.agreement = { ...rec, acceptedAt: new Date() };
     finishAgreement();
   } catch (e) {
-    console.error(e);
-    toast('Could not save your acceptance. Check Firestore rules (users → agreement).');
+    console.error('agreement save failed', e);
+    const code = e?.code || 'unknown';
+    showErr(code === 'permission-denied'
+      ? 'Could not save: Firestore blocked it (permission-denied). Ask the admin to publish the Firestore rule that lets a user update their own "agreement" field.'
+      : code === 'unavailable'
+        ? 'No internet connection. Please try again.'
+        : 'Could not save your acceptance (' + code + '). Please try again.');
     btn.disabled = false;
   }
 }
