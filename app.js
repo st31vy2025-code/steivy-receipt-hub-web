@@ -1405,10 +1405,127 @@ function chat() {
   const who = chatConv === 'group' ? 'Public group: everyone can read these messages.' : (isAdmin() ? `Private chat with ${esc(chatPeerName())}: only you and this worker can read it.` : 'Private chat with the admin: only you and the admin can read it.');
   return `<div class="welcome"><div><h2>Team conversation</h2><p>${who}</p></div></div><div class="chat-layout"><div class="chat-list" id="chatList">${chatListHtml()}</div><div class="chat-window"><div class="chat-messages" id="chatMessages">${chatBubbles()}</div><form class="chat-compose" id="chatForm"><input name="message" placeholder="${chatConv === 'group' ? 'Message the whole team…' : 'Write a private message…'}" maxlength="2000" autocomplete="off" required><button class="btn btn-primary" type="submit">Send ↗</button></form></div></div>`;
 }
+/* ───────────────────────── User agreement (must accept before using the app) ───────────────────────── */
+const AGREEMENT_VERSION = '2025-03-31'; // change this when you edit the text → everyone must accept again
 
+const AGREEMENT = {
+  title: 'STEIVY RECEIPTS CORRECTOR',
+  subtitle: 'CONSULTANT PROPRIETARY INFORMATION AND NONDISCLOSURE AGREEMENT',
+  date: 'March 31, 2025',
+  address: ['Steivy Receipts Corrector', '147 Acha Street', 'Pagina Jagna 6308', 'Bohol Philippines'],
+  intro: 'The following contains all the terms of my Consulting Agreement (the “Agreement”) with Steivy Receipts Corrector (an Independent Contractor under Abukai, Inc.) supersedes all other understandings, oral or written, between us:',
+  items: [
+    'The amount of time I will spend as a sub-contractor to the Independent Contractor, the nature of the services provided (the “Services”) and my compensation are set forth on Exhibit A.',
+    'I recognize that it is the express intention of the parties to this Agreement that I work as a sub-contractor, an not an employee, agent, joint venturer, or partner of the Independent Contractor. Nothing in the Agreement shall be interpreted or construed as creating or establishing an employment relationship between the Independent Contractor and myself. I hereby represent that; (i) I am acting solely as a sub-contractor of the Independent Contractor which is under Abukai Inc.; (ii) Steivy Receipts Corrector nor Abukai Inc. has no obligation to me under any law regarding employee liability; and (iii) the only liability of Steivy Receipts Corrector in connection to this Agreement is limited to any commission paid. In addition, I acknowledge that I shall not receive not be entitled to overtime pay, insurance, paid vacation, severance payments or similar fringe or employment benefits of any kind from Steivy Receipt Corrector and Abukai Inc.',
+    'I recognize that I will have no authority to act on or enter into any contract or understanding, incur any liability or make any representation on behalf of Steivy Receipts Corrector without first obtaining specific written instructions from them.',
+    'I recognized that I am solely responsible for all taxes, withholdings, VAT, fees, penalties, and other similar statutory obligations. I agree to defend, indemnify and hold Steivy Receipts Corrector harmless from any and all claims made by an entity on account of an alleged failure by me to satisfy any such tax, or withholding obligation.',
+    'I will supply any tools and equipment necessary to perform the Services.',
+    'Should I, in my sole discretion, deem it necessary to employ assistants to aid me in the performance of the Services, I agree that Steivy Receipts Corrector will not direct, supervise, or control in any way such assistants in their performance of Services. I further agree that such assistants are employed solely by me, and that I alone am responsible for paying the salaries and wages of my employees.',
+    'I will indemnify and hold Steivy Receipts Corrector harmless from, and will defend them against, any and all loss, liability, damage, claims, demands, or suits and related costs and expenses to persons or property that arise, directly or indirectly, from my acts or omissions, or from the breech of any term or condition of this Agreement attributable to me or my agents.',
+    'I understand that my consulting relationship creates a relationship of confidence and trust between me and Steivy Receipts Corrector.',
+    'During my consulting relationship, I will not engage in any business activity which is related to the subject matter of my consulting.',
+    'This Agreement may be terminated by either the Independent Contractor (Steivy Receipts Corrector) or myself at any time by giving (5) days’ written notice of termination. Such notice may be given any time for any reason, with or without cause. Termination of this Agreement will not affect the obligations of either party arising out of events or circumstances occurring prior to such termination.',
+    'That I understand, I am not connected to Abukai Inc. but as independent sub-contractor of Steivy Receipt Corrector.'
+  ],
+  exhibitTitle: 'EXHIBIT A',
+  duties: [
+    'Conduct quality review of receipts and invoices through ABUKAI’s internal review tools.',
+    'Accurately correct or enhance data as needed, based on the customer receipt and invoice and provided meta-information through ABUKAI’s internal review tools. Data may include the amount, date, vendor name, currency, city, state, country, flight itineraries and dates, hotel details (e.g. daily rate, Internet, phone, other expenses, meals, etc. ), parking dates, rental car dates, mileage information and itineraries, VAT amounts or % as might be required, cost category, additional details (e.g. lunch vs. breakfast vs. snack vs. drinks) and/or other data as required by ABUKAI’s systems and approach. The data required and tools provides are subject to change as ABUKAI deems fit.',
+    'Participate in STEIVY RECIEPT CORRECTOR training sessions as required to learn how to best utilize ABUKAI’s tools an understand the expectation for data completeness, accuracy and quality.'
+  ],
+  compensationIntro: 'Compensation. As consideration for the Services, STEIVY RECEIPT CORRECTOR will pay to you the following amounts, without duplication:',
+  compensation: ['1 php per Receipt accurately reviewed and corrected, as evaluated by ABUKAI.'],
+  compensationNote: 'Payments will be earned and paid monthly, based on the volume of receipts reviewed and corrected by Consultant/ Independent sub-contractor the previous month.'
+};
+
+const needsAgreement = () => !!currentUser && !!profile && profile.agreement?.version !== AGREEMENT_VERSION;
+
+function agreementBodyHtml() {
+  const A = AGREEMENT;
+  return `<div style="text-align:center;font-weight:700;line-height:1.5">${esc(A.title)}<br>${esc(A.subtitle)}</div>
+    <p style="text-align:center;margin:14px 0">${esc(A.date)}</p>
+    <p style="margin:0 0 14px;line-height:1.5">${A.address.map(esc).join('<br>')}</p>
+    <p>Gentlemen:</p>
+    <p style="line-height:1.55">${esc(A.intro)}</p>
+    <ol style="padding-left:22px;line-height:1.55">${A.items.map(t => `<li style="margin-bottom:12px">${esc(t)}</li>`).join('')}</ol>
+    <hr style="margin:20px 0;border:0;border-top:1px solid #d5ddd8">
+    <div style="text-align:center;font-weight:700;margin-bottom:12px">${esc(A.exhibitTitle)}</div>
+    <p><b>1. Duties and Responsibilities</b></p>
+    <ul style="padding-left:22px;line-height:1.55">${A.duties.map(t => `<li style="margin-bottom:10px">${esc(t)}</li>`).join('')}</ul>
+    <p><b>2. ${esc(A.compensationIntro)}</b></p>
+    <ul style="padding-left:22px;line-height:1.55">${A.compensation.map(t => `<li>${esc(t)}</li>`).join('')}</ul>
+    <p style="line-height:1.55">${esc(A.compensationNote)}</p>
+    <p class="muted" style="margin-top:18px">— End of agreement —</p>`;
+}
+
+function renderAgreement() {
+  if ($('#agreementScreen')) return; // never rebuild while the user is reading/typing
+  $('#app').innerHTML = `<div id="agreementScreen" class="sh-modal" style="z-index:2000;background:#f4f7f5"><div class="sh-modal-card" style="max-width:780px" role="dialog" aria-modal="true">
+    <h3 style="margin-bottom:6px">User agreement</h3>
+    <p class="muted" style="margin:0 0 12px">Please read the whole agreement below. You must accept it before you can use Steivy Receipt Hub.</p>
+    <div id="agrBox" tabindex="0" style="height:52vh;overflow:auto;border:1px solid #d5ddd8;border-radius:12px;padding:16px;background:#fff;font-size:14px">${agreementBodyHtml()}</div>
+    <div id="agrHint" class="notice warn" style="margin-top:12px">⬇ Scroll to the bottom to continue.</div>
+    <label class="sh-check" style="border-bottom:0;opacity:.5" id="agrCheckWrap"><input type="checkbox" id="agrCheck" disabled><span>I have read, understood, and agree to this agreement.</span></label>
+    <div class="field"><label>TYPE YOUR FULL NAME AS YOUR SIGNATURE</label><input id="agrName" maxlength="80" autocomplete="name" placeholder="Full name" value="${esc(profile?.displayName || '')}"></div>
+    <div class="sh-modal-actions"><button type="button" class="btn btn-ghost" id="agrOut">↪ Sign out</button><button type="button" class="btn btn-primary" id="agrOk" disabled>Accept &amp; continue →</button></div>
+  </div></div>`;
+
+  const box = $('#agrBox'), chk = $('#agrCheck'), nameEl = $('#agrName'), ok = $('#agrOk');
+  const refresh = () => { ok.disabled = !(chk.checked && nameEl.value.trim().length >= 2); };
+  const checkScroll = () => {
+    if (box.scrollTop + box.clientHeight >= box.scrollHeight - 8) {
+      chk.disabled = false;
+      $('#agrCheckWrap').style.opacity = '1';
+      $('#agrHint').remove();
+      box.removeEventListener('scroll', checkScroll);
+    }
+  };
+  box.addEventListener('scroll', checkScroll);
+  checkScroll();
+  chk.addEventListener('change', refresh);
+  nameEl.addEventListener('input', refresh);
+  $('#agrOut').addEventListener('click', agreementSignOut);
+  ok.addEventListener('click', () => { ok.disabled = true; acceptAgreement(nameEl.value.trim(), ok); });
+}
+
+async function acceptAgreement(signedName, btn) {
+  const rec = { version: AGREEMENT_VERSION, signedName };
+  if (!configured) {
+    profile.agreement = { ...rec, acceptedAt: new Date() };
+    finishAgreement();
+    return;
+  }
+  try {
+    await fb.updateDoc(fb.doc(db, 'users', currentUser.uid), {
+      agreement: { ...rec, acceptedAt: fb.serverTimestamp() },
+      updatedAt: fb.serverTimestamp()
+    });
+    profile.agreement = { ...rec, acceptedAt: new Date() };
+    finishAgreement();
+  } catch (e) {
+    console.error(e);
+    toast('Could not save your acceptance. Check Firestore rules (users → agreement).');
+    btn.disabled = false;
+  }
+}
+
+function finishAgreement() {
+  renderPage();
+  showShiftWarning();
+  toast('Thank you. You can now use the website.');
+}
+
+async function agreementSignOut() {
+  await stopPresence();
+  unlisten();
+  if (configured && auth) { try { await fb.signOut(auth); } catch {} }
+  currentUser = null; profile = null; page = 'dashboard'; detailId = null;
+  renderLogin();
+}
 /* ───────────────────────── Render + wiring ───────────────────────── */
 function renderPage() {
   if (!currentUser || !profile) { renderLogin(); return; }
+  if (needsAgreement()) { renderAgreement(); return; }
   pendingRender = false;
   if (!allowedPages().includes(page)) page = 'dashboard';
   if (page === 'chat') unreadChat = 0;
