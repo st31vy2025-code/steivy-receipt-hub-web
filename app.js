@@ -1411,7 +1411,7 @@ const AGREEMENT_VERSION = '2025-03-31'; // change this when you edit the text �
 const AGREEMENT = {
   title: 'STEIVY RECEIPTS CORRECTOR',
   subtitle: 'CONSULTANT PROPRIETARY INFORMATION AND NONDISCLOSURE AGREEMENT',
-  date: 'March 31, 2025',
+  date: 'October 31, 2026',
   address: ['Steivy Receipts Corrector', '147 Acha Street', 'Pagina Jagna 6308', 'Bohol Philippines'],
   intro: 'The following contains all the terms of my Consulting Agreement (the “Agreement”) with Steivy Receipts Corrector (an Independent Contractor under Abukai, Inc.) supersedes all other understandings, oral or written, between us:',
   items: [
