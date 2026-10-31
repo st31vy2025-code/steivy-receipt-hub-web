@@ -1406,7 +1406,7 @@ function chat() {
   return `<div class="welcome"><div><h2>Team conversation</h2><p>${who}</p></div></div><div class="chat-layout"><div class="chat-list" id="chatList">${chatListHtml()}</div><div class="chat-window"><div class="chat-messages" id="chatMessages">${chatBubbles()}</div><form class="chat-compose" id="chatForm"><input name="message" placeholder="${chatConv === 'group' ? 'Message the whole team…' : 'Write a private message…'}" maxlength="2000" autocomplete="off" required><button class="btn btn-primary" type="submit">Send ↗</button></form></div></div>`;
 }
 /* ───────────────────────── User agreement (must accept before using the app) ───────────────────────── */
-const AGREEMENT_VERSION = '2025-03-31'; // change this when you edit the text → everyone must accept again
+const AGREEMENT_VERSION = '2026-10-31'; // change this when you edit the text → everyone must accept again
 
 const AGREEMENT = {
   title: 'STEIVY RECEIPTS CORRECTOR',
@@ -1434,7 +1434,17 @@ const AGREEMENT = {
     'Participate in STEIVY RECIEPT CORRECTOR training sessions as required to learn how to best utilize ABUKAI’s tools an understand the expectation for data completeness, accuracy and quality.'
   ],
   compensationIntro: 'Compensation. As consideration for the Services, STEIVY RECEIPT CORRECTOR will pay to you the following amounts, without duplication:',
-  compensation: ['1 php per Receipt accurately reviewed and corrected, as evaluated by ABUKAI.'],
+      compensationIntro: 'Compensation. As consideration ...',
+  compensation: [
+    '1 php per Receipt accurately reviewed and corrected, as evaluated by ABUKAI.',
+    'Ten percent (10%) of my total output ...',
+    'The remaining amount after the 10% deduction ...',
+    'I am solely responsible for providing ...'
+  ],
+  compensationNote: 'Payments will be earned and paid monthly, ...
+    'Ten percent (10%) of my total output (the total compensation computed under this Exhibit A) will be deducted as a service charge / transfer fee for the transfer of payment from ABUKAI to PayPal.',
+    'The remaining amount after the 10% deduction will then be sent to me through my chosen online account, such as GCash, Maya, a bank account, or GoTyme.'
+  ],
   compensationNote: 'Payments will be earned and paid monthly, based on the volume of receipts reviewed and corrected by Consultant/ Independent sub-contractor the previous month.'
 };
 
