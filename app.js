@@ -1433,17 +1433,12 @@ const AGREEMENT = {
     'Accurately correct or enhance data as needed, based on the customer receipt and invoice and provided meta-information through ABUKAI’s internal review tools. Data may include the amount, date, vendor name, currency, city, state, country, flight itineraries and dates, hotel details (e.g. daily rate, Internet, phone, other expenses, meals, etc. ), parking dates, rental car dates, mileage information and itineraries, VAT amounts or % as might be required, cost category, additional details (e.g. lunch vs. breakfast vs. snack vs. drinks) and/or other data as required by ABUKAI’s systems and approach. The data required and tools provides are subject to change as ABUKAI deems fit.',
     'Participate in STEIVY RECIEPT CORRECTOR training sessions as required to learn how to best utilize ABUKAI’s tools an understand the expectation for data completeness, accuracy and quality.'
   ],
-  compensationIntro: 'Compensation. As consideration for the Services, STEIVY RECEIPT CORRECTOR will pay to you the following amounts, without duplication:',
-      compensationIntro: 'Compensation. As consideration ...',
+    compensationIntro: 'Compensation. As consideration for the Services, STEIVY RECEIPT CORRECTOR will pay to you the following amounts, without duplication:',
   compensation: [
     '1 php per Receipt accurately reviewed and corrected, as evaluated by ABUKAI.',
-    'Ten percent (10%) of my total output ...',
-    'The remaining amount after the 10% deduction ...',
-    'I am solely responsible for providing ...'
-  ],
-  compensationNote: 'Payments will be earned and paid monthly, ...
     'Ten percent (10%) of my total output (the total compensation computed under this Exhibit A) will be deducted as a service charge / transfer fee for the transfer of payment from ABUKAI to PayPal.',
-    'The remaining amount after the 10% deduction will then be sent to me through my chosen online account, such as GCash, Maya, a bank account, or GoTyme.'
+    'The remaining amount after the 10% deduction will then be sent to me through my chosen online account, such as GCash, Maya, a bank account, or GoTyme.',
+    'I am solely responsible for providing complete and correct details of my chosen online account (account name, account number, and mobile number or bank details). STEIVY RECEIPT CORRECTOR will not be liable for any delay, loss, or failed or wrong transfer caused by incorrect, incomplete, or outdated account details that I provided, and any additional fees charged by the receiving bank or e-wallet will be shouldered by me.'
   ],
   compensationNote: 'Payments will be earned and paid monthly, based on the volume of receipts reviewed and corrected by Consultant/ Independent sub-contractor the previous month.'
 };
