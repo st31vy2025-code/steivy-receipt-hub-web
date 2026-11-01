@@ -78,47 +78,6 @@ const timeVal = v => {
 const rate = () => num(data.settings.grossRateCents ?? DEFAULT_SETTINGS.grossRateCents);
 const dedPct = () => num(data.settings.deductionPercent ?? DEFAULT_SETTINGS.deductionPercent);
 
-/* ───────────────────────── Abukai month reset ─────────────────────────
-   Abukai's "this month" counter goes back to 0 at 8:00 AM Philippine time (UTC+8) on the 1st of the month.
-   8:00 AM Philippine time = 00:00 UTC, so the Abukai month is simply the UTC month. */
-const abkMonthOf = ms => { const d = new Date(ms); return `${d.getUTCFullYear()}-${String(d.getUTCMonth() + 1).padStart(2, '0')}`; };
-const abkMonthStart = ms => { const d = new Date(ms); return Date.UTC(d.getUTCFullYear(), d.getUTCMonth(), 1); }; // the reset moment of the month that contains ms
-const abkResetBetween = (a, b) => abkMonthOf(a) !== abkMonthOf(b);                                                   // true if a reset happened between two moments
-const nextResetMs = () => { const n = new Date(); return Date.UTC(n.getUTCFullYear(), n.getUTCMonth() + 1, 1); };
-const subMonth = s => s.abkMonth || String(s.shiftDate || '').slice(0, 7); // the Abukai month a submission belongs to (old records fall back to the shift date)
-
-// Warning on the tracker shortly before the reset
-function resetNoticeHtml() {
-  const mins = Math.round((nextResetMs() - Date.now()) / 60000);
-  if (mins > 0 && mins <= 120) return `<div class="notice warn" style="margin-bottom:12px">⏰ Abukai's monthly counter goes back to <b>0</b> at <b>8:00 AM (Philippine time)</b>, in about ${mins} minute(s). Best: press <b>End shift</b> before then and <b>Start shift</b> again after the reset.</div>`;
-  return '';
-}
-
-// Turns one worker shift into one record per Abukai month (a shift that crosses the reset becomes two records).
-//   base  = stats pasted at Start shift      en  = stats pasted at End shift
-//   pre   = optional { submitted, errors } the worker saw just BEFORE the reset (only used when the shift crossed it)
-function computeShiftParts({ base, en, startMs, nowMs, pre }) {
-  const b = { submitted: num(base?.submitted), errors: num(base?.errors) };
-  if (!abkResetBetween(startMs, nowMs)) {
-    const count = en.submitted - b.submitted, errs = en.errors - b.errors;
-    if (count < 0 || errs < 0) return { error: 'These totals are lower than your start totals (wrong page?). Ask the admin to release this shift.' };
-    if (errs > count) return { error: 'These totals look inconsistent (more errors than receipts in this shift). Check that you copied the right page.' };
-    return { parts: [{ count, errs, month: abkMonthOf(nowMs), from: startMs, to: nowMs, s0: b, s1: en, part: '' }], note: '' };
-  }
-  const resetMs = abkMonthStart(nowMs);
-  const parts = [];
-  let note = '';
-  if (pre) {
-    const c1 = pre.submitted - b.submitted, e1 = pre.errors - b.errors;
-    if (!Number.isFinite(c1) || !Number.isFinite(e1) || c1 < 0 || e1 < 0 || e1 > c1) return { error: 'The "before reset" totals do not match your start totals. Please check the numbers.' };
-    parts.push({ count: c1, errs: e1, month: abkMonthOf(startMs), from: startMs, to: resetMs, s0: b, s1: { submitted: pre.submitted, errors: pre.errors }, part: 'before-reset' });
-  } else {
-    note = 'The part of this shift before the 8:00 AM reset was not entered. Admin: add it with Edit counts if needed.';
-  }
-  parts.push({ count: en.submitted, errs: en.errors, month: abkMonthOf(nowMs), from: resetMs, to: nowMs, s0: { submitted: 0, errors: 0 }, s1: en, part: 'after-reset' });
-  return { parts, note };
-}
-
 /* ───────────────────────── Shift schedule ───────────────────────── */
 const SHIFT_OPTIONS = [
   { id: 'n1', label: '6:00 PM – 2:00 AM', from: '18:00', to: '02:00' },
@@ -296,7 +255,7 @@ function errorWarningPanel() {
     return `<div class="notice warn" style="margin-bottom:16px"><b>⚠ High error rate this month (limit ${lim}%)</b><br>${list.slice(0, 8).map(r => `${esc(r.name)} — ${r.rate.toFixed(1)}% (${r.errors.toLocaleString()} error(s) of ${r.receipts.toLocaleString()} receipts)`).join('<br>')}</div>`;
   }
   const key = monthKeyOf(0);
-  const rows = visibleSubmissions().filter(s => s.status === 'approved' && subMonth(s) === key);
+  const rows = visibleSubmissions().filter(s => s.status === 'approved' && String(s.shiftDate || '').slice(0, 7) === key);
   const p = rows.reduce((n, s) => n + num(s.receiptCount), 0), e = rows.reduce((n, s) => n + num(s.errorCount), 0);
   const rt = errRatePct(p, e);
   if (e === 0 || rt < lim) return '';
@@ -476,8 +435,8 @@ button:disabled{opacity:.6;cursor:not-allowed}
 document.head.appendChild(extraStyle);
 
 /* ───────────────────────── Presence (who is online) ───────────────────────── */
-const ONLINE_WINDOW_MS = 150000; // a worker counts as online if seen in the last 2.5 minutes
-let heartbeatTimer = null, onlineTimer = null;
+const ONLINE_WINDOW_MS = 420000; // a worker counts as online if seen in the last 7 minutes (the heartbeat is every 5 minutes to save Firestore reads)
+let heartbeatTimer = null, onlineTimer = null, lastBeatMs = 0;
 
 const isOnlineEntry = p => !!p && (p.demo || (p.online !== false && Date.now() - timeVal(p.lastSeen) < ONLINE_WINDOW_MS));
 let presenceReadErr = false, presenceWriteErr = false;
@@ -509,6 +468,7 @@ function updateOnline() {
 
 async function beat(online = true) {
   if (!configured || !db || !currentUser || !profile) return;
+  lastBeatMs = Date.now();
   try {
     await fb.setDoc(fb.doc(db, 'presence', currentUser.uid), {
       uid: currentUser.uid, displayName: profile.displayName, role: profile.role,
@@ -525,7 +485,7 @@ function startPresence() {
   if (!configured) return;
   presenceWriteErr = false;
   beat(true);
-  heartbeatTimer = setInterval(() => { if (!document.hidden) beat(true); }, 45000);
+  heartbeatTimer = setInterval(() => { if (!document.hidden) beat(true); }, 300000); // every 5 minutes (each beat is billed as a read for every open screen)
   onlineTimer = setInterval(updateOnline, 30000);
 }
 function clearPresenceTimers() {
@@ -536,7 +496,7 @@ async function stopPresence() {
   clearPresenceTimers();
   await beat(false);
 }
-document.addEventListener('visibilitychange', () => { if (!document.hidden && heartbeatTimer) beat(true); });
+document.addEventListener('visibilitychange', () => { if (!document.hidden && heartbeatTimer && Date.now() - lastBeatMs > 120000) beat(true); });
 window.addEventListener('pagehide', () => { if (heartbeatTimer) beat(false); });
 
 /* ───────────────────────── Announcements (admin -> all users) ───────────────────────── */
@@ -624,7 +584,7 @@ async function removeAnnouncement(id) {
 function monthStats(rows) {
   const cur = monthKeyOf(0), prev = monthKeyOf(-1);
   const sum = key => rows
-    .filter(s => s.status === 'approved' && subMonth(s) === key)
+    .filter(s => s.status === 'approved' && String(s.shiftDate || '').slice(0, 7) === key)
     .reduce((t, s) => ({ r: t.r + num(s.receiptCount), e: t.e + num(s.errorCount) }), { r: 0, e: 0 });
   const p = sum(prev), c = sum(cur);
   const pre = isAdmin() ? 'Team · ' : '';
@@ -867,7 +827,7 @@ function boardRows(period) {
   };
   const fromSubs = list => list.forEach(s => {
     if (s.status !== 'approved' || !s.workerId) return;
-    if (!inPeriod(subMonth(s), period)) return;
+    if (!inPeriod(String(s.shiftDate || '').slice(0, 7), period)) return;
     add(s.workerId, s.workerName, num(s.receiptCount), num(s.errorCount), 1);
   });
   if (isAdmin() || !configured) {
@@ -901,7 +861,7 @@ async function syncLeaderboard() {
   const want = new Map();
   mine.forEach(s => {
     if (s.status !== 'approved') return;
-    const m = subMonth(s);
+    const m = String(s.shiftDate || '').slice(0, 7);
     if (!/^\d{4}-\d{2}$/.test(m)) return;
     const id = `${s.workerId}_${m}`;
     const g = want.get(id) || { workerId: s.workerId, workerName: s.workerName || 'Worker', month: m, receipts: 0, errors: 0, shifts: 0 };
@@ -1369,7 +1329,7 @@ function trackerPanel() {
     }
     return `<div class="trk-row"><div class="trk-info">${title}<small><span class="trk-live">● Working</span> · ${esc(s.workerName || 'Another worker')} · since ${since}${stale ? '<br>⚠ Running for a very long time. Ask the admin to release it if it was forgotten.' : ''}</small></div><div class="sh-row-actions"><button class="btn btn-secondary" disabled data-start-shift="${esc(a.id)}" data-busy="1">▶ Start shift (working)</button></div></div>`;
   }).join('') || `<div class="empty">▦<b>No active accounts assigned</b>Ask your administrator to assign you to an account.</div>`;
-  return `<div class="panel" id="submissionFormPanel"><div class="panel-head"><div><h3>Shift tracker</h3><p>1) Copy the Abukai <b>Processing Stats</b> page (Ctrl+A, Ctrl+C). 2) Press <b>Start shift</b> and paste it. 3) When you finish, copy the stats again, press <b>End shift</b> and paste. Your output and errors are computed from the difference. Only one shift can run on an account at a time.</p></div></div><div id="shiftGate" data-ok="${inWin}">${shiftNoticeHtml(sc, inWin)}</div>${resetNoticeHtml()}${warn}${rows}</div>`;
+  return `<div class="panel" id="submissionFormPanel"><div class="panel-head"><div><h3>Shift tracker</h3><p>1) Copy the Abukai <b>Processing Stats</b> page (Ctrl+A, Ctrl+C). 2) Press <b>Start shift</b> and paste it. 3) When you finish, copy the stats again, press <b>End shift</b> and paste. Your output and errors are computed from the difference. Only one shift can run on an account at a time.</p></div></div><div id="shiftGate" data-ok="${inWin}">${shiftNoticeHtml(sc, inWin)}</div>${warn}${rows}</div>`;
 }
 
 // Admin view: who is working on which account right now (with a Release button for forgotten shifts).
@@ -1384,16 +1344,15 @@ function activeShiftsPanel() {
   return `<div class="panel"><div class="panel-head"><div><h3>Running shifts</h3><p>Accounts that currently have a worker on shift. Release a shift only if the worker forgot to end it (nothing is submitted).</p></div></div>${warn}${rows || '<div class="empty">✓<b>No running shifts</b>Accounts are free.</div>'}</div>`;
 }
 
-function liveStatsPreview(boxSel, base, crossed = false) {
+function liveStatsPreview(boxSel, base) {
   const ta = $('#trkPaste'), box = $(boxSel);
   if (!ta || !box) return;
   ta.addEventListener('input', () => {
     const p = parseAbukaiStats(ta.value);
     if (!p) { box.className = 'notice warn'; box.textContent = '⚠ Could not read the stats. Copy the whole Abukai Processing Stats page and paste it again.'; return; }
     if (!base) { box.className = 'notice'; box.innerHTML = `✅ Baseline: <b>${p.submitted.toLocaleString()}</b> submitted · <b>${p.errors.toLocaleString()}</b> with errors`; return; }
-    if (crossed) { box.className = 'notice'; box.innerHTML = `✅ After the reset: <b>${p.submitted.toLocaleString()}</b> receipts · <b>${p.errors.toLocaleString()}</b> with errors (counted from 0 at 8:00 AM Philippine time).`; return; }
     const out = p.submitted - base.submitted, er = p.errors - base.errors;
-    if (out < 0 || er < 0) { box.className = 'notice warn'; box.textContent = '⚠ These totals are lower than your start totals (wrong page?).'; return; }
+    if (out < 0 || er < 0) { box.className = 'notice warn'; box.textContent = '⚠ These totals are lower than your start totals (new month, or the wrong page).'; return; }
     box.className = 'notice';
     box.innerHTML = `✅ Output this shift: <b>${out.toLocaleString()}</b> receipts · <b>${er.toLocaleString()}</b> with errors`;
   });
@@ -1454,58 +1413,68 @@ function endShift(accountId) {
   if (!inWindow(sc)) return toast(`You can only end and submit during your scheduled shift (${sc.label}). Ask the admin if you missed it.`);
   const base = s.startStats || { submitted: 0, errors: 0 };
   const startMs = timeVal(s.startedAt);
-  const crossed = abkResetBetween(startMs, Date.now()); // Abukai's counter went back to 0 while this shift was running
+  // Abukai's monthly stats go back to zero at 8:00 AM Philippine time on the 1st of the month (= 00:00 UTC).
+  const n0 = new Date();
+  const resetMs = Date.UTC(n0.getUTCFullYear(), n0.getUTCMonth(), 1);
+  const crossed = startMs < resetMs && Date.now() >= resetMs; // this shift ran across the monthly reset
 
-  const resetFields = crossed
-    ? `<div class="notice warn" style="margin-bottom:12px">⚠ Abukai's monthly counter went back to <b>0</b> at <b>8:00 AM (Philippine time)</b> while your shift was running. The stats you paste above count only the part <b>after</b> the reset. To also be paid for the part <b>before</b> the reset, enter the last totals you saw before 8:00 AM (leave both empty if you do not have them).</div>
-       <div class="form-grid" style="grid-template-columns:1fr 1fr"><div class="field"><label>LAST SUBMITTED BEFORE RESET</label><input name="preSubmitted" type="number" min="0" step="1" placeholder="e.g. 412"></div><div class="field"><label>LAST WITH ERRORS BEFORE RESET</label><input name="preErrors" type="number" min="0" step="1" placeholder="e.g. 120"></div></div>`
+  // Output of the shift. After a reset, "end" only counts what was submitted AFTER the reset,
+  // so the part before the reset comes from the stats the worker copied just before 8:00 AM.
+  const calc = (en, pre) => {
+    if (!crossed) {
+      const out = en.submitted - num(base.submitted), er = en.errors - num(base.errors);
+      return out < 0 || er < 0 ? null : { count: out, errCount: er, partial: false };
+    }
+    if (!pre) return { count: en.submitted, errCount: en.errors, partial: true };
+    const pOut = pre.submitted - num(base.submitted), pEr = pre.errors - num(base.errors);
+    if (pOut < 0 || pEr < 0) return null;
+    return { count: pOut + en.submitted, errCount: pEr + en.errors, partial: false };
+  };
+
+  const resetField = crossed
+    ? `<div class="notice warn" style="margin-bottom:10px">⚠ Your shift went past the monthly reset (8:00 AM on the 1st), so the Abukai stats went back to zero. Paste below the stats you copied <b>just before 8:00 AM</b>. If you did not copy them, leave it empty: only the receipts after the reset are counted and the admin will add the rest.</div><div class="field"><label>STATS COPIED BEFORE 8:00 AM (RECOMMENDED)</label><textarea name="pre" id="trkPre" placeholder="Paste the stats you copied just before the 8:00 AM reset…"></textarea></div>`
     : '';
 
   openModal('End shift · ' + (s.accountName || ''),
     `<p class="muted" style="margin-top:0">Started ${esc(fmtTime(s.startedAt))} · baseline <b>${num(base.submitted).toLocaleString()}</b> submitted · <b>${num(base.errors).toLocaleString()}</b> with errors</p>
-     <ol class="muted" style="margin:0 0 12px;padding-left:18px;line-height:1.55"><li>Open the Abukai <b>Processing Stats</b> page again.</li><li>Select all (Ctrl+A) and copy (Ctrl+C).</li><li>Paste it below.</li></ol>${PASTE_FIELD}${resetFields}`,
+     <ol class="muted" style="margin:0 0 12px;padding-left:18px;line-height:1.55"><li>Open the Abukai <b>Processing Stats</b> page again.</li><li>Select all (Ctrl+A) and copy (Ctrl+C).</li><li>Paste it below.</li></ol>${resetField}${PASTE_FIELD}`,
     async fd => {
       const raw = String(fd.get('stats') || '');
       const en = parseAbukaiStats(raw);
       if (!en) { toast('Could not read the Abukai stats. Copy the whole Processing Stats page and paste again.'); return false; }
+      const preRaw = crossed ? String(fd.get('pre') || '').trim() : '';
+      const pre = preRaw ? parseAbukaiStats(preRaw) : null;
+      if (preRaw && !pre) { toast('Could not read the stats you copied before 8:00 AM. Paste the whole Processing Stats page.'); return false; }
+      const r = calc(en, pre);
+      if (!r) { toast('These totals are lower than your start totals (wrong page?). Ask the admin to release this shift.'); return false; }
+      const { count, errCount } = r;
       if (!inWindow(sc)) { toast('Your scheduled shift has already ended.'); return false; }
+      const warn = (count === 0 ? ' Your output is 0, are you sure?' : '') + (r.partial ? ' The part before the 8:00 AM reset is missing, the admin will add it.' : '');
+      if (!await confirmBox('End shift and submit?', `Output: ${count.toLocaleString()} receipts, ${errCount.toLocaleString()} with errors. This will be sent for admin review.${warn}`, 'Yes, submit', count === 0 || r.partial)) return false;
 
-      const ps = String(fd.get('preSubmitted') ?? '').trim(), pe = String(fd.get('preErrors') ?? '').trim();
-      let pre = null;
-      if (ps !== '' || pe !== '') {
-        if (ps === '' || pe === '') { toast('Fill in both "before reset" numbers, or leave both empty.'); return false; }
-        pre = { submitted: parseInt(ps, 10), errors: parseInt(pe, 10) };
-      }
-      const nowMs = Date.now();
-      const r = computeShiftParts({ base, en, startMs, nowMs, pre });
-      if (r.error) { toast(r.error); return false; }
-
-      const useful = r.parts.filter(p => p.count > 0 || p.errs > 0);
-      const send = useful.length ? useful : [r.parts[r.parts.length - 1]];
-      const totalC = send.reduce((n, p) => n + p.count, 0), totalE = send.reduce((n, p) => n + p.errs, 0);
-      const detail = send.length > 1 ? ` (${send.map(p => `${p.count.toLocaleString()} in ${monthLabel(p.month)}`).join(' + ')})` : '';
-      const warn = totalC === 0 ? ' Your output is 0, are you sure?' : '';
-      if (!await confirmBox('End shift and submit?', `Output: ${totalC.toLocaleString()} receipts, ${totalE.toLocaleString()} with errors${detail}. ${r.note ? r.note + ' ' : ''}This will be sent for admin review.${warn}`, 'Yes, submit', totalC === 0)) return false;
-
+      const now = new Date();
       const rateCents = rate(), pct = dedPct();
-      const mk = p => {
-        const gross = Math.round(p.count * rateCents), ded = Math.round(gross * pct / 100);
-        return {
-          workerId: currentUser.uid, workerName: profile.displayName, workerEmail: currentUser.email,
-          accountId: s.accountId || s.id, accountName: s.accountName || '',
-          shiftDate: s.shiftDate, shiftType: s.shiftType || 'Open shift', startTime: hhmm(new Date(p.from)), endTime: hhmm(new Date(p.to)),
-          receiptCount: p.count, errorCount: p.errs, errorNote: p.part === 'after-reset' ? r.note : '',
-          status: 'pending', rejectionReason: '',
-          rateCents, deductionPercent: pct,
-          grossCents: gross, deductionCents: ded, netCents: gross - ded,
-          source: 'abukai-paste', abkMonth: p.month, ...(p.part ? { resetPart: p.part } : {}),
-          startStats: p.s0, endStats: p.s1, startedAtMs: p.from, endedAtMs: p.to,
-          startRaw: String(s.startRaw || '').slice(0, 2000), endRaw: raw.slice(0, 2000)
-        };
+      const gross = Math.round(count * rateCents);
+      const ded = Math.round(gross * pct / 100);
+      const resetNote = !crossed ? '' : (r.partial
+        ? '⚠ Monthly reset (8:00 AM) happened during this shift. Only the receipts AFTER the reset were counted. The admin must add the part before it (use Edit counts).'
+        : `Monthly reset (8:00 AM) happened during this shift. Stats before the reset: ${pre.submitted} submitted / ${pre.errors} errors.`);
+      const item = {
+        workerId: currentUser.uid, workerName: profile.displayName, workerEmail: currentUser.email,
+        accountId: s.accountId || s.id, accountName: s.accountName || '',
+        shiftDate: s.shiftDate, shiftType: s.shiftType || 'Open shift', startTime: hhmm(new Date(startMs)), endTime: hhmm(now),
+        receiptCount: count, errorCount: errCount, errorNote: resetNote,
+        status: 'pending', rejectionReason: '',
+        rateCents, deductionPercent: pct,
+        grossCents: gross, deductionCents: ded, netCents: gross - ded,
+        source: 'abukai-paste',
+        startStats: { submitted: num(base.submitted), errors: num(base.errors) }, endStats: en,
+        startedAtMs: startMs, endedAtMs: now.getTime(),
+        startRaw: String(s.startRaw || '').slice(0, 2000),
+        endRaw: (preRaw ? raw.slice(0, 1000) + '\n--- STATS COPIED BEFORE THE 8:00 AM RESET ---\n' + preRaw.slice(0, 900) : raw).slice(0, 2000)
       };
-
       if (!configured) {
-        send.forEach((p, i) => data.submissions.unshift({ ...mk(p), id: 'local-' + Date.now() + '-' + i, createdAt: new Date(), updatedAt: new Date() }));
+        data.submissions.unshift({ ...item, id: 'local-' + Date.now(), createdAt: new Date(), updatedAt: new Date() });
         data.activeShifts = data.activeShifts.filter(x => x.id !== s.id);
         toast('Demo shift submitted (not saved online).');
         renderPage();
@@ -1513,18 +1482,35 @@ function endShift(accountId) {
       }
       try {
         const b = fb.writeBatch(db);
-        send.forEach(p => b.set(fb.doc(fb.collection(db, 'submissions')), { ...mk(p), createdAt: fb.serverTimestamp(), updatedAt: fb.serverTimestamp() }));
+        b.set(fb.doc(fb.collection(db, 'submissions')), { ...item, createdAt: fb.serverTimestamp(), updatedAt: fb.serverTimestamp() });
         b.delete(fb.doc(db, 'activeShifts', s.id));
         await b.commit();
-        const rt = errRatePct(totalC, totalE);
-        toast(totalE > 0 && errWarnPct() > 0 && rt >= errWarnPct() ? `Shift submitted. ⚠ Your error rate for this shift is ${rt.toFixed(1)}% (limit ${errWarnPct()}%). Please double-check your work.` : 'Shift submitted for review.');
+        const rt = errRatePct(count, errCount);
+        toast(errCount > 0 && errWarnPct() > 0 && rt >= errWarnPct() ? `Shift submitted. ⚠ Your error rate for this shift is ${rt.toFixed(1)}% (limit ${errWarnPct()}%). Please double-check your work.` : 'Shift submitted for review.');
       } catch (e) {
         console.error(e);
         toast('Could not submit the shift. Check your connection and Firestore rules (submissions / activeShifts).');
         return false;
       }
     }, 'End shift & submit');
-  liveStatsPreview('#trkPreview', base, crossed);
+
+  // live preview of the computed output
+  const refresh = () => {
+    const box = $('#trkPreview'), ta = $('#trkPaste');
+    if (!box || !ta) return;
+    const warn = t => { box.className = 'notice warn'; box.textContent = t; };
+    const en = parseAbukaiStats(ta.value);
+    if (!en) return warn('⚠ Could not read the stats. Copy the whole Abukai Processing Stats page and paste it again.');
+    const preTxt = ($('#trkPre')?.value || '').trim();
+    const pre = preTxt ? parseAbukaiStats(preTxt) : null;
+    if (preTxt && !pre) return warn('⚠ Could not read the stats you copied before 8:00 AM.');
+    const r = calc(en, pre);
+    if (!r) return warn('⚠ These totals are lower than your start totals (wrong page?).');
+    box.className = r.partial ? 'notice warn' : 'notice';
+    box.innerHTML = `${r.partial ? '⚠ Only the receipts after the 8:00 AM reset are counted. ' : '✅ '}Output this shift: <b>${r.count.toLocaleString()}</b> receipts · <b>${r.errCount.toLocaleString()}</b> with errors`;
+  };
+  $('#trkPaste')?.addEventListener('input', refresh);
+  $('#trkPre')?.addEventListener('input', refresh);
 }
 
 async function cancelShift(accountId) {
@@ -1567,8 +1553,8 @@ function workerNamesFor(a) {
 /* Monthly receipt/error totals per account (rejected submissions are excluded) */
 function monthKeyOf(offset = 0) {
   const n = new Date();
-  const d = new Date(Date.UTC(n.getUTCFullYear(), n.getUTCMonth() + offset, 1)); // Abukai month = UTC month (resets 8:00 AM PH time)
-  return `${d.getUTCFullYear()}-${String(d.getUTCMonth() + 1).padStart(2, '0')}`;
+  const d = new Date(n.getFullYear(), n.getMonth() + offset, 1);
+  return `${d.getFullYear()}-${String(d.getMonth() + 1).padStart(2, '0')}`;
 }
 const monthLabel = k => {
   const [y, m] = k.split('-').map(Number);
@@ -1579,7 +1565,7 @@ function accountStats(accountId) {
   const r = { cur: { receipts: 0, errors: 0 }, prev: { receipts: 0, errors: 0 } };
   data.submissions.forEach(s => {
     if (s.accountId !== accountId || s.status !== 'approved') return;
-    const k = subMonth(s);
+    const k = String(s.shiftDate || '').slice(0, 7);
     const b = k === cur ? r.cur : k === prev ? r.prev : null;
     if (!b) return;
     b.receipts += num(s.receiptCount);
@@ -1629,7 +1615,7 @@ function reports() {
   const deduct = approved.reduce((n, s) => n + num(s.deductionCents), 0);
   const net = approved.reduce((n, s) => n + num(s.netCents), 0);
   const months = {};
-  approved.forEach(s => { const k = subMonth(s); months[k] = (months[k] || 0) + num(s.netCents); });
+  approved.forEach(s => { const k = String(s.shiftDate || 'Unknown').slice(0, 7); months[k] = (months[k] || 0) + num(s.netCents); });
   const max = Math.max(1, ...Object.values(months));
 
   let perWorker = '';
