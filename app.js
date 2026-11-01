@@ -1,7 +1,8 @@
 // Steivy Receipt Hub — app.js
 // Features: Create/Edit/Delete worker, Add/Edit/Delete account, "Are you sure?" confirmations,
 // Team-chat popups + live chat feed, Top performers / Top errors leaderboards, Error Processed, Admin edit counts,
-// User agreement (accept before use), Shift tracker (Start shift / End shift from pasted Abukai stats, one running shift per account).
+// User agreement (accept before use), Shift tracker (Start shift / End shift from pasted Abukai stats, one running shift per account),
+// Late errors (errors that appear in Abukai later are added to the last shift of the same account automatically).
 // Load with: <script type="module" src="app.js"></script>
 
 let firebaseConfig = {};
@@ -173,6 +174,18 @@ async function logAudit(action, details = '') {
   } catch (e) { console.warn('audit log write failed (check Firestore rules for /auditLogs)', e); }
 }
 
+// Admin: keeps /accountLast in step when the last shift of an account is edited or voided.
+async function patchAccountLast(subId, accountId, patch) {
+  if (!configured || !accountId) return;
+  try {
+    const ref = fb.doc(db, 'accountLast', accountId);
+    const snap = await fb.getDoc(ref);
+    if (snap.exists() && snap.data().submissionId === subId) {
+      await fb.updateDoc(ref, { ...patch, updatedAt: fb.serverTimestamp() });
+    }
+  } catch (e) { console.warn('accountLast sync failed', e); }
+}
+
 // 30-minute reminder before the shift ends (only for workers who still have an account without a submission)
 function showShiftReminder(mins, sc, names) {
   $('#shiftRemind')?.remove();
@@ -300,6 +313,7 @@ async function allowResubmit(id) {
       status: 'rejected', rejectionReason: reason, resubmitAllowed: true,
       reviewedBy: currentUser.uid, reviewedAt: fb.serverTimestamp(), updatedAt: fb.serverTimestamp()
     });
+    await patchAccountLast(s.id, s.accountId, { open: false }); // voided: no more late errors for this shift
     detailId = null;
     $('#detailsPanel')?.remove();
     logAudit('Allowed resubmit', info);
@@ -1329,7 +1343,7 @@ function trackerPanel() {
     }
     return `<div class="trk-row"><div class="trk-info">${title}<small><span class="trk-live">● Working</span> · ${esc(s.workerName || 'Another worker')} · since ${since}${stale ? '<br>⚠ Running for a very long time. Ask the admin to release it if it was forgotten.' : ''}</small></div><div class="sh-row-actions"><button class="btn btn-secondary" disabled data-start-shift="${esc(a.id)}" data-busy="1">▶ Start shift (working)</button></div></div>`;
   }).join('') || `<div class="empty">▦<b>No active accounts assigned</b>Ask your administrator to assign you to an account.</div>`;
-  return `<div class="panel" id="submissionFormPanel"><div class="panel-head"><div><h3>Shift tracker</h3><p>1) Copy the Abukai <b>Processing Stats</b> page (Ctrl+A, Ctrl+C). 2) Press <b>Start shift</b> and paste it. 3) When you finish, copy the stats again, press <b>End shift</b> and paste. Your output and errors are computed from the difference. Only one shift can run on an account at a time.</p></div></div><div id="shiftGate" data-ok="${inWin}">${shiftNoticeHtml(sc, inWin)}</div>${warn}${rows}</div>`;
+  return `<div class="panel" id="submissionFormPanel"><div class="panel-head"><div><h3>Shift tracker</h3><p>1) Copy the Abukai <b>Processing Stats</b> page (Ctrl+A, Ctrl+C). 2) Press <b>Start shift</b> and paste it. 3) When you finish, copy the stats again, press <b>End shift</b> and paste. Your output and errors are computed from the difference. Only one shift can run on an account at a time. Errors that Abukai shows later are added automatically to the previous shift.</p></div></div><div id="shiftGate" data-ok="${inWin}">${shiftNoticeHtml(sc, inWin)}</div>${warn}${rows}</div>`;
 }
 
 // Admin view: who is working on which account right now (with a Release button for forgotten shifts).
@@ -1385,21 +1399,53 @@ function startShift(accountId) {
       const item = { accountId: a.id, accountName: a.name, workerId: currentUser.uid, workerName: profile.displayName, shiftDate: day, shiftType: label, startStats: st, startRaw: raw.slice(0, 2000) };
       if (!configured) {
         data.activeShifts.push({ ...item, id: a.id, startedAt: new Date() });
-        toast('Demo shift started (not saved online).');
+        toast('Demo shift started (not saved online). Late errors cannot be tested in demo mode.');
         renderPage();
         return;
       }
+      // Late errors: Abukai shows some errors only after a shift ended. The gap between the saved
+      // "accounted" total of the last shift on this account and the new baseline is added to that last shift.
+      let applied = null;
       try {
         const ref = fb.doc(db, 'activeShifts', a.id);
+        const lref = fb.doc(db, 'accountLast', a.id);
         await fb.runTransaction(db, async tx => {
           const snap = await tx.get(ref);
           if (snap.exists()) throw new Error('busy');
+          const ls = await tx.get(lref); // all reads first, then writes
+          applied = null;
+          if (ls.exists()) {
+            const last = ls.data();
+            const sameMonth = ymUTC(num(last.endedAtMs)) === ymUTC(Date.now()); // Abukai resets monthly, ignore across months
+            const gap = st.errors - num(last.accounted);
+            if (sameMonth && last.open !== false && last.submissionId && gap > 0) {
+              const room = Math.max(0, num(last.receipts) - num(last.errors)); // errors can never be more than processed
+              const add = Math.min(gap, room);
+              if (add > 0) {
+                tx.update(fb.doc(db, 'submissions', last.submissionId), {
+                  errorCount: fb.increment(add),
+                  lateErrors: fb.increment(add),
+                  lateErrorsAt: fb.serverTimestamp(),
+                  updatedAt: fb.serverTimestamp()
+                });
+              }
+              // everything is now accounted for (even when capped) so it is never added twice
+              tx.update(lref, { accounted: st.errors, errors: num(last.errors) + add, updatedAt: fb.serverTimestamp() });
+              applied = { add, gap, who: last.workerName || 'worker', day: last.shiftDate, capped: add < gap };
+            }
+          }
           tx.set(ref, { ...item, startedAt: fb.serverTimestamp() });
         });
-        toast('Shift started. Do not forget to press End shift when you finish.');
+        if (applied && applied.add > 0) {
+          logAudit('Late errors added to previous shift',
+            `${applied.who} · ${a.name} · ${applied.day}: +${applied.add} error(s)${applied.capped ? ` (capped, gap was ${applied.gap})` : ''}`);
+          toast(`Shift started. +${applied.add} late error(s) added to the previous shift (${applied.who}).`);
+        } else {
+          toast('Shift started. Do not forget to press End shift when you finish.');
+        }
       } catch (e) {
         console.error(e);
-        toast(e?.message === 'busy' ? 'Someone just started a shift on this account.' : 'Could not start the shift. Check Firestore rules (activeShifts).');
+        toast(e?.message === 'busy' ? 'Someone just started a shift on this account.' : 'Could not start the shift. Check Firestore rules (activeShifts / accountLast / submissions).');
         return false;
       }
     }, 'Start shift');
@@ -1482,14 +1528,23 @@ function endShift(accountId) {
       }
       try {
         const b = fb.writeBatch(db);
-        b.set(fb.doc(fb.collection(db, 'submissions')), { ...item, createdAt: fb.serverTimestamp(), updatedAt: fb.serverTimestamp() });
+        const subRef = fb.doc(fb.collection(db, 'submissions'));
+        b.set(subRef, { ...item, createdAt: fb.serverTimestamp(), updatedAt: fb.serverTimestamp() });
+        // The next worker who starts on this account compares their baseline with "accounted" to find late errors.
+        b.set(fb.doc(db, 'accountLast', item.accountId), {
+          accountId: item.accountId, submissionId: subRef.id,
+          workerId: currentUser.uid, workerName: profile.displayName, shiftDate: s.shiftDate,
+          receipts: count, errors: errCount, // used as the cap (errors can never be more than receipts)
+          accounted: en.errors,              // Abukai errors total that is already counted
+          open: true, endedAtMs: now.getTime(), updatedAt: fb.serverTimestamp()
+        });
         b.delete(fb.doc(db, 'activeShifts', s.id));
         await b.commit();
         const rt = errRatePct(count, errCount);
         toast(errCount > 0 && errWarnPct() > 0 && rt >= errWarnPct() ? `Shift submitted. ⚠ Your error rate for this shift is ${rt.toFixed(1)}% (limit ${errWarnPct()}%). Please double-check your work.` : 'Shift submitted for review.');
       } catch (e) {
         console.error(e);
-        toast('Could not submit the shift. Check your connection and Firestore rules (submissions / activeShifts).');
+        toast('Could not submit the shift. Check your connection and Firestore rules (submissions / activeShifts / accountLast).');
         return false;
       }
     }, 'End shift & submit');
@@ -1929,9 +1984,10 @@ function viewSubmission(id, scroll = true) {
     (isAdmin() && s.status === 'pending' ? `<button class="btn btn-primary" id="approveOne">Approve</button><button class="btn btn-danger" id="rejectOne">Reject</button>` : '');
   const reason = s.rejectionReason ? `<div class="notice warn">Rejection reason: ${esc(s.rejectionReason)}</div>` : '';
   const errNote = s.errorNote ? `<div class="notice">Error note: ${esc(s.errorNote)}</div>` : '';
+  const lateNote = num(s.lateErrors) > 0 ? `<div class="notice">+${num(s.lateErrors).toLocaleString()} late error(s) were added after this shift ended (they appeared later in Abukai).</div>` : '';
   const editedNote = s.editedByName ? `<div class="notice">Counts edited by ${esc(s.editedByName)}${s.editedAt ? ' on ' + esc(date(s.editedAt)) + ' ' + esc(fmtTime(s.editedAt)) : ''}.</div>` : '';
   const stats = s.startStats && s.endStats ? `<div class="notice">Abukai stats (pasted by the worker) · start: ${num(s.startStats.submitted).toLocaleString()} submitted / ${num(s.startStats.errors).toLocaleString()} errors → end: ${num(s.endStats.submitted).toLocaleString()} submitted / ${num(s.endStats.errors).toLocaleString()} errors.</div>` : '';
-  const html = `<div class="panel"><div class="panel-head"><div><h3>Submission details</h3><p>${esc(s.id)}</p></div><button class="btn btn-ghost" id="closeDetails">Close</button></div><div class="form-grid"><div><p class="muted">Worker</p><b>${esc(s.workerName)}</b></div><div><p class="muted">Status</p>${status(s.status)}</div><div><p class="muted">Account</p><b>${esc(s.accountName)}</b></div><div><p class="muted">Shift date</p><b>${esc(date(s.shiftDate))}</b></div><div><p class="muted">Shift hours</p><b>${esc(s.startTime)} – ${esc(s.endTime)}</b></div><div><p class="muted">Processed receipts</p><b>${processed.toLocaleString()}</b></div><div><p class="muted">Error count</p><b${errs > 0 ? ' style="color:#c0392b"' : ''}>${errs.toLocaleString()}</b></div><div><p class="muted">Error rate</p><b>${errRate}</b></div><div><p class="muted">Gross pay</p><b>${money(s.grossCents)}</b></div><div><p class="muted">Deductions</p><b>${money(s.deductionCents)}</b></div><div><p class="muted">Net pay</p><b>${money(s.netCents)}</b></div></div>${stats}${errNote}${reason}${editedNote}<div class="right" style="justify-content:flex-end;margin-top:20px;gap:8px">${actions}</div></div>`;
+  const html = `<div class="panel"><div class="panel-head"><div><h3>Submission details</h3><p>${esc(s.id)}</p></div><button class="btn btn-ghost" id="closeDetails">Close</button></div><div class="form-grid"><div><p class="muted">Worker</p><b>${esc(s.workerName)}</b></div><div><p class="muted">Status</p>${status(s.status)}</div><div><p class="muted">Account</p><b>${esc(s.accountName)}</b></div><div><p class="muted">Shift date</p><b>${esc(date(s.shiftDate))}</b></div><div><p class="muted">Shift hours</p><b>${esc(s.startTime)} – ${esc(s.endTime)}</b></div><div><p class="muted">Processed receipts</p><b>${processed.toLocaleString()}</b></div><div><p class="muted">Error count</p><b${errs > 0 ? ' style="color:#c0392b"' : ''}>${errs.toLocaleString()}</b></div><div><p class="muted">Error rate</p><b>${errRate}</b></div><div><p class="muted">Gross pay</p><b>${money(s.grossCents)}</b></div><div><p class="muted">Deductions</p><b>${money(s.deductionCents)}</b></div><div><p class="muted">Net pay</p><b>${money(s.netCents)}</b></div></div>${stats}${errNote}${lateNote}${reason}${editedNote}<div class="right" style="justify-content:flex-end;margin-top:20px;gap:8px">${actions}</div></div>`;
   $('#detailsPanel')?.remove();
   $('#pageContent').insertAdjacentHTML('afterbegin', `<div id="detailsPanel">${html}</div>`);
   $('#closeDetails').onclick = () => { detailId = null; $('#detailsPanel')?.remove(); };
@@ -1979,6 +2035,7 @@ async function reviewSubmission(stale, statusValue, reason = '') {
       status: statusValue, rejectionReason: reason,
       reviewedBy: currentUser.uid, reviewedAt: fb.serverTimestamp(), updatedAt: fb.serverTimestamp()
     });
+    if (statusValue === 'rejected') await patchAccountLast(s.id, s.accountId, { open: false }); // rejected shifts get no more late errors
     detailId = null;
     logAudit(statusValue === 'approved' ? 'Approved submission' : 'Rejected submission', `${s.workerName || 'Worker'} · ${s.accountName || ''} · ${s.shiftDate}${reason ? ' · reason: ' + reason : ''}`);
     toast('Submission ' + statusValue + '.');
@@ -2035,6 +2092,7 @@ async function editCounts(id) {
       await fb.updateDoc(fb.doc(db, 'submissions', s.id), {
         ...changes, editedBy: currentUser.uid, editedByName: profile.displayName, editedAt: fb.serverTimestamp(), updatedAt: fb.serverTimestamp()
       });
+      await patchAccountLast(s.id, s.accountId, { receipts: processed, errors: errs }); // keep the late-errors cap in step
       logAudit('Edited counts', auditMsg);
       toast('Counts updated and pay recalculated.');
     }, 'Save changes');
@@ -2123,6 +2181,7 @@ async function deleteAccount(id) {
     });
     if (activeShiftOf(id)) ops.push(b => b.delete(fb.doc(db, 'activeShifts', id))); // free any running shift on this account
     await commitInChunks(ops);
+    try { await fb.deleteDoc(fb.doc(db, 'accountLast', id)); } catch {} // best effort: no more late errors for a deleted account
     logAudit('Deleted account', a.name);
     toast('Account deleted.');
   } catch (e) { console.error(e); toast('Could not delete account. Check Firestore rules.'); }
