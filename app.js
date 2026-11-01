@@ -255,7 +255,7 @@ function errorWarningPanel() {
     return `<div class="notice warn" style="margin-bottom:16px"><b>⚠ High error rate this month (limit ${lim}%)</b><br>${list.slice(0, 8).map(r => `${esc(r.name)} — ${r.rate.toFixed(1)}% (${r.errors.toLocaleString()} error(s) of ${r.receipts.toLocaleString()} receipts)`).join('<br>')}</div>`;
   }
   const key = monthKeyOf(0);
-  const rows = visibleSubmissions().filter(s => s.status === 'approved' && String(s.shiftDate || '').slice(0, 7) === key);
+  const rows = visibleSubmissions().filter(s => s.status === 'approved' && monthOf(s) === key);
   const p = rows.reduce((n, s) => n + num(s.receiptCount), 0), e = rows.reduce((n, s) => n + num(s.errorCount), 0);
   const rt = errRatePct(p, e);
   if (e === 0 || rt < lim) return '';
@@ -584,7 +584,7 @@ async function removeAnnouncement(id) {
 function monthStats(rows) {
   const cur = monthKeyOf(0), prev = monthKeyOf(-1);
   const sum = key => rows
-    .filter(s => s.status === 'approved' && String(s.shiftDate || '').slice(0, 7) === key)
+    .filter(s => s.status === 'approved' && monthOf(s) === key)
     .reduce((t, s) => ({ r: t.r + num(s.receiptCount), e: t.e + num(s.errorCount) }), { r: 0, e: 0 });
   const p = sum(prev), c = sum(cur);
   const pre = isAdmin() ? 'Team · ' : '';
@@ -827,7 +827,7 @@ function boardRows(period) {
   };
   const fromSubs = list => list.forEach(s => {
     if (s.status !== 'approved' || !s.workerId) return;
-    if (!inPeriod(String(s.shiftDate || '').slice(0, 7), period)) return;
+    if (!inPeriod(monthOf(s), period)) return;
     add(s.workerId, s.workerName, num(s.receiptCount), num(s.errorCount), 1);
   });
   if (isAdmin() || !configured) {
@@ -861,7 +861,7 @@ async function syncLeaderboard() {
   const want = new Map();
   mine.forEach(s => {
     if (s.status !== 'approved') return;
-    const m = String(s.shiftDate || '').slice(0, 7);
+    const m = monthOf(s);
     if (!/^\d{4}-\d{2}$/.test(m)) return;
     const id = `${s.workerId}_${m}`;
     const g = want.get(id) || { workerId: s.workerId, workerName: s.workerName || 'Worker', month: m, receipts: 0, errors: 0, shifts: 0 };
@@ -1551,10 +1551,13 @@ function workerNamesFor(a) {
 }
 
 /* Monthly receipt/error totals per account (rejected submissions are excluded) */
+// Abukai's monthly stats reset at 8:00 AM Philippine time on the 1st (= 00:00 UTC). So the "month" in this app follows that
+// reset, not the calendar: a shift belongs to the Abukai month in which it ENDED.
+const ymUTC = ms => { const d = new Date(ms); return `${d.getUTCFullYear()}-${String(d.getUTCMonth() + 1).padStart(2, '0')}`; };
+const monthOf = s => (s && s.endedAtMs) ? ymUTC(num(s.endedAtMs)) : String((s && s.shiftDate) || '').slice(0, 7); // old manual entries keep their shift date
 function monthKeyOf(offset = 0) {
   const n = new Date();
-  const d = new Date(n.getFullYear(), n.getMonth() + offset, 1);
-  return `${d.getFullYear()}-${String(d.getMonth() + 1).padStart(2, '0')}`;
+  return ymUTC(Date.UTC(n.getUTCFullYear(), n.getUTCMonth() + offset, 1));
 }
 const monthLabel = k => {
   const [y, m] = k.split('-').map(Number);
@@ -1565,7 +1568,7 @@ function accountStats(accountId) {
   const r = { cur: { receipts: 0, errors: 0 }, prev: { receipts: 0, errors: 0 } };
   data.submissions.forEach(s => {
     if (s.accountId !== accountId || s.status !== 'approved') return;
-    const k = String(s.shiftDate || '').slice(0, 7);
+    const k = monthOf(s);
     const b = k === cur ? r.cur : k === prev ? r.prev : null;
     if (!b) return;
     b.receipts += num(s.receiptCount);
@@ -1615,7 +1618,7 @@ function reports() {
   const deduct = approved.reduce((n, s) => n + num(s.deductionCents), 0);
   const net = approved.reduce((n, s) => n + num(s.netCents), 0);
   const months = {};
-  approved.forEach(s => { const k = String(s.shiftDate || 'Unknown').slice(0, 7); months[k] = (months[k] || 0) + num(s.netCents); });
+  approved.forEach(s => { const k = monthOf(s) || 'Unknown'; months[k] = (months[k] || 0) + num(s.netCents); });
   const max = Math.max(1, ...Object.values(months));
 
   let perWorker = '';
