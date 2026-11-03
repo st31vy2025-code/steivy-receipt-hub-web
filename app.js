@@ -24,78 +24,20 @@ let authToken = 0;
 let pendingRender = false;
 let detailId = null;
 let chatReady = false, unreadChat = 0;
+let theme = 'light';
 let lbPeriod = 'month', lbError = false, lbTimer = null;
 let loaded = {};
 let accessErr = {}; // collections the admin could not read (permission-denied)
 let missedFrom = '', missedTo = '';
 let chatConv = 'group', dmWith = '', dmUnsub = null, dmReady = false; // chat: 'group' (public) or 'dm' (private worker <-> admin)
 let auditUnsub = null, auditLimit = 50, auditMore = false, subLimit = 50;
-let presSrc = { main: [], peers: {} }, scopedUnsubs = {}, shiftSrc2 = {}; // workers: presence/shifts are read per co-worker / per own account only
 let trackerErr = false; // could not read /activeShifts (Firestore rules)
+let shiftUnsubs = {}, shiftReady = {}; // per-account running-shift listeners (workers)
 let peerConvs = {}, peerUnsubs = {}, peerReady = {}, peerSel = null, peerMsgUnsub = null, peerMsgs = [], peerSearch = ''; // co-worker private chat
 const filters = { q: '', status: 'all' };
 const DEFAULT_SETTINGS = { grossRateCents: 100, deductionPercent: 10, errorWarnPercent: 5, workUrl: '' };
 const CHAT_LIMIT = 50; // messages loaded per conversation (keeps reads small)
 const data = { submissions: [], accounts: [], users: [], messages: [], presence: [], announcements: [], annRead: [], leaderboard: [], audit: [], threads: [], dmMessages: [], activeShifts: [], settings: { ...DEFAULT_SETTINGS } };
-
-/* ───────── Scoped listeners (workers only read co-workers in their own accounts) ───────── */
-function rebuildPresence() {
-  const seen = new Set();
-  data.presence = [...presSrc.main, ...Object.values(presSrc.peers).filter(Boolean)].filter(p => !seen.has(p.id) && seen.add(p.id));
-  presenceReadErr = false;
-  updateOnline();
-}
-function stopScoped() {
-  Object.values(scopedUnsubs).forEach(f => { try { f(); } catch {} });
-  scopedUnsubs = {}; presSrc = { main: [], peers: {} }; shiftSrc2 = {};
-}
-function syncScoped() {
-  if (!configured || !db || !currentUser || !profile || isAdmin()) return;
-  const uid = currentUser.uid, mine = data.accounts.filter(a => a.isActive !== false && (a.assignedWorkerIds || []).includes(uid));
-  const wantP = new Set(mine.flatMap(a => a.assignedWorkerIds || []).filter(id => id !== uid));
-  const wantS = new Set(mine.map(a => a.id));
-  Object.keys(scopedUnsubs).forEach(k => {
-    const [kind, id] = k.split(':');
-    if ((kind === 'p' && wantP.has(id)) || (kind === 's' && wantS.has(id))) return;
-    try { scopedUnsubs[k](); } catch {}
-    delete scopedUnsubs[k];
-    if (kind === 'p') delete presSrc.peers[id]; else delete shiftSrc2[id];
-  });
-  wantP.forEach(id => {
-    if (scopedUnsubs['p:' + id]) return;
-    scopedUnsubs['p:' + id] = fb.onSnapshot(fb.doc(db, 'presence', id), s => { presSrc.peers[id] = s.exists() ? { id, ...s.data() } : null; rebuildPresence(); }, () => {});
-  });
-  wantS.forEach(id => {
-    if (scopedUnsubs['s:' + id]) return;
-    scopedUnsubs['s:' + id] = fb.onSnapshot(fb.doc(db, 'activeShifts', id), s => {
-      shiftSrc2[id] = s.exists() ? { id, ...s.data() } : null;
-      data.activeShifts = Object.values(shiftSrc2).filter(Boolean);
-      loaded.activeShifts = true; trackerErr = false; requestRender();
-    }, err => { console.warn('activeShifts', err); trackerErr = true; requestRender(); });
-  });
-  data.activeShifts = Object.values(shiftSrc2).filter(Boolean);
-}
-// Solo workers (nobody else on their accounts) do not see the Co-worker menu. The rules enforce it too.
-function syncCoworkerNav() {
-  const b = $('[data-nav="coworkers"]');
-  if (b) b.classList.toggle('hidden', !isAdmin() && configured && !(loaded.accounts && peerContacts().length));
-}
-
-/* ───────── Theme (light / dark) ───────── */
-function applyTheme(t) {
-  document.documentElement.dataset.theme = t;
-  try { localStorage.setItem('steivy_theme', t); } catch {}
-  const b = $('#themeBtn'); if (b) { b.textContent = t === 'dark' ? '☀️' : '🌙'; b.title = t === 'dark' ? 'Switch to light mode' : 'Switch to dark mode'; }
-}
-function initThemeButton() {
-  const ta = $('.top-actions');
-  if (!ta || $('#themeBtn')) return;
-  const b = document.createElement('button');
-  b.id = 'themeBtn'; b.className = 'btn btn-ghost'; b.setAttribute('aria-label', 'Toggle dark mode');
-  b.addEventListener('click', () => applyTheme(document.documentElement.dataset.theme === 'dark' ? 'light' : 'dark'));
-  ta.prepend(b);
-  applyTheme(document.documentElement.dataset.theme || 'light');
-}
 
 /* ───────────────────────── Helpers ───────────────────────── */
 const $ = s => document.querySelector(s);
@@ -391,7 +333,8 @@ function toast(msg) {
   clearTimeout(toastTimer);
   toastTimer = setTimeout(() => el.classList.remove('show'), 3500);
 }
-function unlisten() { unsubs.forEach(fn => { try { fn(); } catch {} }); unsubs = []; stopScoped(); stopDm(); stopAudit(); stopPeer(); }
+function stopShifts() { Object.values(shiftUnsubs).forEach(f => { try { f(); } catch {} }); shiftUnsubs = {}; shiftReady = {}; }
+function unlisten() { unsubs.forEach(fn => { try { fn(); } catch {} }); unsubs = []; stopDm(); stopAudit(); stopPeer(); stopShifts(); }
 
 const isAdmin = () => profile?.role === 'admin';
 const visibleSubmissions = () => isAdmin() ? data.submissions : data.submissions.filter(s => s.workerId === currentUser?.uid);
@@ -521,8 +464,99 @@ button:disabled{opacity:.6;cursor:not-allowed}
 .peer-day{text-align:center;font-size:11px;color:#8a958e;margin:10px 0}
 .peer-tick{margin-left:6px;font-size:11px}
 .peer-window{display:flex;flex-direction:column}
-@media (max-width:760px){.peer-layout{grid-template-columns:1fr!important}.peer-layout .chat-list{max-height:240px}}`;
+@media (max-width:760px){.peer-layout{grid-template-columns:1fr!important}.peer-layout .chat-list{max-height:240px}}
+/* ── chat readability (WCAG AA) ──
+   The muted greys above are hardcoded (#8a958e / #78847e) and measured 2.7:1–3.9:1 on the
+   light chat surfaces, below the 4.5:1 minimum for small text. These rules darken those
+   tokens only; no markup or behaviour changes. Same specificity as the rules above and
+   declared later, so they win. */
+:root{--muted:#5d6b64;--chat-meta:#5f6d66;--chat-line:#c4cfc8}
+.live-body b{color:#1a2420}
+.live-body small{color:var(--chat-meta)}
+.chat-pop-body small{color:var(--chat-meta)}
+.chat-pop-x{color:#5f6d66}
+.chat-messages .bubble{color:#1a2420}
+.chat-messages .bubble b{color:#1a2420}
+.chat-messages .bubble small{color:#52605a}
+.chat-messages .bubble.mine small{color:#d8ece2}
+.peer-meta strong,.chat-list button strong{color:#1a2420}
+.peer-meta small,.peer-side small,.peer-head small,.peer-day{color:var(--chat-meta)}
+.chat-compose input,.peer-search input{border-color:var(--chat-line)}
+.chat-compose input::placeholder,.peer-search input::placeholder{color:#6b7873;opacity:1}
+.chat-compose .btn{white-space:nowrap}
+/* Dark theme. This app has no theme layer of its own — every surface is a literal #fff —
+   so the switch styles the whole app, not just the chat. Applied only when
+   <html data-theme="dark"> is set, so light mode keeps its exact current values. */
+[data-theme="dark"]{color-scheme:dark}
+[data-theme="dark"] body{background:#0f1512;color:#e8efe9}
+[data-theme="dark"] .sidebar{background:#151c18;border-right-color:#28332c}
+[data-theme="dark"] .brand strong{color:#e8efe9}
+[data-theme="dark"] .nav button{color:#b6c2ba}
+[data-theme="dark"] .nav button.active,[data-theme="dark"] .nav button:hover{background:#1e2f27;color:#8fd6ac}
+[data-theme="dark"] .nav-label,[data-theme="dark"] .crumb,[data-theme="dark"] .brand small,[data-theme="dark"] .user-mini small{color:#93a29a}
+[data-theme="dark"] .topbar{background:#131a16e6;border-bottom-color:#28332c}
+[data-theme="dark"] .topbar h1{color:#e8efe9}
+[data-theme="dark"] .main{background:#0f1512}
+[data-theme="dark"] .panel,[data-theme="dark"] .stat,[data-theme="dark"] .quick,[data-theme="dark"] .login-form-side,[data-theme="dark"] .sh-modal-card{background:#171f1a;border-color:#28332c;color:#e8efe9}
+[data-theme="dark"] .panel-head h3,[data-theme="dark"] .stat strong,[data-theme="dark"] .welcome h2,[data-theme="dark"] .quick strong{color:#eef4ef}
+[data-theme="dark"] .muted,[data-theme="dark"] .panel-head p,[data-theme="dark"] .welcome p,[data-theme="dark"] .stat small,[data-theme="dark"] .stat-head,[data-theme="dark"] .quick small{color:#a9b6ae}
+[data-theme="dark"] td{color:#dbe5de;border-bottom-color:#222c26}
+[data-theme="dark"] th{color:#93a29a;border-bottom-color:#28332c}
+[data-theme="dark"] .person small,[data-theme="dark"] .trk-info small{color:#9daba3}
+[data-theme="dark"] .field label{color:#c2cec6}
+[data-theme="dark"] .field input,[data-theme="dark"] .field select,[data-theme="dark"] .field textarea,[data-theme="dark"] .toolbar input,[data-theme="dark"] .toolbar select,[data-theme="dark"] .chat-compose input,[data-theme="dark"] .peer-search input,[data-theme="dark"] .sh-modal-card input,[data-theme="dark"] .sh-modal-card textarea,[data-theme="dark"] .sh-modal-card select{background:#101713;border-color:#33413a;color:#e8efe9}
+[data-theme="dark"] input::placeholder,[data-theme="dark"] textarea::placeholder{color:#8d9b94;opacity:1}
+[data-theme="dark"] .btn-light{background:#1e2f27;color:#9fe0b8}
+[data-theme="dark"] .btn-ghost{color:#9fe0b8;border-color:#33413a}
+[data-theme="dark"] .btn-danger{background:#3a1f1c;color:#f0a79f}
+[data-theme="dark"] .mode-pill,[data-theme="dark"] .demo-banner{background:#1e2f27;color:#9fe0b8}
+[data-theme="dark"] .notice{background:#16241c;color:#a6d9bd}
+[data-theme="dark"] .notice.warn{background:#2c2411;color:#e8c877}
+[data-theme="dark"] .chat-list{background:#131a16;border-right-color:#28332c}
+[data-theme="dark"] .chat-list button{border-bottom-color:#222c26}
+[data-theme="dark"] .chat-list button.active{background:#1e2f27}
+[data-theme="dark"] .chat-list button strong,[data-theme="dark"] .chat-messages .bubble b,[data-theme="dark"] .live-body b{color:#eef4ef}
+[data-theme="dark"] .chat-list button small,[data-theme="dark"] .peer-meta small,[data-theme="dark"] .peer-side small,[data-theme="dark"] .peer-day,[data-theme="dark"] .live-body small,[data-theme="dark"] .chat-pop-body small,[data-theme="dark"] .chat-messages .bubble small{color:#a3b1a9}
+[data-theme="dark"] .chat-messages .bubble{background:#222d27;color:#e8efe9}
+[data-theme="dark"] .chat-messages .bubble.mine{background:#1f7a4d;color:#fff}
+[data-theme="dark"] .chat-messages .bubble.mine small{color:#d6f0e1}
+[data-theme="dark"] .live-body{background:#222d27}
+[data-theme="dark"] .live-msg.mine .live-body{background:#1c3a2b}
+[data-theme="dark"] .chat-pop{background:#1b241e;color:#e8efe9}
+[data-theme="dark"] .avatar{background:#22322a;color:#9fe0b8}
+[data-theme="dark"] .online-chip{background:#1b2a22;border-color:#2c4438;color:#dfe9e2}
+[data-theme="dark"] .online-empty,[data-theme="dark"] .empty,[data-theme="dark"] .empty b{color:#a3b1a9}
+[data-theme="dark"] #toast{background:#0b100d;color:#eaf3ec}
+[data-theme="dark"] .demo-note{background:#2c2411;border-color:#4a3c17;color:#e8c877}
+[data-theme="dark"] .msg-ticker{background:#1b2a22;border-color:#2c4438}
+[data-theme="dark"] .msg-item,[data-theme="dark"] .msg-item b{color:#dfe9e2}
+[data-theme="dark"] .msg-item b{color:#9fe0b8}`;
 document.head.appendChild(extraStyle);
+
+/* ───────────────────────── Theme (light / dark) ───────────────────────── */
+// Remembered in localStorage; on a first visit the OS preference is used.
+const THEME_KEY = 'steivy_theme';
+function applyTheme(t) {
+  theme = t === 'dark' ? 'dark' : 'light';
+  document.documentElement.setAttribute('data-theme', theme);
+  try { localStorage.setItem(THEME_KEY, theme); } catch {}
+  const b = $('#themeBtn');
+  if (b) {
+    const label = theme === 'dark' ? 'Switch to light mode' : 'Switch to dark mode';
+    b.textContent = theme === 'dark' ? '☀' : '☾';
+    b.title = label;
+    b.setAttribute('aria-label', label);
+  }
+}
+function toggleTheme() { applyTheme(theme === 'dark' ? 'light' : 'dark'); }
+// Runs before the first paint so the page never flashes the wrong theme.
+(function initTheme() {
+  let t = '';
+  try { t = localStorage.getItem(THEME_KEY) || ''; } catch {}
+  if (!t) t = window.matchMedia?.('(prefers-color-scheme: dark)')?.matches ? 'dark' : 'light';
+  theme = t === 'dark' ? 'dark' : 'light';
+  document.documentElement.setAttribute('data-theme', theme);
+})();
 
 /* ───────────────────────── Presence (who is online) ───────────────────────── */
 const ONLINE_WINDOW_MS = 420000; // a worker counts as online if seen in the last 7 minutes (the heartbeat is every 5 minutes to save Firestore reads)
@@ -788,7 +822,7 @@ function listen(path, key, queryFn) {
     loaded[key] = true;
     if (accessErr[key]) delete accessErr[key];
     if (key === 'submissions' || key === 'users') scheduleLbSync();
-    if (key === 'accounts') { syncPeerListeners(); syncScoped(); syncCoworkerNav(); }
+    if (key === 'accounts') { syncPeerListeners(); syncShiftListeners(); }
     requestRender();
   }, err => {
     console.error(path, err);
@@ -854,9 +888,9 @@ async function loadData() {
     syncAnnouncementPopup();
   }, err => console.warn('announcementReads listener (check Firestore rules)', err)));
 
-  unsubs.push(onSnapshot(isAdmin() ? collection(db, 'presence') : query(collection(db, 'presence'), where('role', '==', 'admin')), s => {
+  unsubs.push(onSnapshot(collection(db, 'presence'), s => {
     presenceReadErr = false;
-    presSrc.main = s.docs.map(d => ({ id: d.id, ...d.data() })); rebuildPresence();
+    data.presence = s.docs.map(d => ({ id: d.id, ...d.data() }));
     updateOnline();
   }, err => {
     console.warn('presence listener (check Firestore rules for /presence)', err);
@@ -865,16 +899,20 @@ async function loadData() {
   }));
 
   // Running shifts: one document per account while somebody is working on it.
-  if (isAdmin()) unsubs.push(onSnapshot(collection(db, 'activeShifts'), s => {
-    trackerErr = false;
-    data.activeShifts = s.docs.map(d => ({ id: d.id, ...d.data() }));
-    loaded.activeShifts = true;
-    requestRender();
-  }, err => {
-    console.warn('activeShifts listener (check Firestore rules for /activeShifts)', err);
-    trackerErr = true;
-    requestRender();
-  }));
+  // Admin may list the whole collection; workers may only GET the docs of their own assigned accounts
+  // (see syncShiftListeners), because the rules do not allow workers to list /activeShifts.
+  if (isAdmin()) {
+    unsubs.push(onSnapshot(collection(db, 'activeShifts'), s => {
+      trackerErr = false;
+      data.activeShifts = s.docs.map(d => ({ id: d.id, ...d.data() }));
+      loaded.activeShifts = true;
+      requestRender();
+    }, err => {
+      console.warn('activeShifts listener (check Firestore rules for /activeShifts)', err);
+      trackerErr = true;
+      requestRender();
+    }));
+  }
 
   // Leaderboard totals (one small doc per worker per month) so workers can see their rank without reading other workers' submissions.
   unsubs.push(onSnapshot(collection(db, 'leaderboard'), s => {
@@ -1334,7 +1372,7 @@ function shell() {
   if (isAdmin()) items.push(['workers', '♙', 'Workers'], ['settings', '⚙', 'Pay settings'], ['missed', '⏱', 'Missed shifts'], ['audit', '✎', 'Audit log']);
   const title = PAGE_TITLES[page] || 'Dashboard';
   const badge = k => { const n = k === 'chat' ? unreadChat : k === 'coworkers' ? peerUnread() : 0; return n > 0 ? `<span class="nav-badge">${n > 9 ? '9+' : n}</span>` : ''; };
-  return `<div class="shell"><aside class="sidebar" id="sidebar"><div class="brand"><img src="assets/logo.jpg" alt=""><div><strong>STEIVY</strong><small>RECEIPT HUB</small></div></div><div class="nav-label">WORKSPACE</div><nav class="nav">${items.map(n => `<button data-nav="${n[0]}" class="${page === n[0] ? 'active' : ''}"><span class="ico">${n[1]}</span>${n[2]}${badge(n[0])}</button>`).join('')}</nav>${!isAdmin() && workUrl() ? `<a class="btn btn-primary start-work" id="startWork" href="${esc(workUrl())}" target="_blank" rel="noopener noreferrer">▶ Start work</a>` : ''}<div class="sidebar-bottom"><div class="user-mini"><div class="avatar">${esc(initials(profile?.displayName))}</div><div><strong>${esc(profile?.displayName || 'User')}</strong><small>${isAdmin() ? 'Administrator' : 'Worker'}</small></div></div><button class="btn btn-ghost btn-block" id="logout">↪ Sign out</button></div></aside><main class="main"><header class="topbar"><div class="right"><button class="btn btn-ghost mobile-menu" id="menuBtn">☰</button><div><div class="crumb">WORKSPACE / ${esc(title.toUpperCase())}</div><h1>${esc(title)}</h1></div></div><div class="top-actions"><span class="mode-pill">${configured ? '● Connected app' : '◉ Demo preview'}</span><button type="button" class="btn btn-ghost" id="logoutTop">↪ Sign out</button><div class="avatar">${esc(initials(profile?.displayName))}</div></div></header>${!configured ? '<div class="demo-banner">Demo preview — data is sample-only and will reset when you leave. Configure Firebase to use real accounts and save changes.</div>' : ''}<section class="content" id="pageContent"></section></main></div>`;
+  return `<div class="shell"><aside class="sidebar" id="sidebar"><div class="brand"><img src="assets/logo.jpg" alt=""><div><strong>STEIVY</strong><small>RECEIPT HUB</small></div></div><div class="nav-label">WORKSPACE</div><nav class="nav">${items.map(n => `<button data-nav="${n[0]}" class="${page === n[0] ? 'active' : ''}"><span class="ico">${n[1]}</span>${n[2]}${badge(n[0])}</button>`).join('')}</nav>${!isAdmin() && workUrl() ? `<a class="btn btn-primary start-work" id="startWork" href="${esc(workUrl())}" target="_blank" rel="noopener noreferrer">▶ Start work</a>` : ''}<div class="sidebar-bottom"><div class="user-mini"><div class="avatar">${esc(initials(profile?.displayName))}</div><div><strong>${esc(profile?.displayName || 'User')}</strong><small>${isAdmin() ? 'Administrator' : 'Worker'}</small></div></div><button class="btn btn-ghost btn-block" id="logout">↪ Sign out</button></div></aside><main class="main"><header class="topbar"><div class="right"><button class="btn btn-ghost mobile-menu" id="menuBtn">☰</button><div><div class="crumb">WORKSPACE / ${esc(title.toUpperCase())}</div><h1>${esc(title)}</h1></div></div><div class="top-actions"><span class="mode-pill">${configured ? '● Connected app' : '◉ Demo preview'}</span><button type="button" class="btn btn-ghost" id="themeBtn" title="${theme === 'dark' ? 'Switch to light mode' : 'Switch to dark mode'}" aria-label="${theme === 'dark' ? 'Switch to light mode' : 'Switch to dark mode'}">${theme === 'dark' ? '☀' : '☾'}</button><button type="button" class="btn btn-ghost" id="logoutTop">↪ Sign out</button><div class="avatar">${esc(initials(profile?.displayName))}</div></div></header>${!configured ? '<div class="demo-banner">Demo preview — data is sample-only and will reset when you leave. Configure Firebase to use real accounts and save changes.</div>' : ''}<section class="content" id="pageContent"></section></main></div>`;
 }
 
 const stat = (label, value, sub, ico) => `<div class="stat"><div class="stat-head">${label}<span class="stat-icon">${ico}</span></div><strong>${value}</strong><small>${sub}</small></div>`;
@@ -1995,8 +2033,8 @@ function wireShell() {
     renderLogin();
   };
   $('#logout')?.addEventListener('click', doLogout);
-  initThemeButton(); syncCoworkerNav();
   $('#logoutTop')?.addEventListener('click', doLogout);
+  $('#themeBtn')?.addEventListener('click', toggleTheme);
   $('#menuBtn')?.addEventListener('click', () => $('#sidebar').classList.toggle('open'));
   $('#pageContent').addEventListener('click', e => {
     const t = e.target;
@@ -2662,6 +2700,36 @@ function stopPeer() {
 }
 
 // One list listener per assigned account (cheap: only my conversations). Re-run whenever accounts change.
+// WORKER: one listener per assigned account on /activeShifts/{accountId} (a single-document read the rules allow).
+function syncShiftListeners() {
+  if (!configured || !db || !currentUser || !profile || isAdmin()) return;
+  const uid = currentUser.uid;
+  const want = new Set(data.accounts.filter(a => a.isActive !== false && (a.assignedWorkerIds || []).includes(uid)).map(a => a.id));
+  Object.keys(shiftUnsubs).forEach(id => {
+    if (want.has(id)) return;
+    try { shiftUnsubs[id](); } catch {}
+    delete shiftUnsubs[id]; delete shiftReady[id];
+    data.activeShifts = data.activeShifts.filter(x => x.id !== id);
+  });
+  const { doc, onSnapshot } = fb;
+  want.forEach(id => {
+    if (shiftUnsubs[id]) return;
+    shiftUnsubs[id] = onSnapshot(doc(db, 'activeShifts', id), s => {
+      data.activeShifts = data.activeShifts.filter(x => x.id !== id);
+      if (s.exists()) data.activeShifts.push({ ...s.data(), id });
+      shiftReady[id] = true;
+      trackerErr = false;
+      loaded.activeShifts = true;
+      requestRender();
+    }, err => {
+      console.warn('activeShifts/' + id + ' listener (check Firestore rules)', err);
+      trackerErr = true;
+      requestRender();
+    });
+  });
+  if (!want.size) { loaded.activeShifts = true; }
+}
+
 function syncPeerListeners() {
   if (!configured || !db || !currentUser || !profile || isAdmin()) return;
   const uid = currentUser.uid;
