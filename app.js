@@ -30,12 +30,72 @@ let accessErr = {}; // collections the admin could not read (permission-denied)
 let missedFrom = '', missedTo = '';
 let chatConv = 'group', dmWith = '', dmUnsub = null, dmReady = false; // chat: 'group' (public) or 'dm' (private worker <-> admin)
 let auditUnsub = null, auditLimit = 50, auditMore = false, subLimit = 50;
+let presSrc = { main: [], peers: {} }, scopedUnsubs = {}, shiftSrc2 = {}; // workers: presence/shifts are read per co-worker / per own account only
 let trackerErr = false; // could not read /activeShifts (Firestore rules)
 let peerConvs = {}, peerUnsubs = {}, peerReady = {}, peerSel = null, peerMsgUnsub = null, peerMsgs = [], peerSearch = ''; // co-worker private chat
 const filters = { q: '', status: 'all' };
 const DEFAULT_SETTINGS = { grossRateCents: 100, deductionPercent: 10, errorWarnPercent: 5, workUrl: '' };
 const CHAT_LIMIT = 50; // messages loaded per conversation (keeps reads small)
 const data = { submissions: [], accounts: [], users: [], messages: [], presence: [], announcements: [], annRead: [], leaderboard: [], audit: [], threads: [], dmMessages: [], activeShifts: [], settings: { ...DEFAULT_SETTINGS } };
+
+/* ───────── Scoped listeners (workers only read co-workers in their own accounts) ───────── */
+function rebuildPresence() {
+  const seen = new Set();
+  data.presence = [...presSrc.main, ...Object.values(presSrc.peers).filter(Boolean)].filter(p => !seen.has(p.id) && seen.add(p.id));
+  presenceReadErr = false;
+  updateOnline();
+}
+function stopScoped() {
+  Object.values(scopedUnsubs).forEach(f => { try { f(); } catch {} });
+  scopedUnsubs = {}; presSrc = { main: [], peers: {} }; shiftSrc2 = {};
+}
+function syncScoped() {
+  if (!configured || !db || !currentUser || !profile || isAdmin()) return;
+  const uid = currentUser.uid, mine = data.accounts.filter(a => a.isActive !== false && (a.assignedWorkerIds || []).includes(uid));
+  const wantP = new Set(mine.flatMap(a => a.assignedWorkerIds || []).filter(id => id !== uid));
+  const wantS = new Set(mine.map(a => a.id));
+  Object.keys(scopedUnsubs).forEach(k => {
+    const [kind, id] = k.split(':');
+    if ((kind === 'p' && wantP.has(id)) || (kind === 's' && wantS.has(id))) return;
+    try { scopedUnsubs[k](); } catch {}
+    delete scopedUnsubs[k];
+    if (kind === 'p') delete presSrc.peers[id]; else delete shiftSrc2[id];
+  });
+  wantP.forEach(id => {
+    if (scopedUnsubs['p:' + id]) return;
+    scopedUnsubs['p:' + id] = fb.onSnapshot(fb.doc(db, 'presence', id), s => { presSrc.peers[id] = s.exists() ? { id, ...s.data() } : null; rebuildPresence(); }, () => {});
+  });
+  wantS.forEach(id => {
+    if (scopedUnsubs['s:' + id]) return;
+    scopedUnsubs['s:' + id] = fb.onSnapshot(fb.doc(db, 'activeShifts', id), s => {
+      shiftSrc2[id] = s.exists() ? { id, ...s.data() } : null;
+      data.activeShifts = Object.values(shiftSrc2).filter(Boolean);
+      loaded.activeShifts = true; trackerErr = false; requestRender();
+    }, err => { console.warn('activeShifts', err); trackerErr = true; requestRender(); });
+  });
+  data.activeShifts = Object.values(shiftSrc2).filter(Boolean);
+}
+// Solo workers (nobody else on their accounts) do not see the Co-worker menu. The rules enforce it too.
+function syncCoworkerNav() {
+  const b = $('[data-nav="coworkers"]');
+  if (b) b.classList.toggle('hidden', !isAdmin() && configured && !(loaded.accounts && peerContacts().length));
+}
+
+/* ───────── Theme (light / dark) ───────── */
+function applyTheme(t) {
+  document.documentElement.dataset.theme = t;
+  try { localStorage.setItem('steivy_theme', t); } catch {}
+  const b = $('#themeBtn'); if (b) { b.textContent = t === 'dark' ? '☀️' : '🌙'; b.title = t === 'dark' ? 'Switch to light mode' : 'Switch to dark mode'; }
+}
+function initThemeButton() {
+  const ta = $('.top-actions');
+  if (!ta || $('#themeBtn')) return;
+  const b = document.createElement('button');
+  b.id = 'themeBtn'; b.className = 'btn btn-ghost'; b.setAttribute('aria-label', 'Toggle dark mode');
+  b.addEventListener('click', () => applyTheme(document.documentElement.dataset.theme === 'dark' ? 'light' : 'dark'));
+  ta.prepend(b);
+  applyTheme(document.documentElement.dataset.theme || 'light');
+}
 
 /* ───────────────────────── Helpers ───────────────────────── */
 const $ = s => document.querySelector(s);
@@ -331,7 +391,7 @@ function toast(msg) {
   clearTimeout(toastTimer);
   toastTimer = setTimeout(() => el.classList.remove('show'), 3500);
 }
-function unlisten() { unsubs.forEach(fn => { try { fn(); } catch {} }); unsubs = []; stopDm(); stopAudit(); stopPeer(); }
+function unlisten() { unsubs.forEach(fn => { try { fn(); } catch {} }); unsubs = []; stopScoped(); stopDm(); stopAudit(); stopPeer(); }
 
 const isAdmin = () => profile?.role === 'admin';
 const visibleSubmissions = () => isAdmin() ? data.submissions : data.submissions.filter(s => s.workerId === currentUser?.uid);
@@ -728,7 +788,7 @@ function listen(path, key, queryFn) {
     loaded[key] = true;
     if (accessErr[key]) delete accessErr[key];
     if (key === 'submissions' || key === 'users') scheduleLbSync();
-    if (key === 'accounts') syncPeerListeners();
+    if (key === 'accounts') { syncPeerListeners(); syncScoped(); syncCoworkerNav(); }
     requestRender();
   }, err => {
     console.error(path, err);
@@ -794,9 +854,9 @@ async function loadData() {
     syncAnnouncementPopup();
   }, err => console.warn('announcementReads listener (check Firestore rules)', err)));
 
-  unsubs.push(onSnapshot(collection(db, 'presence'), s => {
+  unsubs.push(onSnapshot(isAdmin() ? collection(db, 'presence') : query(collection(db, 'presence'), where('role', '==', 'admin')), s => {
     presenceReadErr = false;
-    data.presence = s.docs.map(d => ({ id: d.id, ...d.data() }));
+    presSrc.main = s.docs.map(d => ({ id: d.id, ...d.data() })); rebuildPresence();
     updateOnline();
   }, err => {
     console.warn('presence listener (check Firestore rules for /presence)', err);
@@ -805,7 +865,7 @@ async function loadData() {
   }));
 
   // Running shifts: one document per account while somebody is working on it.
-  unsubs.push(onSnapshot(collection(db, 'activeShifts'), s => {
+  if (isAdmin()) unsubs.push(onSnapshot(collection(db, 'activeShifts'), s => {
     trackerErr = false;
     data.activeShifts = s.docs.map(d => ({ id: d.id, ...d.data() }));
     loaded.activeShifts = true;
@@ -1935,6 +1995,7 @@ function wireShell() {
     renderLogin();
   };
   $('#logout')?.addEventListener('click', doLogout);
+  initThemeButton(); syncCoworkerNav();
   $('#logoutTop')?.addEventListener('click', doLogout);
   $('#menuBtn')?.addEventListener('click', () => $('#sidebar').classList.toggle('open'));
   $('#pageContent').addEventListener('click', e => {
