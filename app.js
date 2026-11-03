@@ -32,7 +32,6 @@ let missedFrom = '', missedTo = '';
 let chatConv = 'group', dmWith = '', dmUnsub = null, dmReady = false; // chat: 'group' (public) or 'dm' (private worker <-> admin)
 let auditUnsub = null, auditLimit = 50, auditMore = false, subLimit = 50;
 let trackerErr = false; // could not read /activeShifts (Firestore rules)
-let trackerUnsubs = {}; // one activeShifts doc listener per assigned account (workers)
 let peerConvs = {}, peerUnsubs = {}, peerReady = {}, peerSel = null, peerMsgUnsub = null, peerMsgs = [], peerSearch = ''; // co-worker private chat
 const filters = { q: '', status: 'all' };
 const DEFAULT_SETTINGS = { grossRateCents: 100, deductionPercent: 10, errorWarnPercent: 5, workUrl: '' };
@@ -149,7 +148,7 @@ function showShiftWarning() {
   const wrap = document.createElement('div');
   wrap.className = 'sh-modal';
   wrap.id = 'shiftWarn';
-  wrap.innerHTML = `<div class="sh-modal-card sh-confirm" role="alertdialog" aria-modal="true"><div class="sh-confirm-ico danger">⚠️</div><h3>Don't forget!</h3><p>Press <b>End shift</b> (paste your Abukai stats) before your shift ends.</p>${sc ? `<p class="muted">Your shift: <b>${esc(sc.label)}</b></p>` : ''}<p style="color:var(--red-text);font-weight:600;margin-top:8px">If you cannot submit within your scheduled time, your salary will be void.</p><div class="sh-modal-actions"><button type="button" class="btn btn-primary" data-ok>I understand</button></div></div>`;
+  wrap.innerHTML = `<div class="sh-modal-card sh-confirm" role="alertdialog" aria-modal="true"><div class="sh-confirm-ico danger">⚠️</div><h3>Don't forget!</h3><p>Press <b>End shift</b> (paste your Abukai stats) before your shift ends.</p>${sc ? `<p class="muted">Your shift: <b>${esc(sc.label)}</b></p>` : ''}<p style="color:#c0392b;font-weight:600;margin-top:8px">If you cannot submit within your scheduled time, your salary will be void.</p><div class="sh-modal-actions"><button type="button" class="btn btn-primary" data-ok>I understand</button></div></div>`;
   document.body.appendChild(wrap);
   const ok = wrap.querySelector('[data-ok]');
   ok.addEventListener('click', () => wrap.remove());
@@ -195,7 +194,7 @@ function showShiftReminder(mins, sc, names) {
   const wrap = document.createElement('div');
   wrap.className = 'sh-modal';
   wrap.id = 'shiftRemind';
-  wrap.innerHTML = `<div class="sh-modal-card sh-confirm" role="alertdialog" aria-modal="true"><div class="sh-confirm-ico danger">⏰</div><h3>${mins} minute(s) left in your shift</h3><p>Press <b>End shift</b> (paste your Abukai stats) for:</p><p><b>${names.map(esc).join(', ')}</b></p><p class="muted">Shift: ${esc(sc.label)}</p><p style="color:var(--red-text);font-weight:600;margin-top:8px">No submission within your schedule means your salary will be void.</p><div class="sh-modal-actions"><button type="button" class="btn btn-ghost" data-later>Later</button><button type="button" class="btn btn-primary" data-go>End shift now</button></div></div>`;
+  wrap.innerHTML = `<div class="sh-modal-card sh-confirm" role="alertdialog" aria-modal="true"><div class="sh-confirm-ico danger">⏰</div><h3>${mins} minute(s) left in your shift</h3><p>Press <b>End shift</b> (paste your Abukai stats) for:</p><p><b>${names.map(esc).join(', ')}</b></p><p class="muted">Shift: ${esc(sc.label)}</p><p style="color:#c0392b;font-weight:600;margin-top:8px">No submission within your schedule means your salary will be void.</p><div class="sh-modal-actions"><button type="button" class="btn btn-ghost" data-later>Later</button><button type="button" class="btn btn-primary" data-go>End shift now</button></div></div>`;
   document.body.appendChild(wrap);
   wrap.querySelector('[data-later]').addEventListener('click', () => wrap.remove());
   wrap.querySelector('[data-go]').addEventListener('click', () => { wrap.remove(); go('receipts'); });
@@ -289,7 +288,7 @@ function missedPage() {
 
 function auditPage() {
   const rows = data.audit.slice().sort((a, b) => timeVal(b.createdAt) - timeVal(a.createdAt));
-  const body = rows.map(a => `<tr><td>${esc(date(a.createdAt))}<small style="display:block;color:var(--chat-meta);margin-top:4px">${esc(fmtTime(a.createdAt))}</small></td><td><strong>${esc(a.actorName || 'Admin')}</strong></td><td>${esc(a.action || '')}</td><td>${esc(a.details || '')}</td></tr>`).join('')
+  const body = rows.map(a => `<tr><td>${esc(date(a.createdAt))}<small style="display:block;color:#8a958e;margin-top:4px">${esc(fmtTime(a.createdAt))}</small></td><td><strong>${esc(a.actorName || 'Admin')}</strong></td><td>${esc(a.action || '')}</td><td>${esc(a.details || '')}</td></tr>`).join('')
     || `<tr><td colspan="4"><div class="empty">🧾<b>No activity recorded yet</b>Admin actions appear here. If nothing shows after an action, publish the latest firestore.rules.</div></td></tr>`;
   return `<div class="welcome"><div><h2>Audit log</h2><p>Who changed what, and when. Showing the latest ${rows.length} (50 at a time).</p></div></div><div class="panel"><div class="toolbar"><input id="auditSearch" placeholder="Search action, admin or details…"><span class="spacer"></span>${auditMore ? '<button type="button" class="small-btn" id="moreAudit">Load 50 more</button>' : ''}<span class="muted">${rows.length} record(s)</span></div><div class="table-wrap"><table><thead><tr><th>When</th><th>Admin</th><th>Action</th><th>Details</th></tr></thead><tbody>${body}</tbody></table></div></div>`;
 }
@@ -333,7 +332,7 @@ function toast(msg) {
   clearTimeout(toastTimer);
   toastTimer = setTimeout(() => el.classList.remove('show'), 3500);
 }
-function unlisten() { unsubs.forEach(fn => { try { fn(); } catch {} }); unsubs = []; stopDm(); stopAudit(); stopPeer(); stopTracker(); }
+function unlisten() { unsubs.forEach(fn => { try { fn(); } catch {} }); unsubs = []; stopDm(); stopAudit(); stopPeer(); }
 
 const isAdmin = () => profile?.role === 'admin';
 const visibleSubmissions = () => isAdmin() ? data.submissions : data.submissions.filter(s => s.workerId === currentUser?.uid);
@@ -361,13 +360,13 @@ button:disabled{opacity:.6;cursor:not-allowed}
 .sh-row-actions{display:flex;gap:6px;flex-wrap:wrap}
 .trk-row{display:flex;gap:12px;align-items:center;justify-content:space-between;flex-wrap:wrap;padding:14px 0;border-top:1px solid var(--line,#eee)}
 .trk-info{min-width:0;flex:1 1 220px}
-.trk-info small{display:block;color:var(--chat-meta);margin-top:4px;line-height:1.4}
+.trk-info small{display:block;color:#8a958e;margin-top:4px;line-height:1.4}
 .trk-live{display:inline-flex;align-items:center;gap:6px;background:#e6f6ec;color:#1e8449;border-radius:999px;padding:3px 10px;font-size:12px;font-weight:700}
 .trk-free{display:inline-flex;align-items:center;gap:6px;background:#f1f4f2;color:#52605a;border-radius:999px;padding:3px 10px;font-size:12px;font-weight:700}
 .online-panel{padding:14px 18px;margin-bottom:16px}
 .online-head{display:flex;align-items:center;gap:8px;margin-bottom:10px;font-size:14px}
 .online-count{background:#e6f6ec;color:#1e8449;border-radius:999px;padding:2px 10px;font-size:12px;font-weight:700}
-.online-empty{color:var(--chat-meta);font-size:13px}
+.online-empty{color:#8a958e;font-size:13px}
 .online-marquee{overflow:hidden;white-space:nowrap;-webkit-mask-image:linear-gradient(90deg,transparent,#000 24px,#000 calc(100% - 24px),transparent);mask-image:linear-gradient(90deg,transparent,#000 24px,#000 calc(100% - 24px),transparent)}
 .online-track{display:flex;width:max-content;animation:onlineScroll 20s linear infinite}
 .online-marquee:hover .online-track{animation-play-state:paused}
@@ -399,8 +398,8 @@ button:disabled{opacity:.6;cursor:not-allowed}
 .chat-pop{display:flex;gap:12px;align-items:flex-start;background:#fff;color:#1a2420;border-radius:14px;padding:12px 14px;box-shadow:0 12px 34px rgba(0,0,0,.22);border-left:5px solid #2ecc71;cursor:pointer;animation:popIn .35s ease}
 .chat-pop-body{display:flex;flex-direction:column;gap:3px;min-width:0;flex:1}
 .chat-pop-body span{font-size:14px;line-height:1.4;word-break:break-word;white-space:pre-wrap}
-.chat-pop-body small{color:var(--chat-meta);font-size:11px}
-.chat-pop-x{border:0;background:transparent;font-size:20px;line-height:1;cursor:pointer;color:var(--chat-meta)}
+.chat-pop-body small{color:#8a958e;font-size:11px}
+.chat-pop-x{border:0;background:transparent;font-size:20px;line-height:1;cursor:pointer;color:#8a958e}
 @keyframes popIn{from{opacity:0;transform:translateX(40px)}to{opacity:1;transform:none}}
 @keyframes bubbleIn{from{opacity:0;transform:translateY(14px)}to{opacity:1;transform:none}}
 .chat-messages .bubble:last-child{animation:bubbleIn .3s ease}
@@ -411,7 +410,7 @@ button:disabled{opacity:.6;cursor:not-allowed}
 .live-body{background:#f4f7f5;border-radius:12px;padding:8px 12px;display:flex;flex-direction:column;gap:2px;min-width:0;max-width:100%}
 .live-msg.mine .live-body{background:#e6f6ec}
 .live-body span{font-size:14px;line-height:1.4;word-break:break-word;white-space:pre-wrap}
-.live-body small{color:var(--chat-meta);font-size:11px}
+.live-body small{color:#8a958e;font-size:11px}
 /* leaderboard + standing */
 .perf{margin-bottom:16px}
 .lb-tabs{display:flex;gap:6px;flex-wrap:wrap}
@@ -422,7 +421,7 @@ button:disabled{opacity:.6;cursor:not-allowed}
 .lb-main{flex:1;min-width:0}
 .lb-top{display:flex;justify-content:space-between;gap:8px;margin-bottom:6px}
 .lb-val{font-weight:700;color:#1e8449;white-space:nowrap}
-.lb-val.err{color:var(--red-text)}
+.lb-val.err{color:#c0392b}
 .lb-bar{height:8px;background:#edf1ee;border-radius:999px;overflow:hidden;margin-bottom:4px}
 .lb-fill{height:100%;background:linear-gradient(90deg,#2ecc71,#1e8449);border-radius:999px}
 .lb-fill.err{background:linear-gradient(90deg,#f5a623,#c0392b)}
@@ -456,11 +455,11 @@ button:disabled{opacity:.6;cursor:not-allowed}
 .peer-dot{position:absolute;right:-1px;bottom:-1px;width:11px;height:11px;border-radius:50%;background:#b8c0ca;border:2px solid #fff}
 .peer-dot.on{background:#2ecc71}
 .peer-meta{min-width:0;flex:1}.peer-meta strong,.peer-meta small{display:block;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
-.peer-side{display:flex;flex-direction:column;align-items:flex-end;gap:4px;flex:none}.peer-side small{font-size:11px;color:var(--chat-meta)}
+.peer-side{display:flex;flex-direction:column;align-items:flex-end;gap:4px;flex:none}.peer-side small{font-size:11px;color:#8a958e}
 .peer-head{display:flex;align-items:center;gap:12px;padding:12px 16px;border-bottom:1px solid var(--line,#eee)}
-.peer-head>div:nth-child(2){flex:1;min-width:0}.peer-head small{display:block;color:var(--chat-meta)}
+.peer-head>div:nth-child(2){flex:1;min-width:0}.peer-head small{display:block;color:#8a958e}
 .peer-st-dot{display:inline-block;width:8px;height:8px;border-radius:50%;background:#b8c0ca;margin-right:5px}.peer-st-dot.on{background:#2ecc71}
-.peer-day{text-align:center;font-size:11px;color:var(--chat-meta);margin:10px 0}
+.peer-day{text-align:center;font-size:11px;color:#8a958e;margin:10px 0}
 .peer-tick{margin-left:6px;font-size:11px}
 .peer-window{display:flex;flex-direction:column}
 @media (max-width:760px){.peer-layout{grid-template-columns:1fr!important}.peer-layout .chat-list{max-height:240px}}
@@ -469,26 +468,12 @@ button:disabled{opacity:.6;cursor:not-allowed}
    light chat surfaces, below the 4.5:1 minimum for small text. These rules darken those
    tokens only; no markup or behaviour changes. Same specificity as the rules above and
    declared later, so they win. */
-:root{--muted:#5d6b64;--chat-meta:#5f6d66;--chat-line:#74857d;--green-text:#197040;--red-text:#a83328;--th:#5d6b64;--in:#66736c;--bd:#7a8b83;--green-bg:#e6f6ec}
-[data-theme="dark"]{--th:#93a29a;--in:#93a29a;--bd:#6d7d74;--chat-meta:#9daba3;--red-text:#f08d82;--green-text:#7fd3a2;--green-bg:#1e2f27}
-th{color:var(--th)}
-.nav-label{color:var(--th)}
-.nav button{color:var(--in)}
-.small-btn{color:var(--green-text)}
-.stat-icon{color:var(--green-text)}
-.online-count,.trk-live,.lb-val,.msg-item b{color:var(--green-text)}
-.online-count,.trk-live{background:var(--green-bg)}
-/* Footer note, and the login art panel's "RECEIPT HUB" on the dark green art (2.1–2.6:1). */
-.footer-note{color:var(--chat-meta)}
-.login-art .brand small{color:#b9cfc5}
-.field input,.field select,.field textarea,.toolbar input,.toolbar select{border-color:var(--bd)}
+:root{--muted:#5d6b64;--chat-meta:#5f6d66;--chat-line:#c4cfc8}
 .live-body b{color:#1a2420}
 .live-body small{color:var(--chat-meta)}
 .chat-pop-body small{color:var(--chat-meta)}
 .chat-pop-x{color:#5f6d66}
-/* :not(.mine) — styles.css sets .bubble.mine{color:#fff} at the same specificity, and this
-   rule comes later, so without it sent bubbles would take this ink on the dark green fill. */
-.chat-messages .bubble:not(.mine){color:#1a2420}
+.chat-messages .bubble{color:#1a2420}
 .chat-messages .bubble b{color:#1a2420}
 .chat-messages .bubble small{color:#52605a}
 .chat-messages .bubble.mine small{color:#d8ece2}
@@ -517,22 +502,22 @@ th{color:var(--th)}
 [data-theme="dark"] th{color:#93a29a;border-bottom-color:#28332c}
 [data-theme="dark"] .person small,[data-theme="dark"] .trk-info small{color:#9daba3}
 [data-theme="dark"] .field label{color:#c2cec6}
-[data-theme="dark"] .field input,[data-theme="dark"] .field select,[data-theme="dark"] .field textarea,[data-theme="dark"] .toolbar input,[data-theme="dark"] .toolbar select,[data-theme="dark"] .chat-compose input,[data-theme="dark"] .peer-search input,[data-theme="dark"] .sh-modal-card input,[data-theme="dark"] .sh-modal-card textarea,[data-theme="dark"] .sh-modal-card select{background:#101713;border-color:#6d7d74;color:#e8efe9}
+[data-theme="dark"] .field input,[data-theme="dark"] .field select,[data-theme="dark"] .field textarea,[data-theme="dark"] .toolbar input,[data-theme="dark"] .toolbar select,[data-theme="dark"] .chat-compose input,[data-theme="dark"] .peer-search input,[data-theme="dark"] .sh-modal-card input,[data-theme="dark"] .sh-modal-card textarea,[data-theme="dark"] .sh-modal-card select{background:#101713;border-color:#33413a;color:#e8efe9}
 [data-theme="dark"] input::placeholder,[data-theme="dark"] textarea::placeholder{color:#8d9b94;opacity:1}
 [data-theme="dark"] .btn-light{background:#1e2f27;color:#9fe0b8}
 [data-theme="dark"] .btn-ghost{color:#9fe0b8;border-color:#33413a}
 [data-theme="dark"] .btn-danger{background:#3a1f1c;color:#f0a79f}
 [data-theme="dark"] .mode-pill,[data-theme="dark"] .demo-banner{background:#1e2f27;color:#9fe0b8}
-[data-theme="dark"] .notice:not(.warn){background:#16241c;color:#a6d9bd}
+[data-theme="dark"] .notice{background:#16241c;color:#a6d9bd}
 [data-theme="dark"] .notice.warn{background:#2c2411;color:#e8c877}
 [data-theme="dark"] .chat-list{background:#131a16;border-right-color:#28332c}
 [data-theme="dark"] .chat-list button{border-bottom-color:#222c26}
 [data-theme="dark"] .chat-list button.active{background:#1e2f27}
 [data-theme="dark"] .chat-list button strong,[data-theme="dark"] .chat-messages .bubble b,[data-theme="dark"] .live-body b{color:#eef4ef}
-[data-theme="dark"] .chat-list button small,[data-theme="dark"] .peer-meta small,[data-theme="dark"] .peer-side small,[data-theme="dark"] .peer-head small,[data-theme="dark"] .peer-day,[data-theme="dark"] .live-body small,[data-theme="dark"] .chat-pop-body small,[data-theme="dark"] .chat-messages .bubble small{color:#a3b1a9}
+[data-theme="dark"] .chat-list button small,[data-theme="dark"] .peer-meta small,[data-theme="dark"] .peer-side small,[data-theme="dark"] .peer-day,[data-theme="dark"] .live-body small,[data-theme="dark"] .chat-pop-body small,[data-theme="dark"] .chat-messages .bubble small{color:#a3b1a9}
 [data-theme="dark"] .chat-messages .bubble{background:#222d27;color:#e8efe9}
 [data-theme="dark"] .chat-messages .bubble.mine{background:#1f7a4d;color:#fff}
-[data-theme="dark"] .chat-messages .bubble.mine small{color:#e4f7ec}
+[data-theme="dark"] .chat-messages .bubble.mine small{color:#d6f0e1}
 [data-theme="dark"] .live-body{background:#222d27}
 [data-theme="dark"] .live-msg.mine .live-body{background:#1c3a2b}
 [data-theme="dark"] .chat-pop{background:#1b241e;color:#e8efe9}
@@ -543,22 +528,7 @@ th{color:var(--th)}
 [data-theme="dark"] .demo-note{background:#2c2411;border-color:#4a3c17;color:#e8c877}
 [data-theme="dark"] .msg-ticker{background:#1b2a22;border-color:#2c4438}
 [data-theme="dark"] .msg-item,[data-theme="dark"] .msg-item b{color:#dfe9e2}
-[data-theme="dark"] .msg-item b{color:#9fe0b8}
-[data-theme="dark"] .stat-icon{background:#1e2f27}
-/* .empty inherits --muted, which the light token above leaves too dark on the dark surface. */
-[data-theme="dark"] .empty{color:#a3b1a9}
-/* Standing cards keep their light pastel fills, so their text (inherited from body) went white-on-white.
-   Re-tone each variant to a dark fill so the tint still reads but the copy stays legible. */
-[data-theme="dark"] .standing{background:#171f1a;border-color:#28332c}
-[data-theme="dark"] .standing b{color:#eef4ef}
-[data-theme="dark"] .standing p{color:#a9b6ae}
-[data-theme="dark"] .standing.gold{background:#2e2a12;border-color:#6b5a1a}
-[data-theme="dark"] .standing.silver{background:#232830;border-color:#4a5560}
-[data-theme="dark"] .standing.bronze{background:#2e2318;border-color:#6b4a2a}
-[data-theme="dark"] .standing.danger{background:#3a1f1c;border-color:#6b3a34}
-[data-theme="dark"] .standing.warn{background:#2c2411;border-color:#4a3c17}
-[data-theme="dark"] .standing.good{background:#16241c;border-color:#2c4438}
-[data-theme="dark"] .standing.info{background:#171f1a;border-color:#28332c}`;
+[data-theme="dark"] .msg-item b{color:#9fe0b8}`;
 document.head.appendChild(extraStyle);
 
 /* ───────────────────────── Theme (light / dark) ───────────────────────── */
@@ -850,7 +820,7 @@ function listen(path, key, queryFn) {
     loaded[key] = true;
     if (accessErr[key]) delete accessErr[key];
     if (key === 'submissions' || key === 'users') scheduleLbSync();
-    if (key === 'accounts') { syncPeerListeners(); syncTrackerListeners(); }
+    if (key === 'accounts') syncPeerListeners();
     requestRender();
   }, err => {
     console.error(path, err);
@@ -927,12 +897,16 @@ async function loadData() {
   }));
 
   // Running shifts: one document per account while somebody is working on it.
-  // Workers listen to a point query per assigned account instead of one collection
-  // query: the rules allow isAssigned() on a single document read but cannot apply it
-  // to a collection query, so an unconstrained listener is refused ("rules are not
-  // filters" -- one unreadable document fails the whole query and the tracker renders
-  // empty). Admins may read every running shift, so they keep the collection listener.
-  setupTracker();
+  unsubs.push(onSnapshot(collection(db, 'activeShifts'), s => {
+    trackerErr = false;
+    data.activeShifts = s.docs.map(d => ({ id: d.id, ...d.data() }));
+    loaded.activeShifts = true;
+    requestRender();
+  }, err => {
+    console.warn('activeShifts listener (check Firestore rules for /activeShifts)', err);
+    trackerErr = true;
+    requestRender();
+  }));
 
   // Leaderboard totals (one small doc per worker per month) so workers can see their rank without reading other workers' submissions.
   unsubs.push(onSnapshot(collection(db, 'leaderboard'), s => {
@@ -1411,7 +1385,7 @@ function submissionRows(rows) {
   if (!rows.length) return `<tr><td colspan="8"><div class="empty">▤<b>No submissions yet</b>Shift submissions will appear here.</div></td></tr>`;
   return rows.slice().sort((a, b) => timeVal(b.createdAt) - timeVal(a.createdAt)).map(s => {
     const err = num(s.errorCount);
-    return `<tr><td><div class="person"><div class="avatar">${esc(initials(s.workerName))}</div><div><strong>${esc(s.workerName || 'Worker')}</strong><small>${esc(s.accountName || 'No account')}</small></div></div></td><td>${esc(date(s.shiftDate))}</td><td>${esc(s.shiftType || '—')}<small style="display:block;color:var(--chat-meta);margin-top:4px">${esc(s.startTime || '')} – ${esc(s.endTime || '')}</small></td><td>${num(s.receiptCount).toLocaleString()}</td><td${err > 0 ? ' style="color:var(--red-text);font-weight:600"' : ''}>${err.toLocaleString()}</td><td>${money(s.netCents)}</td><td>${status(s.status)}</td><td><div class="sh-row-actions"><button class="small-btn" data-view="${esc(s.id)}">View</button>${isAdmin() ? rowAdminBtns(s) : ''}</div></td></tr>`;
+    return `<tr><td><div class="person"><div class="avatar">${esc(initials(s.workerName))}</div><div><strong>${esc(s.workerName || 'Worker')}</strong><small>${esc(s.accountName || 'No account')}</small></div></div></td><td>${esc(date(s.shiftDate))}</td><td>${esc(s.shiftType || '—')}<small style="display:block;color:#8a958e;margin-top:4px">${esc(s.startTime || '')} – ${esc(s.endTime || '')}</small></td><td>${num(s.receiptCount).toLocaleString()}</td><td${err > 0 ? ' style="color:#c0392b;font-weight:600"' : ''}>${err.toLocaleString()}</td><td>${money(s.netCents)}</td><td>${status(s.status)}</td><td><div class="sh-row-actions"><button class="small-btn" data-view="${esc(s.id)}">View</button>${isAdmin() ? rowAdminBtns(s) : ''}</div></td></tr>`;
   }).join('');
 }
 
@@ -1780,7 +1754,7 @@ function accounts() {
     t.cr += x.st.cur.receipts; t.ce += x.st.cur.errors;
     return t;
   }, { pr: 0, pe: 0, cr: 0, ce: 0 });
-  const errCell = n => `<td${n > 0 ? ' style="color:var(--red-text);font-weight:600"' : ''}>${n.toLocaleString()}</td>`;
+  const errCell = n => `<td${n > 0 ? ' style="color:#c0392b;font-weight:600"' : ''}>${n.toLocaleString()}</td>`;
 
   const body = rows.map(({ a, st }) => `<tr><td><strong>${esc(a.name)}</strong></td><td>${esc(a.code || '—')}</td><td>${esc(workerNamesFor(a))}</td><td>${st.prev.receipts.toLocaleString()}</td>${errCell(st.prev.errors)}<td>${st.cur.receipts.toLocaleString()}</td>${errCell(st.cur.errors)}<td>${status(a.isActive === false ? 'inactive' : 'active')}</td><td>${esc(a.notes || '—')}</td><td>${isAdmin() ? `<div class="sh-row-actions"><button class="btn btn-secondary" data-assign="${esc(a.id)}">Assign workers</button><button class="small-btn" data-edit-account="${esc(a.id)}">Edit</button><button class="small-btn" data-toggle-account="${esc(a.id)}">${a.isActive === false ? 'Activate' : 'Deactivate'}</button><button class="btn btn-danger" data-delete-account="${esc(a.id)}">Delete</button></div>` : '—'}</td></tr>`).join('');
 
@@ -1800,7 +1774,7 @@ function errorsPage() {
   const body = rows.length ? rows.map(s => {
     const p = num(s.receiptCount), er = num(s.errorCount);
     const rt = p > 0 ? (er / p * 100).toFixed(1) : '0.0';
-    return `<tr><td><div class="person"><div class="avatar">${esc(initials(s.workerName))}</div><div><strong>${esc(s.workerName || 'Worker')}</strong><small>${esc(s.accountName || 'No account')}</small></div></div></td><td>${esc(date(s.shiftDate))}</td><td>${esc(s.shiftType || '—')}</td><td>${p.toLocaleString()}</td><td style="color:var(--red-text);font-weight:600">${er.toLocaleString()}</td><td${errWarnPct() > 0 && errRatePct(p, er) >= errWarnPct() ? ' style="color:var(--red-text);font-weight:600"' : ''}>${rt}%${errWarnPct() > 0 && errRatePct(p, er) >= errWarnPct() ? ' ⚠' : ''}</td><td>${esc(s.errorNote || '—')}</td><td>${status(s.status)}</td><td><div class="sh-row-actions"><button class="small-btn" data-view="${esc(s.id)}">View</button>${isAdmin() ? rowAdminBtns(s) : ''}</div></td></tr>`;
+    return `<tr><td><div class="person"><div class="avatar">${esc(initials(s.workerName))}</div><div><strong>${esc(s.workerName || 'Worker')}</strong><small>${esc(s.accountName || 'No account')}</small></div></div></td><td>${esc(date(s.shiftDate))}</td><td>${esc(s.shiftType || '—')}</td><td>${p.toLocaleString()}</td><td style="color:#c0392b;font-weight:600">${er.toLocaleString()}</td><td${errWarnPct() > 0 && errRatePct(p, er) >= errWarnPct() ? ' style="color:#c0392b;font-weight:600"' : ''}>${rt}%${errWarnPct() > 0 && errRatePct(p, er) >= errWarnPct() ? ' ⚠' : ''}</td><td>${esc(s.errorNote || '—')}</td><td>${status(s.status)}</td><td><div class="sh-row-actions"><button class="small-btn" data-view="${esc(s.id)}">View</button>${isAdmin() ? rowAdminBtns(s) : ''}</div></td></tr>`;
   }).join('') : `<tr><td colspan="9"><div class="empty">✓<b>No errors recorded</b>Submissions with an error count above zero will appear here.</div></td></tr>`;
 
   return `<div class="welcome"><div><h2>${isAdmin() ? 'Error processed' : 'My error processed'}</h2><p>${isAdmin() ? 'Shifts with error receipts. Use Edit to correct processed or error counts.' : 'Shifts where you recorded error receipts.'}</p></div></div><div class="stats">${stat('Total errors', totalErr.toLocaleString(), 'Across listed submissions', '⚠')}${stat('Shifts with errors', rows.length, `of ${all.length} submission(s)`, '▤')}${stat('Error rate', overall + '%', 'Errors ÷ processed (errors are included in processed)', '%')}${stat('Processed receipts', totalProcessed.toLocaleString(), 'Basis of pay (includes error receipts)', '✓')}</div><div class="panel"><div class="table-wrap"><table><thead><tr><th>Worker / account</th><th>Shift date</th><th>Shift</th><th>Processed</th><th>Errors</th><th>Error rate</th><th>Note</th><th>Status</th><th>Action</th></tr></thead><tbody>${body}</tbody></table></div></div>`;
@@ -2135,7 +2109,7 @@ function viewSubmission(id, scroll = true) {
   const lateNote = num(s.lateErrors) > 0 ? `<div class="notice">+${num(s.lateErrors).toLocaleString()} late error(s) were added after this shift ended (they appeared later in Abukai).</div>` : '';
   const editedNote = s.editedByName ? `<div class="notice">Counts edited by ${esc(s.editedByName)}${s.editedAt ? ' on ' + esc(date(s.editedAt)) + ' ' + esc(fmtTime(s.editedAt)) : ''}.</div>` : '';
   const stats = s.startStats && s.endStats ? `<div class="notice">Abukai stats (pasted by the worker) · start: ${num(s.startStats.submitted).toLocaleString()} submitted / ${num(s.startStats.errors).toLocaleString()} errors → end: ${num(s.endStats.submitted).toLocaleString()} submitted / ${num(s.endStats.errors).toLocaleString()} errors.</div>` : '';
-  const html = `<div class="panel"><div class="panel-head"><div><h3>Submission details</h3><p>${esc(s.id)}</p></div><button class="btn btn-ghost" id="closeDetails">Close</button></div><div class="form-grid"><div><p class="muted">Worker</p><b>${esc(s.workerName)}</b></div><div><p class="muted">Status</p>${status(s.status)}</div><div><p class="muted">Account</p><b>${esc(s.accountName)}</b></div><div><p class="muted">Shift date</p><b>${esc(date(s.shiftDate))}</b></div><div><p class="muted">Shift hours</p><b>${esc(s.startTime)} – ${esc(s.endTime)}</b></div><div><p class="muted">Processed receipts</p><b>${processed.toLocaleString()}</b></div><div><p class="muted">Error count</p><b${errs > 0 ? ' style="color:var(--red-text)"' : ''}>${errs.toLocaleString()}</b></div><div><p class="muted">Error rate</p><b>${errRate}</b></div><div><p class="muted">Gross pay</p><b>${money(s.grossCents)}</b></div><div><p class="muted">Deductions</p><b>${money(s.deductionCents)}</b></div><div><p class="muted">Net pay</p><b>${money(s.netCents)}</b></div></div>${stats}${errNote}${lateNote}${reason}${editedNote}<div class="right" style="justify-content:flex-end;margin-top:20px;gap:8px">${actions}</div></div>`;
+  const html = `<div class="panel"><div class="panel-head"><div><h3>Submission details</h3><p>${esc(s.id)}</p></div><button class="btn btn-ghost" id="closeDetails">Close</button></div><div class="form-grid"><div><p class="muted">Worker</p><b>${esc(s.workerName)}</b></div><div><p class="muted">Status</p>${status(s.status)}</div><div><p class="muted">Account</p><b>${esc(s.accountName)}</b></div><div><p class="muted">Shift date</p><b>${esc(date(s.shiftDate))}</b></div><div><p class="muted">Shift hours</p><b>${esc(s.startTime)} – ${esc(s.endTime)}</b></div><div><p class="muted">Processed receipts</p><b>${processed.toLocaleString()}</b></div><div><p class="muted">Error count</p><b${errs > 0 ? ' style="color:#c0392b"' : ''}>${errs.toLocaleString()}</b></div><div><p class="muted">Error rate</p><b>${errRate}</b></div><div><p class="muted">Gross pay</p><b>${money(s.grossCents)}</b></div><div><p class="muted">Deductions</p><b>${money(s.deductionCents)}</b></div><div><p class="muted">Net pay</p><b>${money(s.netCents)}</b></div></div>${stats}${errNote}${lateNote}${reason}${editedNote}<div class="right" style="justify-content:flex-end;margin-top:20px;gap:8px">${actions}</div></div>`;
   $('#detailsPanel')?.remove();
   $('#pageContent').insertAdjacentHTML('afterbegin', `<div id="detailsPanel">${html}</div>`);
   $('#closeDetails').onclick = () => { detailId = null; $('#detailsPanel')?.remove(); };
@@ -2717,62 +2691,6 @@ function stopPeer() {
   peerUnsubs = {}; peerReady = {}; peerConvs = {};
   stopPeerMsgs();
   peerMsgs = []; peerSel = null; peerSearch = '';
-}
-
-/* ───────────────────────── Running shifts (activeShifts) ───────────────────────── */
-// "The second query did not work" is fixed here: the worker's view of running shifts is
-// loaded per assigned account instead of with one collection query. firestore.rules
-// allows isAssigned() on a single document read but cannot apply it across a collection
-// query, so the whole-collection listener was refused and the tracker rendered empty.
-function stopTracker() {
-  Object.values(trackerUnsubs).forEach(f => { try { f(); } catch {} });
-  trackerUnsubs = {};
-}
-function applyTrackerDocs(docs) {
-  data.activeShifts = docs;
-  loaded.activeShifts = true;
-  requestRender();
-}
-function setupTracker() {
-  if (!configured || !db || !currentUser) return;
-  const { collection, onSnapshot } = fb;
-  if (isAdmin()) { // admins may read every running shift
-    unsubs.push(onSnapshot(collection(db, 'activeShifts'), s => {
-      trackerErr = false;
-      applyTrackerDocs(s.docs.map(d => ({ id: d.id, ...d.data() })));
-    }, err => {
-      console.warn('activeShifts listener (check Firestore rules for /activeShifts)', err);
-      trackerErr = true; requestRender();
-    }));
-    return;
-  }
-  syncTrackerListeners();
-}
-// One point listener per assigned account. Re-run whenever accounts change, so a newly
-// assigned (or de-assigned) account starts (or stops) reporting its running shift.
-function syncTrackerListeners() {
-  if (!configured || !db || !currentUser || isAdmin()) return;
-  const { doc, onSnapshot } = fb;
-  const uid = currentUser.uid;
-  const want = new Set(data.accounts.filter(a => a.isActive !== false && (!a.assignedWorkerIds || a.assignedWorkerIds.includes(uid))).map(a => a.id));
-  Object.keys(trackerUnsubs).forEach(id => {
-    if (want.has(id)) return;
-    try { trackerUnsubs[id](); } catch {}
-    delete trackerUnsubs[id];
-    data.activeShifts = data.activeShifts.filter(s => s.id !== id);
-  });
-  want.forEach(id => {
-    if (trackerUnsubs[id]) return;
-    trackerUnsubs[id] = onSnapshot(doc(db, 'activeShifts', id), s => {
-      trackerErr = false;
-      const others = data.activeShifts.filter(x => x.id !== id);
-      applyTrackerDocs(s.exists() ? [...others, { id: s.id, ...s.data() }] : others);
-    }, e => {
-      console.warn('activeShifts/' + id + ' listener (check Firestore rules for /activeShifts)', e);
-      trackerErr = true; requestRender();
-    });
-  });
-  requestRender();
 }
 
 // One list listener per assigned account (cheap: only my conversations). Re-run whenever accounts change.
