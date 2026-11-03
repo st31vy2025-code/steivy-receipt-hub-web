@@ -1516,7 +1516,7 @@ function startShift(accountId) {
       if (!st) { toast('Could not read the Abukai stats. Copy the whole Processing Stats page and paste again.'); return false; }
       if (activeShiftOf(a.id)) { toast('Someone just started a shift on this account.'); return false; }
       if (!await confirmBox('Start shift?', `Start your shift on "${a.name}" with a baseline of ${st.submitted.toLocaleString()} submitted / ${st.errors.toLocaleString()} with errors? Nobody else can start this account until you end your shift.`, 'Yes, start shift')) return false;
-      const item = { accountId: a.id, accountName: a.name, workerId: currentUser.uid, workerName: profile.displayName, shiftDate: day, shiftType: label, startStats: st, startRaw: raw.slice(0, 2000) };
+      const item = { accountId: a.id, accountName: a.name, workerId: currentUser.uid, workerName: profile.displayName || currentUser.email || 'Worker', shiftDate: day, shiftType: label || 'Open shift', startStats: st, startRaw: raw.slice(0, 2000) };
       if (!configured) {
         data.activeShifts.push({ ...item, id: a.id, startedAt: new Date() });
         toast('Demo shift started (not saved online). Late errors cannot be tested in demo mode.');
@@ -1564,9 +1564,23 @@ function startShift(accountId) {
           toast('Shift started. Do not forget to press End shift when you finish.');
         }
       } catch (e) {
-        console.error(e);
-        toast(e?.message === 'busy' ? 'Someone just started a shift on this account.' : 'Could not start the shift. Check Firestore rules (activeShifts / accountLast / submissions).');
-        return false;
+        console.error('startShift failed', e?.code, e?.message, e);
+        if (e?.message === 'busy') { toast('Someone just started a shift on this account.'); return false; }
+        // Fallback: the "late errors" part (previous shift / accountLast) was refused. Start the shift anyway.
+        try {
+          const ref2 = fb.doc(db, 'activeShifts', a.id);
+          await fb.runTransaction(db, async tx => {
+            const snap = await tx.get(ref2);
+            if (snap.exists()) throw new Error('busy');
+            tx.set(ref2, { ...item, startedAt: fb.serverTimestamp() });
+          });
+          toast('Shift started, but late errors of the previous shift could not be added (' + (e?.code || 'error') + '). Tell the admin.');
+          return;
+        } catch (e2) {
+          console.error('startShift fallback failed', e2?.code, e2?.message, e2);
+          toast(e2?.message === 'busy' ? 'Someone just started a shift on this account.' : 'Could not start the shift [' + (e2?.code || e2?.message || 'unknown') + ']. Check Firestore rules (activeShifts).');
+          return false;
+        }
       }
     }, 'Start shift');
   liveStatsPreview('#trkPreview', null);
@@ -1626,7 +1640,7 @@ function endShift(accountId) {
         ? '⚠ Monthly reset (8:00 AM) happened during this shift. Only the receipts AFTER the reset were counted. The admin must add the part before it (use Edit counts).'
         : `Monthly reset (8:00 AM) happened during this shift. Stats before the reset: ${pre.submitted} submitted / ${pre.errors} errors.`);
       const item = {
-        workerId: currentUser.uid, workerName: profile.displayName, workerEmail: currentUser.email,
+        workerId: currentUser.uid, workerName: profile.displayName || currentUser.email || 'Worker', workerEmail: currentUser.email || '',
         accountId: s.accountId || s.id, accountName: s.accountName || '',
         shiftDate: s.shiftDate, shiftType: s.shiftType || 'Open shift', startTime: hhmm(new Date(startMs)), endTime: hhmm(now),
         receiptCount: count, errorCount: errCount, errorNote: resetNote,
@@ -1664,7 +1678,7 @@ function endShift(accountId) {
         toast(errCount > 0 && errWarnPct() > 0 && rt >= errWarnPct() ? `Shift submitted. ⚠ Your error rate for this shift is ${rt.toFixed(1)}% (limit ${errWarnPct()}%). Please double-check your work.` : 'Shift submitted for review.');
       } catch (e) {
         console.error(e);
-        toast('Could not submit the shift. Check your connection and Firestore rules (submissions / activeShifts / accountLast).');
+        toast('Could not submit the shift [' + (e?.code || e?.message || 'unknown') + ']. Check your connection and Firestore rules (submissions / activeShifts / accountLast).');
         return false;
       }
     }, 'End shift & submit');
