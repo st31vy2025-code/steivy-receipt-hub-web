@@ -864,12 +864,14 @@ function rankings(period) {
   return { rows, byOut, byErr };
 }
 
-// Keeps /leaderboard in sync. Admin only: Firestore rules intentionally deny worker writes.
+// Keeps /leaderboard in sync. Admin writes totals for every worker; a worker writes only their own.
 function scheduleLbSync() { clearTimeout(lbTimer); lbTimer = setTimeout(syncLeaderboard, 1500); }
 async function syncLeaderboard() {
-  if (!configured || !db || !currentUser || !isAdmin() || !loaded.leaderboard || !loaded.submissions || !loaded.users) return;
-  const validIds = new Set(liveUsers().filter(u => u.role !== 'admin').map(u => u.id));
-  const mine = data.submissions.filter(s => s.workerId && validIds.has(s.workerId));
+  if (!configured || !db || !currentUser || !loaded.leaderboard || !loaded.submissions) return;
+  if (isAdmin() && !loaded.users) return;
+  const uid = currentUser.uid, admin = isAdmin();
+  const validIds = admin ? new Set(liveUsers().filter(u => u.role !== 'admin').map(u => u.id)) : null;
+  const mine = (admin ? data.submissions : data.submissions.filter(s => s.workerId === uid)).filter(s => s.workerId && (!admin || validIds.has(s.workerId)));
   const want = new Map();
   mine.forEach(s => {
     if (s.status !== 'approved') return;
