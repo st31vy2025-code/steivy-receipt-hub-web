@@ -32,7 +32,6 @@ let missedFrom = '', missedTo = '';
 let chatConv = 'group', dmWith = '', dmUnsub = null, dmReady = false; // chat: 'group' (public) or 'dm' (private worker <-> admin)
 let auditUnsub = null, auditLimit = 50, auditMore = false, subLimit = 50;
 let trackerErr = false; // could not read /activeShifts (Firestore rules)
-let shiftUnsubs = {}, shiftReady = {}; // per-account running-shift listeners (workers)
 let peerConvs = {}, peerUnsubs = {}, peerReady = {}, peerSel = null, peerMsgUnsub = null, peerMsgs = [], peerSearch = ''; // co-worker private chat
 const filters = { q: '', status: 'all' };
 const DEFAULT_SETTINGS = { grossRateCents: 100, deductionPercent: 10, errorWarnPercent: 5, workUrl: '' };
@@ -333,8 +332,7 @@ function toast(msg) {
   clearTimeout(toastTimer);
   toastTimer = setTimeout(() => el.classList.remove('show'), 3500);
 }
-function stopShifts() { Object.values(shiftUnsubs).forEach(f => { try { f(); } catch {} }); shiftUnsubs = {}; shiftReady = {}; }
-function unlisten() { unsubs.forEach(fn => { try { fn(); } catch {} }); unsubs = []; stopDm(); stopAudit(); stopPeer(); stopShifts(); }
+function unlisten() { unsubs.forEach(fn => { try { fn(); } catch {} }); unsubs = []; stopDm(); stopAudit(); stopPeer(); }
 
 const isAdmin = () => profile?.role === 'admin';
 const visibleSubmissions = () => isAdmin() ? data.submissions : data.submissions.filter(s => s.workerId === currentUser?.uid);
@@ -822,7 +820,7 @@ function listen(path, key, queryFn) {
     loaded[key] = true;
     if (accessErr[key]) delete accessErr[key];
     if (key === 'submissions' || key === 'users') scheduleLbSync();
-    if (key === 'accounts') { syncPeerListeners(); syncShiftListeners(); }
+    if (key === 'accounts') syncPeerListeners();
     requestRender();
   }, err => {
     console.error(path, err);
@@ -899,20 +897,16 @@ async function loadData() {
   }));
 
   // Running shifts: one document per account while somebody is working on it.
-  // Admin may list the whole collection; workers may only GET the docs of their own assigned accounts
-  // (see syncShiftListeners), because the rules do not allow workers to list /activeShifts.
-  if (isAdmin()) {
-    unsubs.push(onSnapshot(collection(db, 'activeShifts'), s => {
-      trackerErr = false;
-      data.activeShifts = s.docs.map(d => ({ id: d.id, ...d.data() }));
-      loaded.activeShifts = true;
-      requestRender();
-    }, err => {
-      console.warn('activeShifts listener (check Firestore rules for /activeShifts)', err);
-      trackerErr = true;
-      requestRender();
-    }));
-  }
+  unsubs.push(onSnapshot(collection(db, 'activeShifts'), s => {
+    trackerErr = false;
+    data.activeShifts = s.docs.map(d => ({ id: d.id, ...d.data() }));
+    loaded.activeShifts = true;
+    requestRender();
+  }, err => {
+    console.warn('activeShifts listener (check Firestore rules for /activeShifts)', err);
+    trackerErr = true;
+    requestRender();
+  }));
 
   // Leaderboard totals (one small doc per worker per month) so workers can see their rank without reading other workers' submissions.
   unsubs.push(onSnapshot(collection(db, 'leaderboard'), s => {
@@ -2700,36 +2694,6 @@ function stopPeer() {
 }
 
 // One list listener per assigned account (cheap: only my conversations). Re-run whenever accounts change.
-// WORKER: one listener per assigned account on /activeShifts/{accountId} (a single-document read the rules allow).
-function syncShiftListeners() {
-  if (!configured || !db || !currentUser || !profile || isAdmin()) return;
-  const uid = currentUser.uid;
-  const want = new Set(data.accounts.filter(a => a.isActive !== false && (a.assignedWorkerIds || []).includes(uid)).map(a => a.id));
-  Object.keys(shiftUnsubs).forEach(id => {
-    if (want.has(id)) return;
-    try { shiftUnsubs[id](); } catch {}
-    delete shiftUnsubs[id]; delete shiftReady[id];
-    data.activeShifts = data.activeShifts.filter(x => x.id !== id);
-  });
-  const { doc, onSnapshot } = fb;
-  want.forEach(id => {
-    if (shiftUnsubs[id]) return;
-    shiftUnsubs[id] = onSnapshot(doc(db, 'activeShifts', id), s => {
-      data.activeShifts = data.activeShifts.filter(x => x.id !== id);
-      if (s.exists()) data.activeShifts.push({ ...s.data(), id });
-      shiftReady[id] = true;
-      trackerErr = false;
-      loaded.activeShifts = true;
-      requestRender();
-    }, err => {
-      console.warn('activeShifts/' + id + ' listener (check Firestore rules)', err);
-      trackerErr = true;
-      requestRender();
-    });
-  });
-  if (!want.size) { loaded.activeShifts = true; }
-}
-
 function syncPeerListeners() {
   if (!configured || !db || !currentUser || !profile || isAdmin()) return;
   const uid = currentUser.uid;
