@@ -24,7 +24,6 @@ let authToken = 0;
 let pendingRender = false;
 let detailId = null;
 let chatReady = false, unreadChat = 0;
-let theme = 'light';
 let lbPeriod = 'month', lbError = false, lbTimer = null;
 let loaded = {};
 let accessErr = {}; // collections the admin could not read (permission-denied)
@@ -32,7 +31,7 @@ let missedFrom = '', missedTo = '';
 let chatConv = 'group', dmWith = '', dmUnsub = null, dmReady = false; // chat: 'group' (public) or 'dm' (private worker <-> admin)
 let auditUnsub = null, auditLimit = 50, auditMore = false, subLimit = 50;
 let trackerErr = false; // could not read /activeShifts (Firestore rules)
-let peerConvs = {}, peerUnsubs = {}, peerReady = {}, peerSel = null, peerMsgUnsub = null, peerMsgs = [], peerSearch = ''; // co-worker private chat
+const shiftWatch = new Map(); // worker only: accountId -> unsubscribe of that account's /activeShifts/{accountId} listener
 const filters = { q: '', status: 'all' };
 const DEFAULT_SETTINGS = { grossRateCents: 100, deductionPercent: 10, errorWarnPercent: 5, workUrl: '' };
 const CHAT_LIMIT = 50; // messages loaded per conversation (keeps reads small)
@@ -332,7 +331,7 @@ function toast(msg) {
   clearTimeout(toastTimer);
   toastTimer = setTimeout(() => el.classList.remove('show'), 3500);
 }
-function unlisten() { unsubs.forEach(fn => { try { fn(); } catch {} }); unsubs = []; stopDm(); stopAudit(); stopPeer(); }
+function unlisten() { unsubs.forEach(fn => { try { fn(); } catch {} }); unsubs = []; shiftWatch.forEach(fn => { try { fn(); } catch {} }); shiftWatch.clear(); stopDm(); stopAudit(); }
 
 const isAdmin = () => profile?.role === 'admin';
 const visibleSubmissions = () => isAdmin() ? data.submissions : data.submissions.filter(s => s.workerId === currentUser?.uid);
@@ -447,114 +446,8 @@ button:disabled{opacity:.6;cursor:not-allowed}
 .msg-item{font-size:13px;color:#1a2420}
 .msg-item b{color:#1e8449}
 @keyframes tickerScroll{from{transform:translateX(0)}to{transform:translateX(-50%)}}
-@media (prefers-reduced-motion:reduce){.msg-ticker-track{animation:none}.msg-ticker-view{overflow-x:auto}}
-/* co-worker chat */
-.peer-layout .chat-list button{display:flex;align-items:center;gap:10px;text-align:left}
-.peer-search{padding:8px 4px}.peer-search input{width:100%;box-sizing:border-box}
-.peer-av{position:relative;flex:none}
-.peer-dot{position:absolute;right:-1px;bottom:-1px;width:11px;height:11px;border-radius:50%;background:#b8c0ca;border:2px solid #fff}
-.peer-dot.on{background:#2ecc71}
-.peer-meta{min-width:0;flex:1}.peer-meta strong,.peer-meta small{display:block;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
-.peer-side{display:flex;flex-direction:column;align-items:flex-end;gap:4px;flex:none}.peer-side small{font-size:11px;color:#8a958e}
-.peer-head{display:flex;align-items:center;gap:12px;padding:12px 16px;border-bottom:1px solid var(--line,#eee)}
-.peer-head>div:nth-child(2){flex:1;min-width:0}.peer-head small{display:block;color:#8a958e}
-.peer-st-dot{display:inline-block;width:8px;height:8px;border-radius:50%;background:#b8c0ca;margin-right:5px}.peer-st-dot.on{background:#2ecc71}
-.peer-day{text-align:center;font-size:11px;color:#8a958e;margin:10px 0}
-.peer-tick{margin-left:6px;font-size:11px}
-.peer-window{display:flex;flex-direction:column}
-@media (max-width:760px){.peer-layout{grid-template-columns:1fr!important}.peer-layout .chat-list{max-height:240px}}
-/* ── chat readability (WCAG AA) ──
-   The muted greys above are hardcoded (#8a958e / #78847e) and measured 2.7:1–3.9:1 on the
-   light chat surfaces, below the 4.5:1 minimum for small text. These rules darken those
-   tokens only; no markup or behaviour changes. Same specificity as the rules above and
-   declared later, so they win. */
-:root{--muted:#5d6b64;--chat-meta:#5f6d66;--chat-line:#c4cfc8}
-.live-body b{color:#1a2420}
-.live-body small{color:var(--chat-meta)}
-.chat-pop-body small{color:var(--chat-meta)}
-.chat-pop-x{color:#5f6d66}
-.chat-messages .bubble{color:#1a2420}
-.chat-messages .bubble b{color:#1a2420}
-.chat-messages .bubble small{color:#52605a}
-.chat-messages .bubble.mine small{color:#d8ece2}
-.peer-meta strong,.chat-list button strong{color:#1a2420}
-.peer-meta small,.peer-side small,.peer-head small,.peer-day{color:var(--chat-meta)}
-.chat-compose input,.peer-search input{border-color:var(--chat-line)}
-.chat-compose input::placeholder,.peer-search input::placeholder{color:#6b7873;opacity:1}
-.chat-compose .btn{white-space:nowrap}
-/* Dark theme. This app has no theme layer of its own — every surface is a literal #fff —
-   so the switch styles the whole app, not just the chat. Applied only when
-   <html data-theme="dark"> is set, so light mode keeps its exact current values. */
-[data-theme="dark"]{color-scheme:dark}
-[data-theme="dark"] body{background:#0f1512;color:#e8efe9}
-[data-theme="dark"] .sidebar{background:#151c18;border-right-color:#28332c}
-[data-theme="dark"] .brand strong{color:#e8efe9}
-[data-theme="dark"] .nav button{color:#b6c2ba}
-[data-theme="dark"] .nav button.active,[data-theme="dark"] .nav button:hover{background:#1e2f27;color:#8fd6ac}
-[data-theme="dark"] .nav-label,[data-theme="dark"] .crumb,[data-theme="dark"] .brand small,[data-theme="dark"] .user-mini small{color:#93a29a}
-[data-theme="dark"] .topbar{background:#131a16e6;border-bottom-color:#28332c}
-[data-theme="dark"] .topbar h1{color:#e8efe9}
-[data-theme="dark"] .main{background:#0f1512}
-[data-theme="dark"] .panel,[data-theme="dark"] .stat,[data-theme="dark"] .quick,[data-theme="dark"] .login-form-side,[data-theme="dark"] .sh-modal-card{background:#171f1a;border-color:#28332c;color:#e8efe9}
-[data-theme="dark"] .panel-head h3,[data-theme="dark"] .stat strong,[data-theme="dark"] .welcome h2,[data-theme="dark"] .quick strong{color:#eef4ef}
-[data-theme="dark"] .muted,[data-theme="dark"] .panel-head p,[data-theme="dark"] .welcome p,[data-theme="dark"] .stat small,[data-theme="dark"] .stat-head,[data-theme="dark"] .quick small{color:#a9b6ae}
-[data-theme="dark"] td{color:#dbe5de;border-bottom-color:#222c26}
-[data-theme="dark"] th{color:#93a29a;border-bottom-color:#28332c}
-[data-theme="dark"] .person small,[data-theme="dark"] .trk-info small{color:#9daba3}
-[data-theme="dark"] .field label{color:#c2cec6}
-[data-theme="dark"] .field input,[data-theme="dark"] .field select,[data-theme="dark"] .field textarea,[data-theme="dark"] .toolbar input,[data-theme="dark"] .toolbar select,[data-theme="dark"] .chat-compose input,[data-theme="dark"] .peer-search input,[data-theme="dark"] .sh-modal-card input,[data-theme="dark"] .sh-modal-card textarea,[data-theme="dark"] .sh-modal-card select{background:#101713;border-color:#33413a;color:#e8efe9}
-[data-theme="dark"] input::placeholder,[data-theme="dark"] textarea::placeholder{color:#8d9b94;opacity:1}
-[data-theme="dark"] .btn-light{background:#1e2f27;color:#9fe0b8}
-[data-theme="dark"] .btn-ghost{color:#9fe0b8;border-color:#33413a}
-[data-theme="dark"] .btn-danger{background:#3a1f1c;color:#f0a79f}
-[data-theme="dark"] .mode-pill,[data-theme="dark"] .demo-banner{background:#1e2f27;color:#9fe0b8}
-[data-theme="dark"] .notice{background:#16241c;color:#a6d9bd}
-[data-theme="dark"] .notice.warn{background:#2c2411;color:#e8c877}
-[data-theme="dark"] .chat-list{background:#131a16;border-right-color:#28332c}
-[data-theme="dark"] .chat-list button{border-bottom-color:#222c26}
-[data-theme="dark"] .chat-list button.active{background:#1e2f27}
-[data-theme="dark"] .chat-list button strong,[data-theme="dark"] .chat-messages .bubble b,[data-theme="dark"] .live-body b{color:#eef4ef}
-[data-theme="dark"] .chat-list button small,[data-theme="dark"] .peer-meta small,[data-theme="dark"] .peer-side small,[data-theme="dark"] .peer-day,[data-theme="dark"] .live-body small,[data-theme="dark"] .chat-pop-body small,[data-theme="dark"] .chat-messages .bubble small{color:#a3b1a9}
-[data-theme="dark"] .chat-messages .bubble{background:#222d27;color:#e8efe9}
-[data-theme="dark"] .chat-messages .bubble.mine{background:#1f7a4d;color:#fff}
-[data-theme="dark"] .chat-messages .bubble.mine small{color:#d6f0e1}
-[data-theme="dark"] .live-body{background:#222d27}
-[data-theme="dark"] .live-msg.mine .live-body{background:#1c3a2b}
-[data-theme="dark"] .chat-pop{background:#1b241e;color:#e8efe9}
-[data-theme="dark"] .avatar{background:#22322a;color:#9fe0b8}
-[data-theme="dark"] .online-chip{background:#1b2a22;border-color:#2c4438;color:#dfe9e2}
-[data-theme="dark"] .online-empty,[data-theme="dark"] .empty,[data-theme="dark"] .empty b{color:#a3b1a9}
-[data-theme="dark"] #toast{background:#0b100d;color:#eaf3ec}
-[data-theme="dark"] .demo-note{background:#2c2411;border-color:#4a3c17;color:#e8c877}
-[data-theme="dark"] .msg-ticker{background:#1b2a22;border-color:#2c4438}
-[data-theme="dark"] .msg-item,[data-theme="dark"] .msg-item b{color:#dfe9e2}
-[data-theme="dark"] .msg-item b{color:#9fe0b8}`;
+@media (prefers-reduced-motion:reduce){.msg-ticker-track{animation:none}.msg-ticker-view{overflow-x:auto}}`;
 document.head.appendChild(extraStyle);
-
-/* ───────────────────────── Theme (light / dark) ───────────────────────── */
-// Remembered in localStorage; on a first visit the OS preference is used.
-const THEME_KEY = 'steivy_theme';
-function applyTheme(t) {
-  theme = t === 'dark' ? 'dark' : 'light';
-  document.documentElement.setAttribute('data-theme', theme);
-  try { localStorage.setItem(THEME_KEY, theme); } catch {}
-  const b = $('#themeBtn');
-  if (b) {
-    const label = theme === 'dark' ? 'Switch to light mode' : 'Switch to dark mode';
-    b.textContent = theme === 'dark' ? '☀' : '☾';
-    b.title = label;
-    b.setAttribute('aria-label', label);
-  }
-}
-function toggleTheme() { applyTheme(theme === 'dark' ? 'light' : 'dark'); }
-// Runs before the first paint so the page never flashes the wrong theme.
-(function initTheme() {
-  let t = '';
-  try { t = localStorage.getItem(THEME_KEY) || ''; } catch {}
-  if (!t) t = window.matchMedia?.('(prefers-color-scheme: dark)')?.matches ? 'dark' : 'light';
-  theme = t === 'dark' ? 'dark' : 'light';
-  document.documentElement.setAttribute('data-theme', theme);
-})();
 
 /* ───────────────────────── Presence (who is online) ───────────────────────── */
 const ONLINE_WINDOW_MS = 420000; // a worker counts as online if seen in the last 7 minutes (the heartbeat is every 5 minutes to save Firestore reads)
@@ -580,7 +473,6 @@ const onlineStrip = () => `<div class="panel online-panel" id="onlineStrip" data
 
 // Updates only the online strip (no full re-render), and only when the set of online workers changed.
 function updateOnline() {
-  if (page === 'coworkers') updatePeerList();
   const el = $('#onlineStrip');
   if (!el) return;
   const key = onlineKey();
@@ -820,7 +712,7 @@ function listen(path, key, queryFn) {
     loaded[key] = true;
     if (accessErr[key]) delete accessErr[key];
     if (key === 'submissions' || key === 'users') scheduleLbSync();
-    if (key === 'accounts') syncPeerListeners();
+    if (key === 'accounts') syncShiftWatchers();
     requestRender();
   }, err => {
     console.error(path, err);
@@ -829,6 +721,35 @@ function listen(path, key, queryFn) {
     requestRender();
   });
   unsubs.push(stop);
+}
+
+// Worker: keep exactly one live listener per assigned account on /activeShifts/{accountId}.
+// Called whenever the (live) accounts list changes, so newly assigned accounts are picked up and removed ones dropped.
+function syncShiftWatchers() {
+  if (!db || !currentUser || !profile || isAdmin() || !fb) return;
+  const { doc, onSnapshot } = fb;
+  const want = new Set(data.accounts.map(a => a.id));
+  shiftWatch.forEach((stop, id) => {
+    if (want.has(id)) return;
+    try { stop(); } catch {}
+    shiftWatch.delete(id);
+    data.activeShifts = data.activeShifts.filter(x => x.id !== id);
+  });
+  want.forEach(id => {
+    if (shiftWatch.has(id)) return;
+    const stop = onSnapshot(doc(db, 'activeShifts', id), snap => {
+      trackerErr = false;
+      data.activeShifts = data.activeShifts.filter(x => x.id !== id);
+      if (snap.exists()) data.activeShifts.push({ id: snap.id, ...snap.data() });
+      loaded.activeShifts = true;
+      requestRender();
+    }, err => {
+      console.warn('activeShifts/' + id + ' listener (check Firestore rules for /activeShifts)', err);
+      trackerErr = true;
+      requestRender();
+    });
+    shiftWatch.set(id, stop);
+  });
 }
 
 async function loadData() {
@@ -897,16 +818,24 @@ async function loadData() {
   }));
 
   // Running shifts: one document per account while somebody is working on it.
-  unsubs.push(onSnapshot(collection(db, 'activeShifts'), s => {
-    trackerErr = false;
-    data.activeShifts = s.docs.map(d => ({ id: d.id, ...d.data() }));
-    loaded.activeShifts = true;
-    requestRender();
-  }, err => {
-    console.warn('activeShifts listener (check Firestore rules for /activeShifts)', err);
-    trackerErr = true;
-    requestRender();
-  }));
+  // Firestore rules: ADMIN may list the whole collection; a WORKER may only read single documents
+  // (get) of accounts they are assigned to. A collection listener for a worker is therefore denied
+  // (permission-denied), which left the tracker empty: after "Start shift" the End shift button never appeared.
+  // Workers listen to each assigned account's document instead (see syncShiftWatchers).
+  if (isAdmin()) {
+    unsubs.push(onSnapshot(collection(db, 'activeShifts'), s => {
+      trackerErr = false;
+      data.activeShifts = s.docs.map(d => ({ id: d.id, ...d.data() }));
+      loaded.activeShifts = true;
+      requestRender();
+    }, err => {
+      console.warn('activeShifts listener (check Firestore rules for /activeShifts)', err);
+      trackerErr = true;
+      requestRender();
+    }));
+  } else {
+    syncShiftWatchers();
+  }
 
   // Leaderboard totals (one small doc per worker per month) so workers can see their rank without reading other workers' submissions.
   unsubs.push(onSnapshot(collection(db, 'leaderboard'), s => {
@@ -974,12 +903,14 @@ function rankings(period) {
   return { rows, byOut, byErr };
 }
 
-// Keeps /leaderboard in sync. Admin only: Firestore rules intentionally deny worker writes.
+// Keeps /leaderboard in sync. Admin writes totals for every worker; a worker writes only their own.
 function scheduleLbSync() { clearTimeout(lbTimer); lbTimer = setTimeout(syncLeaderboard, 1500); }
 async function syncLeaderboard() {
-  if (!configured || !db || !currentUser || !isAdmin() || !loaded.leaderboard || !loaded.submissions || !loaded.users) return;
-  const validIds = new Set(liveUsers().filter(u => u.role !== 'admin').map(u => u.id));
-  const mine = data.submissions.filter(s => s.workerId && validIds.has(s.workerId));
+  if (!configured || !db || !currentUser || !loaded.leaderboard || !loaded.submissions) return;
+  if (isAdmin() && !loaded.users) return;
+  const uid = currentUser.uid, admin = isAdmin();
+  const validIds = admin ? new Set(liveUsers().filter(u => u.role !== 'admin').map(u => u.id)) : null;
+  const mine = (admin ? data.submissions : data.submissions.filter(s => s.workerId === uid)).filter(s => s.workerId && (!admin || validIds.has(s.workerId)));
   const want = new Map();
   mine.forEach(s => {
     if (s.status !== 'approved') return;
@@ -1070,11 +1001,10 @@ function showChatPopup(m) {
   const t = String(m.text || m.message || '');
   const el = document.createElement('div');
   el.className = 'chat-pop';
-  el.innerHTML = `<div class="avatar">${esc(initials(m.senderName))}</div><div class="chat-pop-body"><b>${m.peer ? '👥 ' : m.dm ? '🔒 Private · ' : '💬 '}${esc(m.senderName || 'Team member')}</b><span>${esc(t.length > 160 ? t.slice(0, 160) + '…' : t)}</span><small>${m.peer ? 'Co-worker message' : m.dm ? 'Private message' : 'New team message'} · click to open chat</small></div><button type="button" class="chat-pop-x" aria-label="Dismiss">×</button>`;
+  el.innerHTML = `<div class="avatar">${esc(initials(m.senderName))}</div><div class="chat-pop-body"><b>${m.dm ? '🔒 Private · ' : '💬 '}${esc(m.senderName || 'Team member')}</b><span>${esc(t.length > 160 ? t.slice(0, 160) + '…' : t)}</span><small>${m.dm ? 'Private message' : 'New team message'} · click to open chat</small></div><button type="button" class="chat-pop-x" aria-label="Dismiss">×</button>`;
   el.addEventListener('click', e => {
     if (e.target.closest('.chat-pop-x')) { el.remove(); return; }
     el.remove();
-    if (m.peer) { peerSel = peerContacts().find(c => c.convId === m.convId) || peerSel; stopPeerMsgs(); peerMsgs = []; go('coworkers'); return; }
     if (m.dm) { chatConv = 'dm'; if (isAdmin()) { dmWith = m.dmId; startDm(); } } else { chatConv = 'group'; }
     go('chat');
   });
@@ -1289,7 +1219,7 @@ function demoSignIn(role) {
   const admin = role === 'admin';
   currentUser = { uid: admin ? 'demo-admin' : 'demo-worker', email: admin ? 'admin@demo.local' : 'worker@demo.local', displayName: admin ? 'Demo Administrator' : 'Demo Worker' };
   profile = { id: currentUser.uid, email: currentUser.email, displayName: currentUser.displayName, role, isActive: true, status: 'approved', assignedAccountIds: ['abk-01'] };
-  data.accounts = [{ id: 'abk-01', name: 'Abukai Team Alpha', code: 'ABK-01', isActive: true, assignedWorkerIds: ['demo-worker', 'worker-2'], assignedWorkerNames: ['Demo Worker', 'Jamie Santos'] }];
+  data.accounts = [{ id: 'abk-01', name: 'Abukai Team Alpha', code: 'ABK-01', isActive: true, assignedWorkerIds: ['demo-worker'], assignedWorkerNames: ['Demo Worker'] }];
   data.users = [profile,
     { id: 'demo-worker', displayName: 'Demo Worker', email: 'worker@demo.local', role: 'worker', isActive: true, status: 'approved', assignedAccountIds: ['abk-01'] },
     { id: 'worker-2', displayName: 'Jamie Santos', email: 'jamie@example.com', role: 'worker', isActive: true, status: 'approved', assignedAccountIds: [] },
@@ -1355,18 +1285,17 @@ function renderLogin() {
 }
 
 /* ───────────────────────── Layout ───────────────────────── */
-const PAGE_TITLES = { dashboard: 'Dashboard', receipts: 'Receipt submissions', errors: 'Error processed', accounts: 'Account management', reports: 'Reports & earnings', chat: 'Team chat', coworkers: 'Co-worker chat', workers: 'Worker management', settings: 'Pay settings', missed: 'Missed shifts', audit: 'Audit log' };
-const allowedPages = () => isAdmin() ? ['dashboard', 'receipts', 'errors', 'accounts', 'reports', 'chat', 'workers', 'settings', 'missed', 'audit'] : ['dashboard', 'receipts', 'errors', 'reports', 'chat', 'coworkers'];
+const PAGE_TITLES = { dashboard: 'Dashboard', receipts: 'Receipt submissions', errors: 'Error processed', accounts: 'Account management', reports: 'Reports & earnings', chat: 'Team chat', workers: 'Worker management', settings: 'Pay settings', missed: 'Missed shifts', audit: 'Audit log' };
+const allowedPages = () => isAdmin() ? ['dashboard', 'receipts', 'errors', 'accounts', 'reports', 'chat', 'workers', 'settings', 'missed', 'audit'] : ['dashboard', 'receipts', 'errors', 'reports', 'chat'];
 
 function shell() {
   const items = [['dashboard', '⌂', 'Dashboard'], ['receipts', '▤', 'Submissions'], ['errors', '⚠', 'Error processed']];
   if (isAdmin()) items.push(['accounts', '▦', 'Accounts']);
   items.push(['reports', '▥', 'Reports'], ['chat', '☏', 'Team chat']);
-  if (!isAdmin()) items.push(['coworkers', '☺', 'Co-worker chat']);
   if (isAdmin()) items.push(['workers', '♙', 'Workers'], ['settings', '⚙', 'Pay settings'], ['missed', '⏱', 'Missed shifts'], ['audit', '✎', 'Audit log']);
   const title = PAGE_TITLES[page] || 'Dashboard';
-  const badge = k => { const n = k === 'chat' ? unreadChat : k === 'coworkers' ? peerUnread() : 0; return n > 0 ? `<span class="nav-badge">${n > 9 ? '9+' : n}</span>` : ''; };
-  return `<div class="shell"><aside class="sidebar" id="sidebar"><div class="brand"><img src="assets/logo.jpg" alt=""><div><strong>STEIVY</strong><small>RECEIPT HUB</small></div></div><div class="nav-label">WORKSPACE</div><nav class="nav">${items.map(n => `<button data-nav="${n[0]}" class="${page === n[0] ? 'active' : ''}"><span class="ico">${n[1]}</span>${n[2]}${badge(n[0])}</button>`).join('')}</nav>${!isAdmin() && workUrl() ? `<a class="btn btn-primary start-work" id="startWork" href="${esc(workUrl())}" target="_blank" rel="noopener noreferrer">▶ Start work</a>` : ''}<div class="sidebar-bottom"><div class="user-mini"><div class="avatar">${esc(initials(profile?.displayName))}</div><div><strong>${esc(profile?.displayName || 'User')}</strong><small>${isAdmin() ? 'Administrator' : 'Worker'}</small></div></div><button class="btn btn-ghost btn-block" id="logout">↪ Sign out</button></div></aside><main class="main"><header class="topbar"><div class="right"><button class="btn btn-ghost mobile-menu" id="menuBtn">☰</button><div><div class="crumb">WORKSPACE / ${esc(title.toUpperCase())}</div><h1>${esc(title)}</h1></div></div><div class="top-actions"><span class="mode-pill">${configured ? '● Connected app' : '◉ Demo preview'}</span><button type="button" class="btn btn-ghost" id="themeBtn" title="${theme === 'dark' ? 'Switch to light mode' : 'Switch to dark mode'}" aria-label="${theme === 'dark' ? 'Switch to light mode' : 'Switch to dark mode'}">${theme === 'dark' ? '☀' : '☾'}</button><button type="button" class="btn btn-ghost" id="logoutTop">↪ Sign out</button><div class="avatar">${esc(initials(profile?.displayName))}</div></div></header>${!configured ? '<div class="demo-banner">Demo preview — data is sample-only and will reset when you leave. Configure Firebase to use real accounts and save changes.</div>' : ''}<section class="content" id="pageContent"></section></main></div>`;
+  const badge = k => k === 'chat' && unreadChat > 0 ? `<span class="nav-badge">${unreadChat > 9 ? '9+' : unreadChat}</span>` : '';
+  return `<div class="shell"><aside class="sidebar" id="sidebar"><div class="brand"><img src="assets/logo.jpg" alt=""><div><strong>STEIVY</strong><small>RECEIPT HUB</small></div></div><div class="nav-label">WORKSPACE</div><nav class="nav">${items.map(n => `<button data-nav="${n[0]}" class="${page === n[0] ? 'active' : ''}"><span class="ico">${n[1]}</span>${n[2]}${badge(n[0])}</button>`).join('')}</nav>${!isAdmin() && workUrl() ? `<a class="btn btn-primary start-work" id="startWork" href="${esc(workUrl())}" target="_blank" rel="noopener noreferrer">▶ Start work</a>` : ''}<div class="sidebar-bottom"><div class="user-mini"><div class="avatar">${esc(initials(profile?.displayName))}</div><div><strong>${esc(profile?.displayName || 'User')}</strong><small>${isAdmin() ? 'Administrator' : 'Worker'}</small></div></div><button class="btn btn-ghost btn-block" id="logout">↪ Sign out</button></div></aside><main class="main"><header class="topbar"><div class="right"><button class="btn btn-ghost mobile-menu" id="menuBtn">☰</button><div><div class="crumb">WORKSPACE / ${esc(title.toUpperCase())}</div><h1>${esc(title)}</h1></div></div><div class="top-actions"><span class="mode-pill">${configured ? '● Connected app' : '◉ Demo preview'}</span><button type="button" class="btn btn-ghost" id="logoutTop">↪ Sign out</button><div class="avatar">${esc(initials(profile?.displayName))}</div></div></header>${!configured ? '<div class="demo-banner">Demo preview — data is sample-only and will reset when you leave. Configure Firebase to use real accounts and save changes.</div>' : ''}<section class="content" id="pageContent"></section></main></div>`;
 }
 
 const stat = (label, value, sub, ico) => `<div class="stat"><div class="stat-head">${label}<span class="stat-icon">${ico}</span></div><strong>${value}</strong><small>${sub}</small></div>`;
@@ -1607,18 +1536,23 @@ function endShift(accountId) {
       if (preRaw && !pre) { toast('Could not read the stats you copied before 8:00 AM. Paste the whole Processing Stats page.'); return false; }
       const r = calc(en, pre);
       if (!r) { toast('These totals are lower than your start totals (wrong page?). Ask the admin to release this shift.'); return false; }
-      const { count, errCount } = r;
+      const { count } = r;
+      // Firestore rules require errorCount <= receiptCount. Abukai can show errors of OLDER receipts during this
+      // shift, which would push the difference above the output and make the submit fail silently.
+      const errCapped = r.errCount > count;
+      const errCount = errCapped ? count : r.errCount;
       if (!inWindow(sc)) { toast('Your scheduled shift has already ended.'); return false; }
-      const warn = (count === 0 ? ' Your output is 0, are you sure?' : '') + (r.partial ? ' The part before the 8:00 AM reset is missing, the admin will add it.' : '');
-      if (!await confirmBox('End shift and submit?', `Output: ${count.toLocaleString()} receipts, ${errCount.toLocaleString()} with errors. This will be sent for admin review.${warn}`, 'Yes, submit', count === 0 || r.partial)) return false;
+      const warn = (count === 0 ? ' Your output is 0, are you sure?' : '') + (errCapped ? ` Abukai showed ${r.errCount.toLocaleString()} new errors, which is more than your output, so errors are capped at ${count.toLocaleString()}. The admin will review it.` : '') + (r.partial ? ' The part before the 8:00 AM reset is missing, the admin will add it.' : '');
+      if (!await confirmBox('End shift and submit?', `Output: ${count.toLocaleString()} receipts, ${errCount.toLocaleString()} with errors. This will be sent for admin review.${warn}`, 'Yes, submit', count === 0 || r.partial || errCapped)) return false;
 
       const now = new Date();
       const rateCents = rate(), pct = dedPct();
       const gross = Math.round(count * rateCents);
       const ded = Math.round(gross * pct / 100);
-      const resetNote = !crossed ? '' : (r.partial
+      const capNote = errCapped ? `⚠ Errors capped: Abukai showed ${r.errCount} new errors for ${count} processed receipts.` : '';
+      const resetNote = capNote + (!crossed ? '' : (r.partial
         ? '⚠ Monthly reset (8:00 AM) happened during this shift. Only the receipts AFTER the reset were counted. The admin must add the part before it (use Edit counts).'
-        : `Monthly reset (8:00 AM) happened during this shift. Stats before the reset: ${pre.submitted} submitted / ${pre.errors} errors.`);
+        : `Monthly reset (8:00 AM) happened during this shift. Stats before the reset: ${pre.submitted} submitted / ${pre.errors} errors.`));
       const item = {
         workerId: currentUser.uid, workerName: profile.displayName, workerEmail: currentUser.email,
         accountId: s.accountId || s.id, accountName: s.accountName || '',
@@ -1999,17 +1933,15 @@ function renderPage() {
   if (!allowedPages().includes(page)) page = 'dashboard';
   if (page === 'chat') unreadChat = 0;
   $('#app').innerHTML = shell();
-  $('#pageContent').innerHTML = accessBanner() + ({ dashboard, receipts, errors: errorsPage, accounts, reports, chat, coworkers: coworkersPage, workers, settings, missed: missedPage, audit: auditPage })[page]();
+  $('#pageContent').innerHTML = accessBanner() + ({ dashboard, receipts, errors: errorsPage, accounts, reports, chat, workers, settings, missed: missedPage, audit: auditPage })[page]();
   wireShell();
   wirePage();
   if (page === 'chat') markDmRead();
-  if (page === 'coworkers') { if (peerSel && !peerMsgUnsub) startPeerMsgs(); markPeerRead(); }
   if (detailId) { const s = visibleSubmissions().find(x => x.id === detailId); if (s) viewSubmission(s.id, false); else detailId = null; }
   syncAnnouncementPopup();
 }
 
 function go(p) {
-  if (page === 'coworkers' && p !== 'coworkers') stopPeerMsgs(); // no open message listener while on another page
   page = p;
   detailId = null;
   if (p === 'chat') unreadChat = 0;
@@ -2028,7 +1960,6 @@ function wireShell() {
   };
   $('#logout')?.addEventListener('click', doLogout);
   $('#logoutTop')?.addEventListener('click', doLogout);
-  $('#themeBtn')?.addEventListener('click', toggleTheme);
   $('#menuBtn')?.addEventListener('click', () => $('#sidebar').classList.toggle('open'));
   $('#pageContent').addEventListener('click', e => {
     const t = e.target;
@@ -2040,7 +1971,6 @@ function wireShell() {
     if ((el = t.closest('[data-cancel-shift]'))) return cancelShift(el.dataset.cancelShift);
     if ((el = t.closest('[data-release-shift]'))) return releaseShift(el.dataset.releaseShift);
     if ((el = t.closest('[data-view]'))) return viewSubmission(el.dataset.view);
-    if ((el = t.closest('[data-peer]'))) return openPeer(el.dataset.peer);
     if ((el = t.closest('[data-chat-conv]'))) return openChat(el.dataset.chatConv, el.dataset.chatId);
     if ((el = t.closest('[data-more-subs]'))) { subLimit += 50; return filterRows(); }
     if ((el = t.closest('[data-allow-resubmit]'))) return allowResubmit(el.dataset.allowResubmit);
@@ -2076,10 +2006,6 @@ function wirePage() {
     const q = e.target.value.toLowerCase();
     $$('#pageContent tbody tr').forEach(r => r.classList.toggle('hidden', !r.textContent.toLowerCase().includes(q)));
   });
-  $('#peerSearch')?.addEventListener('input', e => { peerSearch = e.target.value; updatePeerList(); });
-  $('#peerWindow')?.addEventListener('submit', e => { if (e.target.id === 'peerForm') { e.preventDefault(); sendPeer(e.target.elements.message); } });
-  const pm = $('#peerMessages');
-  if (pm) pm.scrollTop = pm.scrollHeight;
   const cm = $('#chatMessages');
   if (cm) cm.scrollTop = cm.scrollHeight;
   const lc = $('#liveChat');
@@ -2537,10 +2463,8 @@ async function deleteWorker(u) {
     // The profile is kept as a hidden "deleted" marker. When that person next tries to sign in, the app deletes their login (email) itself.
     const ops = [b => b.update(fb.doc(db, 'users', u.id), { status: 'deleted', isActive: false, assignedAccountIds: [], shiftSchedule: null, deletedAt: fb.serverTimestamp(), deletedBy: currentUser.uid, updatedAt: fb.serverTimestamp() })];
     data.accounts.filter(a => (a.assignedWorkerIds || []).includes(u.id)).forEach(a => {
-      const idx = (a.assignedWorkerIds || []).indexOf(u.id);
       ops.push(b => b.update(fb.doc(db, 'accounts', a.id), {
-        assignedWorkerIds: (a.assignedWorkerIds || []).filter(id => id !== u.id),
-        assignedWorkerNames: (a.assignedWorkerNames || []).filter((_, k) => k !== idx),
+        assignedWorkerIds: fb.arrayRemove(u.id),
         updatedAt: fb.serverTimestamp()
       }));
     });
@@ -2650,231 +2574,6 @@ function exportCsv() {
   a.click();
   a.remove();
   setTimeout(() => URL.revokeObjectURL(url), 1000);
-}
-
-/* ───────────────────────── Co-worker private chat (same account only) ─────────────────────────
-   Membership = accounts.assignedWorkerIds (the existing assignment system, no duplicate collection).
-   Conversation id = <accountId>_<uidLow>_<uidHigh>. The Firestore rules parse that id and re-check the
-   account assignment on the server, so hiding users in the UI is not the only protection.
-   Collections: peerChats/{convId} (+ /messages/{id}). Listeners: one small list query per assigned account,
-   plus one message listener for the conversation that is open. */
-const demoPeerMsgs = {};
-const pairId = (accountId, a, b) => `${accountId}_${[a, b].sort().join('_')}`;
-const peerUnread = () => Object.values(peerConvs).reduce((n, c) => n + num(c.unread?.[currentUser?.uid]), 0);
-const peerName = (id, fallback) => data.presence.find(p => p.id === id)?.displayName || fallback || 'Co-worker';
-const peerOnline = id => isOnlineEntry(data.presence.find(p => p.id === id));
-const peerTime = d => {
-  const x = toDate(d);
-  if (!x) return '';
-  return x.toDateString() === new Date().toDateString() ? fmtTime(x) : date(x);
-};
-
-// Every other worker who shares at least one active account with me (one entry per shared account).
-function peerContacts() {
-  if (!currentUser) return [];
-  const uid = currentUser.uid, out = [];
-  data.accounts.forEach(a => {
-    if (a.isActive === false) return;
-    const ids = a.assignedWorkerIds || [];
-    if (!ids.includes(uid)) return;
-    ids.forEach((id, i) => {
-      if (id === uid) return;
-      out.push({ convId: pairId(a.id, uid, id), peerId: id, accountId: a.id, accountName: a.name || 'Account', name: peerName(id, a.assignedWorkerNames?.[i]) });
-    });
-  });
-  return out;
-}
-
-function stopPeerMsgs() { if (peerMsgUnsub) { try { peerMsgUnsub(); } catch {} peerMsgUnsub = null; } }
-function stopPeer() {
-  Object.values(peerUnsubs).forEach(f => { try { f(); } catch {} });
-  peerUnsubs = {}; peerReady = {}; peerConvs = {};
-  stopPeerMsgs();
-  peerMsgs = []; peerSel = null; peerSearch = '';
-}
-
-// One list listener per assigned account (cheap: only my conversations). Re-run whenever accounts change.
-function syncPeerListeners() {
-  if (!configured || !db || !currentUser || !profile || isAdmin()) return;
-  const uid = currentUser.uid;
-  const want = new Set(data.accounts.filter(a => a.isActive !== false && (a.assignedWorkerIds || []).includes(uid)).map(a => a.id));
-  Object.keys(peerUnsubs).forEach(id => {
-    if (want.has(id)) return;
-    try { peerUnsubs[id](); } catch {}
-    delete peerUnsubs[id]; delete peerReady[id];
-    Object.keys(peerConvs).forEach(k => { if (peerConvs[k].accountId === id) delete peerConvs[k]; });
-  });
-  // No longer assigned to the account of the open conversation: close it.
-  if (peerSel && !peerContacts().some(c => c.convId === peerSel.convId)) { peerSel = null; stopPeerMsgs(); peerMsgs = []; }
-  const { collection, onSnapshot, query, where } = fb;
-  want.forEach(id => {
-    if (peerUnsubs[id]) return;
-    peerUnsubs[id] = onSnapshot(query(collection(db, 'peerChats'), where('accountId', '==', id), where('participants', 'array-contains', uid)), s => {
-      if (peerReady[id]) {
-        s.docChanges().forEach(ch => {
-          if (ch.type === 'removed' || ch.doc.metadata.hasPendingWrites) return;
-          const d = ch.doc.data();
-          if (d.lastSenderId === uid) return;
-          if (num(d.unread?.[uid]) <= num(peerConvs[ch.doc.id]?.unread?.[uid])) return; // nothing new for me
-          if (page === 'coworkers' && peerSel?.convId === ch.doc.id && !document.hidden) return; // already reading it
-          const c = peerContacts().find(x => x.convId === ch.doc.id);
-          showChatPopup({ senderName: peerName(d.lastSenderId, c?.name), text: d.lastMessage, peer: true, convId: ch.doc.id });
-        });
-      }
-      peerReady[id] = true;
-      Object.keys(peerConvs).forEach(k => { if (peerConvs[k].accountId === id) delete peerConvs[k]; });
-      s.docs.forEach(d => { peerConvs[d.id] = { id: d.id, ...d.data() }; });
-      if (page === 'coworkers') updatePeerList();
-      updatePeerBadge();
-      markPeerRead();
-    }, err => console.warn('peerChats listener (check Firestore rules for /peerChats)', err));
-  });
-}
-
-function startPeerMsgs() {
-  stopPeerMsgs();
-  if (!configured || !db || !peerSel) return;
-  const id = peerSel.convId;
-  const { collection, onSnapshot, query, orderBy, limit } = fb;
-  peerMsgUnsub = onSnapshot(query(collection(db, 'peerChats', id, 'messages'), orderBy('createdAt', 'desc'), limit(CHAT_LIMIT)), s => {
-    if (peerSel?.convId !== id) return;
-    peerMsgs = s.docs.map(d => ({ id: d.id, ...d.data() })).sort((a, b) => timeVal(a.createdAt) - timeVal(b.createdAt));
-    updatePeerMessages();
-    markPeerRead();
-  }, err => { console.warn('peer messages (check Firestore rules for /peerChats)', err); toast('Could not load this conversation. Check Firestore rules.'); });
-}
-
-// Marks messages I received as read and clears my unread counter (only while the conversation is on screen).
-function markPeerRead() {
-  if (!configured || !db || page !== 'coworkers' || document.hidden || !peerSel || !currentUser) return;
-  const uid = currentUser.uid, id = peerSel.convId;
-  const unread = peerMsgs.filter(m => m.receiverId === uid && m.isRead !== true && !m.id.startsWith('local'));
-  const conv = peerConvs[id];
-  const needConv = !!conv && num(conv.unread?.[uid]) > 0;
-  if (!unread.length && !needConv) return;
-  unread.forEach(m => { m.isRead = true; }); // local flag: avoids repeating while the write is in flight
-  if (needConv) conv.unread = { ...conv.unread, [uid]: 0 };
-  updatePeerBadge();
-  const ops = unread.slice(0, 400).map(m => b => b.update(fb.doc(db, 'peerChats', id, 'messages', m.id), { isRead: true, readAt: fb.serverTimestamp() }));
-  if (needConv) ops.push(b => b.update(fb.doc(db, 'peerChats', id), { [`unread.${uid}`]: 0 }));
-  commitInChunks(ops).catch(e => console.warn('peer read receipt failed (check Firestore rules)', e));
-}
-
-async function sendPeer(input) {
-  const text = input.value.trim();
-  const c = peerSel;
-  if (!text || !c || !currentUser) return;
-  if (!peerContacts().some(x => x.convId === c.convId)) return toast('You are no longer assigned to this account.');
-  const uid = currentUser.uid;
-  if (!configured) {
-    const m = { id: 'local' + Date.now(), senderId: uid, receiverId: c.peerId, message: text, createdAt: new Date(), isRead: false };
-    (demoPeerMsgs[c.convId] ||= []).push(m);
-    peerMsgs = demoPeerMsgs[c.convId];
-    peerConvs[c.convId] = { ...(peerConvs[c.convId] || {}), accountId: c.accountId, lastMessage: text, lastMessageAt: new Date(), lastSenderId: uid, unread: {} };
-    input.value = '';
-    updatePeerMessages(); updatePeerList();
-    return;
-  }
-  input.value = '';
-  try {
-    const [lo, hi] = [uid, c.peerId].sort();
-    const b = fb.writeBatch(db);
-    b.set(fb.doc(fb.collection(db, 'peerChats', c.convId, 'messages')), {
-      accountId: c.accountId, conversationId: c.convId, senderId: uid, receiverId: c.peerId,
-      message: text, createdAt: fb.serverTimestamp(), isRead: false, readAt: null
-    });
-    b.set(fb.doc(db, 'peerChats', c.convId), {
-      accountId: c.accountId, participants: [lo, hi],
-      lastMessage: text.slice(0, 200), lastMessageAt: fb.serverTimestamp(), lastSenderId: uid, updatedAt: fb.serverTimestamp(),
-      unread: { [c.peerId]: fb.increment(1) }
-    }, { merge: true });
-    await b.commit();
-  } catch (err) {
-    console.error(err);
-    input.value = text; // restore so nothing is lost
-    toast('Could not send message. Check Firestore rules and your account assignment.');
-  }
-}
-
-function openPeer(convId) {
-  const c = peerContacts().find(x => x.convId === convId);
-  if (!c) return;
-  if (peerSel?.convId !== convId) {
-    peerSel = c;
-    stopPeerMsgs();
-    peerMsgs = configured ? [] : (demoPeerMsgs[convId] || []);
-  }
-  if (configured && !peerMsgUnsub) startPeerMsgs();
-  const w = $('#peerWindow');
-  if (!w) return renderPage();
-  w.innerHTML = peerWindowHtml();
-  updatePeerList();
-  const box = $('#peerMessages');
-  if (box) box.scrollTop = box.scrollHeight;
-  w.querySelector('input[name=message]')?.focus();
-  markPeerRead();
-}
-
-/* ── rendering (partial updates only, so typing and search text are never wiped) ── */
-function peerListHtml() {
-  const uid = currentUser.uid, q = peerSearch.trim().toLowerCase();
-  const at = c => { const v = peerConvs[c.convId]?.lastMessageAt; return v ? timeVal(v) : 0; };
-  const all = peerContacts();
-  const list = all.filter(c => !q || `${c.name} ${c.accountName}`.toLowerCase().includes(q))
-    .sort((a, b) => at(b) - at(a) || a.name.localeCompare(b.name));
-  if (!list.length) return `<div class="empty">👥<b>${all.length ? 'No match' : 'No co-workers yet'}</b>${all.length ? 'Try another name.' : 'You can chat with workers who are assigned to the same account as you.'}</div>`;
-  return list.map(c => {
-    const conv = peerConvs[c.convId];
-    const unread = num(conv?.unread?.[uid]);
-    const prev = conv?.lastMessage ? (conv.lastSenderId === uid ? 'You: ' : '') + conv.lastMessage : 'No messages yet';
-    return `<button type="button" class="${peerSel?.convId === c.convId ? 'active' : ''}" data-peer="${esc(c.convId)}"><div class="avatar peer-av">${esc(initials(c.name))}<i class="peer-dot ${peerOnline(c.peerId) ? 'on' : ''}"></i></div><div class="peer-meta"><strong>${esc(c.name)}</strong><small>${esc(prev)}</small><small>${esc(c.accountName)}</small></div><div class="peer-side"><small>${esc(peerTime(conv?.lastMessageAt))}</small>${unread ? `<span class="nav-badge">${unread > 9 ? '9+' : unread}</span>` : ''}</div></button>`;
-  }).join('');
-}
-const peerStatusHtml = () => peerSel ? `<span class="peer-st-dot ${peerOnline(peerSel.peerId) ? 'on' : ''}"></span>${peerOnline(peerSel.peerId) ? 'Online' : 'Offline'}` : '';
-function peerBubbles() {
-  if (!peerMsgs.length) return '<div class="empty">💬<b>No messages yet</b>Say hello to start the conversation.</div>';
-  let lastDay = '';
-  return peerMsgs.map(m => {
-    const mine = m.senderId === currentUser.uid;
-    const x = toDate(m.createdAt) || new Date();
-    const day = x.toDateString();
-    const sep = day !== lastDay ? `<div class="peer-day">${esc(date(x))}</div>` : '';
-    lastDay = day;
-    const tick = mine ? `<span class="peer-tick" title="${m.isRead ? 'Read' : 'Sent'}">${m.isRead ? '✓✓' : '✓'}</span>` : '';
-    return `${sep}<div class="bubble ${mine ? 'mine' : ''}">${esc(m.message || '')}<small>${esc(fmtTime(m.createdAt))}${tick}</small></div>`;
-  }).join('');
-}
-function peerWindowHtml() {
-  if (!peerSel) return `<div class="chat-messages" id="peerMessages"><div class="empty">💬<b>Select a co-worker</b>Pick someone on the left to start a private chat.</div></div>`;
-  return `<div class="peer-head"><div class="avatar">${esc(initials(peerSel.name))}</div><div><strong>${esc(peerSel.name)}</strong><small id="peerStatus">${peerStatusHtml()}</small></div><small>Account: ${esc(peerSel.accountName)}</small></div><div class="chat-messages" id="peerMessages">${peerBubbles()}</div><form class="chat-compose" id="peerForm"><input name="message" placeholder="Message ${esc(peerSel.name)}…" maxlength="2000" autocomplete="off" required><button class="btn btn-primary" type="submit">Send ↗</button></form>`;
-}
-function updatePeerBadge() {
-  const b = $('[data-nav="coworkers"]');
-  if (!b) return;
-  b.querySelector('.nav-badge')?.remove();
-  const n = peerUnread();
-  if (n > 0) b.insertAdjacentHTML('beforeend', `<span class="nav-badge">${n > 9 ? '9+' : n}</span>`);
-}
-function updatePeerList() {
-  const el = $('#peerItems');
-  if (!el) return;
-  el.innerHTML = peerListHtml();
-  const st = $('#peerStatus');
-  if (st && peerSel) st.innerHTML = peerStatusHtml();
-  updatePeerBadge();
-}
-function updatePeerMessages() {
-  const box = $('#peerMessages');
-  if (!box || !peerSel) return;
-  const nearBottom = box.scrollHeight - box.scrollTop - box.clientHeight < 120;
-  const lastMine = peerMsgs.slice(-1)[0]?.senderId === currentUser?.uid;
-  box.innerHTML = peerBubbles();
-  if (nearBottom || lastMine) box.scrollTo({ top: box.scrollHeight, behavior: 'smooth' });
-  updatePeerList();
-}
-function coworkersPage() {
-  if (isAdmin()) return `<div class="empty">👥<b>Workers only</b>Co-worker chat is private between workers on the same account.</div>`;
-  return `<div class="welcome"><div><h2>Co-worker chat</h2><p>Private one-on-one messages with workers assigned to the same account as you.</p></div></div><div class="chat-layout peer-layout"><div class="chat-list" id="peerList"><div class="peer-search"><input id="peerSearch" placeholder="Search co-workers…" value="${esc(peerSearch)}" autocomplete="off"></div><div id="peerItems">${peerListHtml()}</div></div><div class="chat-window peer-window" id="peerWindow">${peerWindowHtml()}</div></div>`;
 }
 
 /* ───────────────────────── Boot ───────────────────────── */
