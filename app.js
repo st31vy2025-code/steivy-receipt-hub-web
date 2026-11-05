@@ -26,29 +26,16 @@ let detailId = null;
 let chatReady = false, unreadChat = 0;
 let theme = 'light';
 let lbPeriod = 'month', lbError = false, lbTimer = null;
-let rankingsData = [], rankingsErr = false, rankTimer = null, rankSig = '', rankLastRun = 0;
-let lbUnsub = null, rankUnsub = null, threadsUnsub = null;
 let loaded = {};
 let accessErr = {}; // collections the admin could not read (permission-denied)
 let missedFrom = '', missedTo = '';
 let chatConv = 'group', dmWith = '', dmUnsub = null, dmReady = false; // chat: 'group' (public) or 'dm' (private worker <-> admin)
 let auditUnsub = null, auditLimit = 50, auditMore = false, subLimit = 50;
 let trackerErr = false; // could not read /activeShifts (Firestore rules)
-let trackerUnsubs = {}; // one activeShifts doc listener per assigned account (workers)
-let peerConvs = {}, peerUnsubs = {}, peerReady = {}, peerSel = null, peerMsgUnsub = null, peerMsgs = [], peerSearch = '', peerCapped = false; // co-worker private chat
-let peerLimit = 30, dmLimit = 30, groupLimit = 30; // messages loaded per conversation; "Load older" raises these
-let groupCapped = false, dmCapped = false; // the page of messages came back full, so more history exists
-let chatSubs = {}; // the two message listeners (group + my DM thread), opened and closed on demand
-let subsUnsub = null; // the submissions listener (windowed for admins, own rows for workers)
-let subDays = 7, subWindowLimit = 400, adminFull = false, subsCapped = false; // admin window: days back, doc cap, "all history" flag
-let presenceTimer = null, lastBeatState = 0, lastBeatOnline = null, lastPresenceFetch = 0, lastLbReload = 0, lbReloadTimer = null;
+let peerConvs = {}, peerUnsubs = {}, peerReady = {}, peerSel = null, peerMsgUnsub = null, peerMsgs = [], peerSearch = ''; // co-worker private chat
 const filters = { q: '', status: 'all' };
 const DEFAULT_SETTINGS = { grossRateCents: 100, deductionPercent: 10, errorWarnPercent: 5, workUrl: '' };
-const CHAT_LIMIT = 30; // messages per conversation on first load ("Load older" steps this up by 30)
-const SUB_DAYS = 7;   // step size for "Load older"; the initial window is defaultSubDays() (previous month to today)
-const PRESENCE_FETCH_MS = 180000; // how often presence is re-read while the tab is visible (3 minutes)
-const PRESENCE_WINDOW_MS = 600000; // a worker counts as online if seen in the last 10 minutes
-const ONLINE_TARGET = 40; // presence query page size; if it comes back full it falls back to the whole collection
+const CHAT_LIMIT = 50; // messages loaded per conversation (keeps reads small)
 const data = { submissions: [], accounts: [], users: [], messages: [], presence: [], announcements: [], annRead: [], leaderboard: [], audit: [], threads: [], dmMessages: [], activeShifts: [], settings: { ...DEFAULT_SETTINGS } };
 
 /* ───────────────────────── Helpers ───────────────────────── */
@@ -161,7 +148,7 @@ function showShiftWarning() {
   const wrap = document.createElement('div');
   wrap.className = 'sh-modal';
   wrap.id = 'shiftWarn';
-  wrap.innerHTML = `<div class="sh-modal-card sh-confirm" role="alertdialog" aria-modal="true"><div class="sh-confirm-ico danger">⚠️</div><h3>Don't forget!</h3><p>Press <b>End shift</b> (paste your Abukai stats) before your shift ends.</p>${sc ? `<p class="muted">Your shift: <b>${esc(sc.label)}</b></p>` : ''}<p style="color:var(--red-text);font-weight:600;margin-top:8px">If you cannot submit within your scheduled time, your salary will be void.</p><div class="sh-modal-actions"><button type="button" class="btn btn-primary" data-ok>I understand</button></div></div>`;
+  wrap.innerHTML = `<div class="sh-modal-card sh-confirm" role="alertdialog" aria-modal="true"><div class="sh-confirm-ico danger">⚠️</div><h3>Don't forget!</h3><p>Press <b>End shift</b> (paste your Abukai stats) before your shift ends.</p>${sc ? `<p class="muted">Your shift: <b>${esc(sc.label)}</b></p>` : ''}<p style="color:#c0392b;font-weight:600;margin-top:8px">If you cannot submit within your scheduled time, your salary will be void.</p><div class="sh-modal-actions"><button type="button" class="btn btn-primary" data-ok>I understand</button></div></div>`;
   document.body.appendChild(wrap);
   const ok = wrap.querySelector('[data-ok]');
   ok.addEventListener('click', () => wrap.remove());
@@ -207,7 +194,7 @@ function showShiftReminder(mins, sc, names) {
   const wrap = document.createElement('div');
   wrap.className = 'sh-modal';
   wrap.id = 'shiftRemind';
-  wrap.innerHTML = `<div class="sh-modal-card sh-confirm" role="alertdialog" aria-modal="true"><div class="sh-confirm-ico danger">⏰</div><h3>${mins} minute(s) left in your shift</h3><p>Press <b>End shift</b> (paste your Abukai stats) for:</p><p><b>${names.map(esc).join(', ')}</b></p><p class="muted">Shift: ${esc(sc.label)}</p><p style="color:var(--red-text);font-weight:600;margin-top:8px">No submission within your schedule means your salary will be void.</p><div class="sh-modal-actions"><button type="button" class="btn btn-ghost" data-later>Later</button><button type="button" class="btn btn-primary" data-go>End shift now</button></div></div>`;
+  wrap.innerHTML = `<div class="sh-modal-card sh-confirm" role="alertdialog" aria-modal="true"><div class="sh-confirm-ico danger">⏰</div><h3>${mins} minute(s) left in your shift</h3><p>Press <b>End shift</b> (paste your Abukai stats) for:</p><p><b>${names.map(esc).join(', ')}</b></p><p class="muted">Shift: ${esc(sc.label)}</p><p style="color:#c0392b;font-weight:600;margin-top:8px">No submission within your schedule means your salary will be void.</p><div class="sh-modal-actions"><button type="button" class="btn btn-ghost" data-later>Later</button><button type="button" class="btn btn-primary" data-go>End shift now</button></div></div>`;
   document.body.appendChild(wrap);
   wrap.querySelector('[data-later]').addEventListener('click', () => wrap.remove());
   wrap.querySelector('[data-go]').addEventListener('click', () => { wrap.remove(); go('receipts'); });
@@ -301,7 +288,7 @@ function missedPage() {
 
 function auditPage() {
   const rows = data.audit.slice().sort((a, b) => timeVal(b.createdAt) - timeVal(a.createdAt));
-  const body = rows.map(a => `<tr><td>${esc(date(a.createdAt))}<small style="display:block;color:var(--chat-meta);margin-top:4px">${esc(fmtTime(a.createdAt))}</small></td><td><strong>${esc(a.actorName || 'Admin')}</strong></td><td>${esc(a.action || '')}</td><td>${esc(a.details || '')}</td></tr>`).join('')
+  const body = rows.map(a => `<tr><td>${esc(date(a.createdAt))}<small style="display:block;color:#8a958e;margin-top:4px">${esc(fmtTime(a.createdAt))}</small></td><td><strong>${esc(a.actorName || 'Admin')}</strong></td><td>${esc(a.action || '')}</td><td>${esc(a.details || '')}</td></tr>`).join('')
     || `<tr><td colspan="4"><div class="empty">🧾<b>No activity recorded yet</b>Admin actions appear here. If nothing shows after an action, publish the latest firestore.rules.</div></td></tr>`;
   return `<div class="welcome"><div><h2>Audit log</h2><p>Who changed what, and when. Showing the latest ${rows.length} (50 at a time).</p></div></div><div class="panel"><div class="toolbar"><input id="auditSearch" placeholder="Search action, admin or details…"><span class="spacer"></span>${auditMore ? '<button type="button" class="small-btn" id="moreAudit">Load 50 more</button>' : ''}<span class="muted">${rows.length} record(s)</span></div><div class="table-wrap"><table><thead><tr><th>When</th><th>Admin</th><th>Action</th><th>Details</th></tr></thead><tbody>${body}</tbody></table></div></div>`;
 }
@@ -345,15 +332,7 @@ function toast(msg) {
   clearTimeout(toastTimer);
   toastTimer = setTimeout(() => el.classList.remove('show'), 3500);
 }
-function unlisten() {
-  unsubs.forEach(fn => { try { fn(); } catch {} });
-  unsubs = [];
-  stopDm(); stopAudit(); stopPeer(); stopTracker(); stopSubmissions(); clearPresenceTimers(); stopChat();
-  clearTimeout(lbReloadTimer); lbReloadTimer = null;
-  if (lbUnsub) { try { lbUnsub(); } catch {} lbUnsub = null; }
-  if (rankUnsub) { try { rankUnsub(); } catch {} rankUnsub = null; }
-  if (threadsUnsub) { try { threadsUnsub(); } catch {} threadsUnsub = null; }
-}
+function unlisten() { unsubs.forEach(fn => { try { fn(); } catch {} }); unsubs = []; stopDm(); stopAudit(); stopPeer(); }
 
 const isAdmin = () => profile?.role === 'admin';
 const visibleSubmissions = () => isAdmin() ? data.submissions : data.submissions.filter(s => s.workerId === currentUser?.uid);
@@ -381,13 +360,13 @@ button:disabled{opacity:.6;cursor:not-allowed}
 .sh-row-actions{display:flex;gap:6px;flex-wrap:wrap}
 .trk-row{display:flex;gap:12px;align-items:center;justify-content:space-between;flex-wrap:wrap;padding:14px 0;border-top:1px solid var(--line,#eee)}
 .trk-info{min-width:0;flex:1 1 220px}
-.trk-info small{display:block;color:var(--chat-meta);margin-top:4px;line-height:1.4}
+.trk-info small{display:block;color:#8a958e;margin-top:4px;line-height:1.4}
 .trk-live{display:inline-flex;align-items:center;gap:6px;background:#e6f6ec;color:#1e8449;border-radius:999px;padding:3px 10px;font-size:12px;font-weight:700}
 .trk-free{display:inline-flex;align-items:center;gap:6px;background:#f1f4f2;color:#52605a;border-radius:999px;padding:3px 10px;font-size:12px;font-weight:700}
 .online-panel{padding:14px 18px;margin-bottom:16px}
 .online-head{display:flex;align-items:center;gap:8px;margin-bottom:10px;font-size:14px}
 .online-count{background:#e6f6ec;color:#1e8449;border-radius:999px;padding:2px 10px;font-size:12px;font-weight:700}
-.online-empty{color:var(--chat-meta);font-size:13px}
+.online-empty{color:#8a958e;font-size:13px}
 .online-marquee{overflow:hidden;white-space:nowrap;-webkit-mask-image:linear-gradient(90deg,transparent,#000 24px,#000 calc(100% - 24px),transparent);mask-image:linear-gradient(90deg,transparent,#000 24px,#000 calc(100% - 24px),transparent)}
 .online-track{display:flex;width:max-content;animation:onlineScroll 20s linear infinite}
 .online-marquee:hover .online-track{animation-play-state:paused}
@@ -419,8 +398,8 @@ button:disabled{opacity:.6;cursor:not-allowed}
 .chat-pop{display:flex;gap:12px;align-items:flex-start;background:#fff;color:#1a2420;border-radius:14px;padding:12px 14px;box-shadow:0 12px 34px rgba(0,0,0,.22);border-left:5px solid #2ecc71;cursor:pointer;animation:popIn .35s ease}
 .chat-pop-body{display:flex;flex-direction:column;gap:3px;min-width:0;flex:1}
 .chat-pop-body span{font-size:14px;line-height:1.4;word-break:break-word;white-space:pre-wrap}
-.chat-pop-body small{color:var(--chat-meta);font-size:11px}
-.chat-pop-x{border:0;background:transparent;font-size:20px;line-height:1;cursor:pointer;color:var(--chat-meta)}
+.chat-pop-body small{color:#8a958e;font-size:11px}
+.chat-pop-x{border:0;background:transparent;font-size:20px;line-height:1;cursor:pointer;color:#8a958e}
 @keyframes popIn{from{opacity:0;transform:translateX(40px)}to{opacity:1;transform:none}}
 @keyframes bubbleIn{from{opacity:0;transform:translateY(14px)}to{opacity:1;transform:none}}
 .chat-messages .bubble:last-child{animation:bubbleIn .3s ease}
@@ -431,7 +410,7 @@ button:disabled{opacity:.6;cursor:not-allowed}
 .live-body{background:#f4f7f5;border-radius:12px;padding:8px 12px;display:flex;flex-direction:column;gap:2px;min-width:0;max-width:100%}
 .live-msg.mine .live-body{background:#e6f6ec}
 .live-body span{font-size:14px;line-height:1.4;word-break:break-word;white-space:pre-wrap}
-.live-body small{color:var(--chat-meta);font-size:11px}
+.live-body small{color:#8a958e;font-size:11px}
 /* leaderboard + standing */
 .perf{margin-bottom:16px}
 .lb-tabs{display:flex;gap:6px;flex-wrap:wrap}
@@ -442,7 +421,7 @@ button:disabled{opacity:.6;cursor:not-allowed}
 .lb-main{flex:1;min-width:0}
 .lb-top{display:flex;justify-content:space-between;gap:8px;margin-bottom:6px}
 .lb-val{font-weight:700;color:#1e8449;white-space:nowrap}
-.lb-val.err{color:var(--red-text)}
+.lb-val.err{color:#c0392b}
 .lb-bar{height:8px;background:#edf1ee;border-radius:999px;overflow:hidden;margin-bottom:4px}
 .lb-fill{height:100%;background:linear-gradient(90deg,#2ecc71,#1e8449);border-radius:999px}
 .lb-fill.err{background:linear-gradient(90deg,#f5a623,#c0392b)}
@@ -458,25 +437,6 @@ button:disabled{opacity:.6;cursor:not-allowed}
 .standing.warn{background:#fff4d6;border-color:#f0d487}
 .standing.good{background:#e6f6ec;border-color:#a8dcb9}
 .standing.info{background:#f1f8f4}
-/* Card definition. The pastel fills sat at 1.1-1.7:1 against the page surface, so the cards
-   read as one flat block with no visible edge. These borders are the same hues taken dark
-   enough to clear 3:1 against the page (WCAG 1.4.11); measured 3.0-5.1:1. Copy weight is
-   nudged up and long worker text is capped so a single card cannot push the row wide. */
-.standing{border-width:1px}
-.standing b{letter-spacing:-.1px}
-.standing p{max-width:60ch}
-.standing.gold{border-color:#b8860b}
-.standing.silver{border-color:#7b8794}
-.standing.bronze{border-color:#a86b2d}
-.standing.danger{border-color:#b5433a}
-.standing.warn{border-color:#966f14}
-.standing.good{border-color:#2f7d52}
-.standing.info{border-color:#6b7f76}
-/* Rank cards: name + place only. The database sends no totals to these, so there is nothing
-   numeric to render even if someone inspects the payload. */
-.lb-place{font-weight:800;font-size:11px;letter-spacing:.5px;text-transform:uppercase;color:#45564d;background:#eef4ef;border-radius:999px;padding:5px 10px;white-space:nowrap;flex:none}
-.lb-rank.txt{font-size:12px;font-weight:800;letter-spacing:.3px;color:#45564d}
-.rank-scope{margin:9px 0 0;font-size:11px;color:var(--muted)}
 /* dashboard message ticker */
 .welcome{gap:16px;flex-wrap:wrap}
 .msg-ticker{flex:1;min-width:220px;display:flex;align-items:center;gap:10px;background:#f1f8f4;border:1px solid #d5ecdd;border-radius:999px;padding:8px 16px;cursor:pointer;overflow:hidden}
@@ -495,11 +455,11 @@ button:disabled{opacity:.6;cursor:not-allowed}
 .peer-dot{position:absolute;right:-1px;bottom:-1px;width:11px;height:11px;border-radius:50%;background:#b8c0ca;border:2px solid #fff}
 .peer-dot.on{background:#2ecc71}
 .peer-meta{min-width:0;flex:1}.peer-meta strong,.peer-meta small{display:block;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
-.peer-side{display:flex;flex-direction:column;align-items:flex-end;gap:4px;flex:none}.peer-side small{font-size:11px;color:var(--chat-meta)}
+.peer-side{display:flex;flex-direction:column;align-items:flex-end;gap:4px;flex:none}.peer-side small{font-size:11px;color:#8a958e}
 .peer-head{display:flex;align-items:center;gap:12px;padding:12px 16px;border-bottom:1px solid var(--line,#eee)}
-.peer-head>div:nth-child(2){flex:1;min-width:0}.peer-head small{display:block;color:var(--chat-meta)}
+.peer-head>div:nth-child(2){flex:1;min-width:0}.peer-head small{display:block;color:#8a958e}
 .peer-st-dot{display:inline-block;width:8px;height:8px;border-radius:50%;background:#b8c0ca;margin-right:5px}.peer-st-dot.on{background:#2ecc71}
-.peer-day{text-align:center;font-size:11px;color:var(--chat-meta);margin:10px 0}
+.peer-day{text-align:center;font-size:11px;color:#8a958e;margin:10px 0}
 .peer-tick{margin-left:6px;font-size:11px}
 .peer-window{display:flex;flex-direction:column}
 @media (max-width:760px){.peer-layout{grid-template-columns:1fr!important}.peer-layout .chat-list{max-height:240px}}
@@ -508,26 +468,12 @@ button:disabled{opacity:.6;cursor:not-allowed}
    light chat surfaces, below the 4.5:1 minimum for small text. These rules darken those
    tokens only; no markup or behaviour changes. Same specificity as the rules above and
    declared later, so they win. */
-:root{--muted:#5d6b64;--chat-meta:#5f6d66;--chat-line:#74857d;--green-text:#197040;--red-text:#a83328;--th:#5d6b64;--in:#66736c;--bd:#7a8b83;--green-bg:#e6f6ec}
-[data-theme="dark"]{--th:#93a29a;--in:#93a29a;--bd:#6d7d74;--chat-meta:#9daba3;--red-text:#f08d82;--green-text:#7fd3a2;--green-bg:#1e2f27}
-th{color:var(--th)}
-.nav-label{color:var(--th)}
-.nav button{color:var(--in)}
-.small-btn{color:var(--green-text)}
-.stat-icon{color:var(--green-text)}
-.online-count,.trk-live,.lb-val,.msg-item b{color:var(--green-text)}
-.online-count,.trk-live{background:var(--green-bg)}
-/* Footer note, and the login art panel's "RECEIPT HUB" on the dark green art (2.1–2.6:1). */
-.footer-note{color:var(--chat-meta)}
-.login-art .brand small{color:#b9cfc5}
-.field input,.field select,.field textarea,.toolbar input,.toolbar select{border-color:var(--bd)}
+:root{--muted:#5d6b64;--chat-meta:#5f6d66;--chat-line:#c4cfc8}
 .live-body b{color:#1a2420}
 .live-body small{color:var(--chat-meta)}
 .chat-pop-body small{color:var(--chat-meta)}
 .chat-pop-x{color:#5f6d66}
-/* :not(.mine) — styles.css sets .bubble.mine{color:#fff} at the same specificity, and this
-   rule comes later, so without it sent bubbles would take this ink on the dark green fill. */
-.chat-messages .bubble:not(.mine){color:#1a2420}
+.chat-messages .bubble{color:#1a2420}
 .chat-messages .bubble b{color:#1a2420}
 .chat-messages .bubble small{color:#52605a}
 .chat-messages .bubble.mine small{color:#d8ece2}
@@ -556,22 +502,22 @@ th{color:var(--th)}
 [data-theme="dark"] th{color:#93a29a;border-bottom-color:#28332c}
 [data-theme="dark"] .person small,[data-theme="dark"] .trk-info small{color:#9daba3}
 [data-theme="dark"] .field label{color:#c2cec6}
-[data-theme="dark"] .field input,[data-theme="dark"] .field select,[data-theme="dark"] .field textarea,[data-theme="dark"] .toolbar input,[data-theme="dark"] .toolbar select,[data-theme="dark"] .chat-compose input,[data-theme="dark"] .peer-search input,[data-theme="dark"] .sh-modal-card input,[data-theme="dark"] .sh-modal-card textarea,[data-theme="dark"] .sh-modal-card select{background:#101713;border-color:#6d7d74;color:#e8efe9}
+[data-theme="dark"] .field input,[data-theme="dark"] .field select,[data-theme="dark"] .field textarea,[data-theme="dark"] .toolbar input,[data-theme="dark"] .toolbar select,[data-theme="dark"] .chat-compose input,[data-theme="dark"] .peer-search input,[data-theme="dark"] .sh-modal-card input,[data-theme="dark"] .sh-modal-card textarea,[data-theme="dark"] .sh-modal-card select{background:#101713;border-color:#33413a;color:#e8efe9}
 [data-theme="dark"] input::placeholder,[data-theme="dark"] textarea::placeholder{color:#8d9b94;opacity:1}
 [data-theme="dark"] .btn-light{background:#1e2f27;color:#9fe0b8}
 [data-theme="dark"] .btn-ghost{color:#9fe0b8;border-color:#33413a}
 [data-theme="dark"] .btn-danger{background:#3a1f1c;color:#f0a79f}
 [data-theme="dark"] .mode-pill,[data-theme="dark"] .demo-banner{background:#1e2f27;color:#9fe0b8}
-[data-theme="dark"] .notice:not(.warn){background:#16241c;color:#a6d9bd}
+[data-theme="dark"] .notice{background:#16241c;color:#a6d9bd}
 [data-theme="dark"] .notice.warn{background:#2c2411;color:#e8c877}
 [data-theme="dark"] .chat-list{background:#131a16;border-right-color:#28332c}
 [data-theme="dark"] .chat-list button{border-bottom-color:#222c26}
 [data-theme="dark"] .chat-list button.active{background:#1e2f27}
 [data-theme="dark"] .chat-list button strong,[data-theme="dark"] .chat-messages .bubble b,[data-theme="dark"] .live-body b{color:#eef4ef}
-[data-theme="dark"] .chat-list button small,[data-theme="dark"] .peer-meta small,[data-theme="dark"] .peer-side small,[data-theme="dark"] .peer-head small,[data-theme="dark"] .peer-day,[data-theme="dark"] .live-body small,[data-theme="dark"] .chat-pop-body small,[data-theme="dark"] .chat-messages .bubble small{color:#a3b1a9}
+[data-theme="dark"] .chat-list button small,[data-theme="dark"] .peer-meta small,[data-theme="dark"] .peer-side small,[data-theme="dark"] .peer-day,[data-theme="dark"] .live-body small,[data-theme="dark"] .chat-pop-body small,[data-theme="dark"] .chat-messages .bubble small{color:#a3b1a9}
 [data-theme="dark"] .chat-messages .bubble{background:#222d27;color:#e8efe9}
 [data-theme="dark"] .chat-messages .bubble.mine{background:#1f7a4d;color:#fff}
-[data-theme="dark"] .chat-messages .bubble.mine small{color:#e4f7ec}
+[data-theme="dark"] .chat-messages .bubble.mine small{color:#d6f0e1}
 [data-theme="dark"] .live-body{background:#222d27}
 [data-theme="dark"] .live-msg.mine .live-body{background:#1c3a2b}
 [data-theme="dark"] .chat-pop{background:#1b241e;color:#e8efe9}
@@ -582,33 +528,7 @@ th{color:var(--th)}
 [data-theme="dark"] .demo-note{background:#2c2411;border-color:#4a3c17;color:#e8c877}
 [data-theme="dark"] .msg-ticker{background:#1b2a22;border-color:#2c4438}
 [data-theme="dark"] .msg-item,[data-theme="dark"] .msg-item b{color:#dfe9e2}
-[data-theme="dark"] .msg-item b{color:#9fe0b8}
-[data-theme="dark"] .stat-icon{background:#1e2f27}
-/* .empty inherits --muted, which the light token above leaves too dark on the dark surface. */
-[data-theme="dark"] .empty{color:#a3b1a9}
-/* Standing cards keep their light pastel fills, so their text (inherited from body) went white-on-white.
-   Re-tone each variant to a dark fill so the tint still reads but the copy stays legible. */
-[data-theme="dark"] .standing{background:#171f1a;border-color:#28332c}
-[data-theme="dark"] .standing b{color:#eef4ef}
-[data-theme="dark"] .standing p{color:#a9b6ae}
-[data-theme="dark"] .standing.gold{background:#2e2a12;border-color:#6b5a1a}
-[data-theme="dark"] .standing.silver{background:#232830;border-color:#4a5560}
-[data-theme="dark"] .standing.bronze{background:#2e2318;border-color:#6b4a2a}
-[data-theme="dark"] .standing.danger{background:#3a1f1c;border-color:#6b3a34}
-[data-theme="dark"] .standing.warn{background:#2c2411;border-color:#4a3c17}
-[data-theme="dark"] .standing.good{background:#16241c;border-color:#3d7a56}
-[data-theme="dark"] .standing.info{background:#171f1a;border-color:#5d6e65}
-/* Card definition, dark: the same hues lifted until they clear 3:1 against the dark page.
-   Measured 3.4-4.0:1. The old values (1.4-2.7:1) left every card edge invisible here. */
-[data-theme="dark"] .standing.gold{border-color:#8a7326}
-[data-theme="dark"] .standing.silver{border-color:#6b7683}
-[data-theme="dark"] .standing.bronze{border-color:#956636}
-[data-theme="dark"] .standing.danger{border-color:#a85b4e}
-[data-theme="dark"] .standing.warn{border-color:#867026}
-[data-theme="dark"] .lb-place{background:#1e2f27;color:#cfe0d6}
-[data-theme="dark"] .lb-rank.txt{color:#cfe0d6}
-[data-theme="dark"] .lb-row{border-top-color:#28332c}
-[data-theme="dark"] .rank-scope{color:#a3b1a9}`;
+[data-theme="dark"] .msg-item b{color:#9fe0b8}`;
 document.head.appendChild(extraStyle);
 
 /* ───────────────────────── Theme (light / dark) ───────────────────────── */
@@ -637,11 +557,10 @@ function toggleTheme() { applyTheme(theme === 'dark' ? 'light' : 'dark'); }
 })();
 
 /* ───────────────────────── Presence (who is online) ───────────────────────── */
-/* Presence is the single most expensive part of the app. It used to be a live listener on the WHOLE
-   collection, so every beat from every worker re-billed every open screen, forever. It is now a
-   one-shot read on a page of ONLINE_TARGET documents, refreshed every PRESENCE_FETCH_MS while the
-   tab is visible, and torn down when it is hidden. Nothing about what the strip shows changes. */
-const isOnlineEntry = p => !!p && (p.demo || (p.online !== false && Date.now() - timeVal(p.lastSeen) < PRESENCE_WINDOW_MS));
+const ONLINE_WINDOW_MS = 420000; // a worker counts as online if seen in the last 7 minutes (the heartbeat is every 5 minutes to save Firestore reads)
+let heartbeatTimer = null, onlineTimer = null, lastBeatMs = 0;
+
+const isOnlineEntry = p => !!p && (p.demo || (p.online !== false && Date.now() - timeVal(p.lastSeen) < ONLINE_WINDOW_MS));
 let presenceReadErr = false, presenceWriteErr = false;
 const onlineWorkers = () => data.presence
   .filter(p => isOnlineEntry(p))
@@ -670,95 +589,38 @@ function updateOnline() {
   el.innerHTML = onlineInner();
 }
 
-// One write, and only when the state actually changed. Repeated beats used to rewrite the same
-// document every 5 minutes purely to advance lastSeen; the online window now runs off a coarser
-// clock, so one beat per window is enough and an unchanged state is never written twice.
 async function beat(online = true) {
   if (!configured || !db || !currentUser || !profile) return;
-  if (!online && lastBeatOnline === false) return; // already recorded as offline: skip the write
-  if (online && Date.now() - lastBeatState < PRESENCE_FETCH_MS) return; // nothing changed since the last beat
+  lastBeatMs = Date.now();
   try {
     await fb.setDoc(fb.doc(db, 'presence', currentUser.uid), {
       uid: currentUser.uid, displayName: profile.displayName, role: profile.role,
       online, lastSeen: fb.serverTimestamp()
     }, { merge: true });
-    lastBeatState = Date.now();
-    lastBeatOnline = online;
     if (presenceWriteErr) { presenceWriteErr = false; updateOnline(); }
   } catch (e) {
     console.warn('presence write failed (check Firestore rules for /presence)', e);
     if (!presenceWriteErr) { presenceWriteErr = true; updateOnline(); }
   }
 }
-
-// One bounded read of presence. No live listener: the strip refreshes on a timer instead, so a
-// beat from somebody else never re-bills this screen. The status document is separate from the
-// user document, so writing my own status cannot re-trigger the session listener either.
-function fetchPresence() {
-  if (!configured || !db || !currentUser) return;
-  const { collection, query, where, getDocs, doc, getDoc } = fb;
-  // Admins may read every status document. A worker may not, so they read the one list query the
-  // rules carve out (role == 'admin') plus their own document, which keeps the "(you)" chip.
-  const jobs = isAdmin()
-    ? [getDocs(collection(db, 'presence'))]
-    : [getDocs(query(collection(db, 'presence'), where('role', '==', 'admin'))), getDoc(doc(db, 'presence', currentUser.uid))];
-  Promise.all(jobs).then(res => {
-    const byId = new Map();
-    res.forEach(s => {
-      const list = s.docs || (s.exists() ? [s] : []);
-      list.forEach(d => byId.set(d.id, { id: d.id, ...d.data() }));
-    });
-    presenceReadErr = false;
-    data.presence = [...byId.values()];
-    lastPresenceFetch = Date.now();
-    updateOnline();
-  }).catch(err => {
-    console.warn('presence read failed (check Firestore rules for /presence)', err);
-    presenceReadErr = true;
-    updateOnline();
-  });
-}
-
 function startPresence() {
-  clearPresenceTimers();
+  clearInterval(heartbeatTimer); clearInterval(onlineTimer);
   if (!configured) return;
   presenceWriteErr = false;
-  lastBeatState = 0; lastBeatOnline = null; lastPresenceFetch = 0;
   beat(true);
-  fetchPresence();
-  presenceTimer = setInterval(() => {
-    if (document.hidden) return; // a hidden tab reads and writes nothing
-    beat(true);
-    fetchPresence();
-  }, PRESENCE_FETCH_MS);
+  heartbeatTimer = setInterval(() => { if (!document.hidden) beat(true); }, 300000); // every 5 minutes (each beat is billed as a read for every open screen)
+  onlineTimer = setInterval(updateOnline, 30000);
 }
 function clearPresenceTimers() {
-  clearInterval(presenceTimer);
-  presenceTimer = null;
+  clearInterval(heartbeatTimer); clearInterval(onlineTimer);
+  heartbeatTimer = onlineTimer = null;
 }
 async function stopPresence() {
   clearPresenceTimers();
   await beat(false);
 }
-document.addEventListener('visibilitychange', () => {
-  if (document.hidden) {
-    clearInterval(presenceTimer); presenceTimer = null; // pause reads while hidden
-    stopChatMsgs(); // no private-thread listener while the tab is not on screen
-    stopPeerMsgs();
-    return;
-  }
-  if (!configured || !currentUser || !profile) return;
-  beat(true); // back on screen: let the strip go stale while hidden, but never offline
-  if (Date.now() - lastPresenceFetch > PRESENCE_FETCH_MS) fetchPresence();
-  if (!presenceTimer) presenceTimer = setInterval(() => {
-    if (document.hidden) return;
-    beat(true);
-    fetchPresence();
-  }, PRESENCE_FETCH_MS);
-  if (page === 'chat' && chatConv === 'dm' && !chatSubs.dm) openDm(); // reopen what the hidden tab closed
-  if (page === 'coworkers' && peerSel && !peerMsgUnsub) startPeerMsgs();
-});
-window.addEventListener('pagehide', () => { if (currentUser && profile) beat(false); });
+document.addEventListener('visibilitychange', () => { if (!document.hidden && heartbeatTimer && Date.now() - lastBeatMs > 120000) beat(true); });
+window.addEventListener('pagehide', () => { if (heartbeatTimer) beat(false); });
 
 /* ───────────────────────── Announcements (admin -> all users) ───────────────────────── */
 const annLsKey = () => 'steivy_ann_dismissed_' + (currentUser?.uid || '');
@@ -931,96 +793,6 @@ function isEditing() {
   const el = document.activeElement;
   return !!el && !!el.closest?.('#pageContent') && /^(INPUT|TEXTAREA|SELECT)$/.test(el.tagName) && el.type !== 'checkbox';
 }
-/* ───────────────────────── Submissions window ─────────────────────────
-   An admin used to download every submission ever recorded on login and keep a listener on all of
-   it. The window now starts on the 1st of the previous month (see defaultSubDays) and "Load older"
-   walks it back a week at a time, with "Load all" as the escape hatch. A listener only re-bills
-   documents that actually change, so the window is what makes the FIRST load cheap; it does not
-   stop new submissions from arriving live. While the window is partial, months that are not fully
-   covered are left out of the derived totals (monthSafe), because recomputing them from a partial
-   list would overwrite correct stored figures with smaller ones. */
-// The window starts on the 1st of the PREVIOUS month, not 7 days back. The dashboard, the pay
-// cards and the ranking sync all report this month and last month, so a shorter window would show
-// a small but WRONG "last month net pay" for the admin. Two whole months keep every figure on the
-// page correct while still refusing to download the entire history on login. Older months stay
-// out of reach until "Load older"/"Load all" is pressed, and are never rewritten by a partial
-// computation (see safeMonth below).
-const defaultSubDays = () => {
-  const n = new Date();
-  const firstOfPrev = new Date(Date.UTC(n.getUTCFullYear(), n.getUTCMonth() - 1, 1));
-  return Math.ceil((Date.now() - firstOfPrev.getTime()) / 86400000) + 1;
-};
-const subWindowStart = () => adminFull ? null : dayStr(-(subDays - 1));
-
-function startSubmissions() {
-  stopSubmissions();
-  if (!db || !profile) return;
-  const { collection, onSnapshot, query, where, orderBy, limit } = fb;
-  const base = collection(db, 'submissions');
-  // A worker may only ever read their own rows (the rules enforce it), so that filter is not
-  // optional -- an unconstrained query is refused outright.
-  const ref = !isAdmin()
-    ? query(base, where('workerId', '==', currentUser.uid))
-    : adminFull
-      ? query(base, orderBy('shiftDate', 'asc'))
-      // Ordered oldest-first so the window can be widened by re-subscribing to a strictly larger
-      // range; there is no cursor to thread through the listener.
-      : query(base, where('shiftDate', '>=', subWindowStart()), orderBy('shiftDate', 'asc'), limit(subWindowLimit));
-  subsUnsub = onSnapshot(ref, s => {
-    data.submissions = s.docs.map(d => ({ id: d.id, ...d.data() }));
-    subsCapped = !!subWindowStart() && s.size >= subWindowLimit;
-    loaded.submissions = true;
-    if (accessErr.submissions) delete accessErr.submissions;
-    if (subsComplete()) { scheduleLbSync(); scheduleRankingsSync(); }
-    requestRender();
-  }, err => {
-    console.error('submissions', err);
-    if (err?.code === 'permission-denied') accessErr.submissions = true;
-    toast('Could not load submissions. Check Firestore rules.');
-    requestRender();
-  });
-}
-function stopSubmissions() {
-  if (subsUnsub) { try { subsUnsub(); } catch {} subsUnsub = null; }
-  if (lbReloadTimer) { clearTimeout(lbReloadTimer); lbReloadTimer = null; }
-}
-// "Show older": widen the window a week at a time until a whole extra month is covered, past which
-// the one-shot full read is cheaper than creeping back a week at a time.
-function showOlderSubmissions() {
-  if (!isAdmin() || adminFull) return;
-  if (subDays > 8 * 7 && subsCapped) { loadAllSubmissions(); return; }
-  subDays += SUB_DAYS;
-  subWindowLimit += SUB_DAYS * 80;
-  startSubmissions();
-  toast(`Loading the last ${subDays} days…`);
-}
-// Months the loaded window covers completely: at least one day earlier than the window start. Only
-// these may be written back to the derived collections; a month straddling the window edge could be
-// under-counted, so it is left alone.
-function safeMonths() {
-  if (subsComplete()) return null; // null = no restriction
-  const edge = subWindowStart();
-  if (!edge) return null;
-  const out = new Set();
-  const now = new Date();
-  for (let i = 0; i < 36; i++) {
-    const key = ymUTC(Date.UTC(now.getUTCFullYear(), now.getUTCMonth() - i, 1));
-    if (key + '-01' < edge) break; // this month begins before the window: not fully covered
-    out.add(key);
-  }
-  return out;
-}
-const monthSafe = m => { const s = safeMonths(); return s === null || s.has(m); };
-// The escape hatch: one unbounded read for the entire history, only when asked for.
-function loadAllSubmissions() {
-  if (!isAdmin() || adminFull) return;
-  adminFull = true;
-  startSubmissions();
-  toast('Loading all submissions…');
-}
-// True when every submission is in hand, so derived totals can be written safely.
-const subsComplete = () => !isAdmin() || adminFull;
-
 // Snapshot-driven refresh: never wipe what the user is typing.
 function requestRender(kind) {
   if (!currentUser || !profile) return;
@@ -1047,8 +819,8 @@ function listen(path, key, queryFn) {
     data[key] = s.docs.map(d => ({ id: d.id, ...d.data() }));
     loaded[key] = true;
     if (accessErr[key]) delete accessErr[key];
-    if (key === 'submissions' || key === 'users') { scheduleLbSync(); scheduleRankingsSync(); }
-    if (key === 'accounts') { syncPeerListeners(); syncTrackerListeners(); }
+    if (key === 'submissions' || key === 'users') scheduleLbSync();
+    if (key === 'accounts') syncPeerListeners();
     requestRender();
   }, err => {
     console.error(path, err);
@@ -1069,22 +841,19 @@ async function loadData() {
   data.announcements = []; data.annRead = [];
   data.submissions = []; data.accounts = []; data.users = [];
   data.messages = []; data.presence = []; data.leaderboard = []; data.audit = [];
-  rankingsData = []; rankingsErr = false;
   data.threads = []; data.dmMessages = []; data.activeShifts = []; chatConv = 'group'; dmWith = ''; auditLimit = 50; subLimit = 50;
-  subDays = defaultSubDays(); subWindowLimit = 400; adminFull = false; subsCapped = false;
-  peerLimit = dmLimit = groupLimit = CHAT_LIMIT; chatSubs = {}; rankSig = ''; rankLastRun = 0;
   data.settings = { ...DEFAULT_SETTINGS };
   loaded = {}; chatReady = false; unreadChat = 0; lbError = false; accessErr = {}; trackerErr = false;
 
   if (isAdmin()) {
     listen('accounts', 'accounts');
+    listen('submissions', 'submissions');
     listen('users', 'users');
-    startSubmissions(); // windowed: the previous month to today, widened by "Load older"
     startAudit();
   } else {
-    // Workers only query what they are allowed to read. Their own submissions are one small set.
+    // Workers only query what they are allowed to read.
     listen('accounts', 'accounts', (ref, q) => q.query(ref, q.where('assignedWorkerIds', 'array-contains', uid)));
-    startSubmissions();
+    listen('submissions', 'submissions', (ref, q) => q.query(ref, q.where('workerId', '==', uid)));
     data.users = [];
   }
   setupPrivateChat(uid);
@@ -1117,77 +886,55 @@ async function loadData() {
     syncAnnouncementPopup();
   }, err => console.warn('announcementReads listener (check Firestore rules)', err)));
 
-  // Running shifts: one document per account while somebody is working on it. Workers listen to a
-  // point query per assigned account; the rules apply isAssigned() to a single document read but
-  // cannot apply it to a collection query, so an unconstrained worker listener is refused.
-  setupTracker();
+  unsubs.push(onSnapshot(collection(db, 'presence'), s => {
+    presenceReadErr = false;
+    data.presence = s.docs.map(d => ({ id: d.id, ...d.data() }));
+    updateOnline();
+  }, err => {
+    console.warn('presence listener (check Firestore rules for /presence)', err);
+    presenceReadErr = true;
+    updateOnline();
+  }));
 
-  // Leaderboard totals: only this month's document per worker is read. Older months stay in
-  // Firestore untouched; nothing on the page reports on them. Admin only -- workers rank from
-  // /rankings instead, which publishes places without totals.
-  if (isAdmin()) startLbListener();
+  // Running shifts: one document per account while somebody is working on it.
+  unsubs.push(onSnapshot(collection(db, 'activeShifts'), s => {
+    trackerErr = false;
+    data.activeShifts = s.docs.map(d => ({ id: d.id, ...d.data() }));
+    loaded.activeShifts = true;
+    requestRender();
+  }, err => {
+    console.warn('activeShifts listener (check Firestore rules for /activeShifts)', err);
+    trackerErr = true;
+    requestRender();
+  }));
 
-  // Company-wide rankings: names and places only, readable by every approved user so all
-  // accounts see the same Top 5. No totals are stored here, so there is nothing to leak.
-  startRankingsListener();
+  // Leaderboard totals (one small doc per worker per month) so workers can see their rank without reading other workers' submissions.
+  unsubs.push(onSnapshot(collection(db, 'leaderboard'), s => {
+    lbError = false;
+    data.leaderboard = s.docs.map(d => ({ id: d.id, ...d.data() }));
+    loaded.leaderboard = true;
+    scheduleLbSync();
+    requestRender();
+  }, err => {
+    console.warn('leaderboard listener (check Firestore rules for /leaderboard)', err);
+    lbError = true;
+    requestRender();
+  }));
 
-  startChat();
-}
-
-/* ───────────────────────── Chat (group + DM) ─────────────────────────
-   Both message listeners are opened when the session starts and closed again whenever the chat
-   page is left, so a user who is not looking at chat is not billed for it. Each one loads the
-   newest CHAT_LIMIT messages and "Load older" raises that and re-subscribes. */
-function startChat() {
-  if (!db || !profile) return;
-  startGroupChat();
-  openDm();
-}
-function stopChat() {
-  ['group', 'dm'].forEach(k => { if (chatSubs[k]) { try { chatSubs[k](); } catch {} delete chatSubs[k]; } });
-  chatReady = false; dmReady = false;
-  groupCapped = false; dmCapped = false;
-}
-// The group feed stays live for the whole session because the dashboard renders it as
-// "Live team chat". The private-thread listener is the page-scoped one: it exists only while a
-// private conversation is actually on screen.
-function stopChatMsgs() {
-  if (chatSubs.dm) { try { chatSubs.dm(); } catch {} delete chatSubs.dm; }
-  dmUnsub = null; dmReady = false; dmCapped = false;
-}
-function startGroupChat() {
-  if (!db || !profile) return;
-  if (chatSubs.group) { try { chatSubs.group(); } catch {} delete chatSubs.group; }
-  const { collection, onSnapshot, query, orderBy, limit } = fb;
-  groupCapped = false;
-  chatSubs.group = onSnapshot(
-    query(collection(db, 'conversations', 'company_group', 'messages'), orderBy('createdAt', 'desc'), limit(groupLimit)),
-    s => {
-      // Popup for brand-new messages from other people (skip the very first load)
-      if (chatReady) {
-        s.docChanges().forEach(ch => {
-          if (ch.type !== 'added' || ch.doc.metadata.hasPendingWrites) return;
-          const m = { id: ch.doc.id, ...ch.doc.data() };
-          if (m.senderId !== currentUser?.uid) onIncomingMessage(m);
-        });
-      }
-      chatReady = true;
-      groupCapped = s.size >= groupLimit;
-      data.messages = s.docs.map(d => ({ id: d.id, ...d.data() })).sort((a, b) => timeVal(a.createdAt) - timeVal(b.createdAt));
-      requestRender('chat');
-    }, err => { console.error('messages', err); toast('Could not load chat.'); });
-}
-// "Load older": one more page of history, then re-subscribe at the larger size. On a chat feed
-// Firestore always bills the whole result set, so this widens the read deliberately.
-function loadOlderChat() {
-  if (chatConv === 'dm') {
-    dmLimit += CHAT_LIMIT;
-    openDm();
-  } else {
-    groupLimit += CHAT_LIMIT;
-    startGroupChat();
-  }
-  toast('Loading older messages…');
+  const msgQuery = query(collection(db, 'conversations', 'company_group', 'messages'), orderBy('createdAt', 'desc'), limit(CHAT_LIMIT));
+  unsubs.push(onSnapshot(msgQuery, s => {
+    // Popup for brand-new messages from other people (skip the very first load)
+    if (chatReady) {
+      s.docChanges().forEach(ch => {
+        if (ch.type !== 'added' || ch.doc.metadata.hasPendingWrites) return;
+        const m = { id: ch.doc.id, ...ch.doc.data() };
+        if (m.senderId !== currentUser?.uid) onIncomingMessage(m);
+      });
+    }
+    chatReady = true;
+    data.messages = s.docs.map(d => ({ id: d.id, ...d.data() })).sort((a, b) => timeVal(a.createdAt) - timeVal(b.createdAt));
+    requestRender('chat');
+  }, err => { console.error('messages', err); toast('Could not load chat.'); }));
 }
 
 /* ───────────────────────── Leaderboard (top performers / top errors) ───────────────────────── */
@@ -1228,16 +975,9 @@ function rankings(period) {
 }
 
 // Keeps /leaderboard in sync. Admin only: Firestore rules intentionally deny worker writes.
-// Only runs while the whole submission history is loaded, so a partial window can never rewrite
-// a month's totals from incomplete data.
-function scheduleLbSync() {
-  if (!subsComplete()) return;
-  clearTimeout(lbTimer);
-  lbTimer = setTimeout(syncLeaderboard, 4000);
-}
+function scheduleLbSync() { clearTimeout(lbTimer); lbTimer = setTimeout(syncLeaderboard, 1500); }
 async function syncLeaderboard() {
   if (!configured || !db || !currentUser || !isAdmin() || !loaded.leaderboard || !loaded.submissions || !loaded.users) return;
-  if (!subsComplete()) return;
   const validIds = new Set(liveUsers().filter(u => u.role !== 'admin').map(u => u.id));
   const mine = data.submissions.filter(s => s.workerId && validIds.has(s.workerId));
   const want = new Map();
@@ -1245,16 +985,14 @@ async function syncLeaderboard() {
     if (s.status !== 'approved') return;
     const m = monthOf(s);
     if (!/^\d{4}-\d{2}$/.test(m)) return;
-    if (!monthSafe(m)) return; // month partly outside the loaded window: leave its stored totals alone
     const id = `${s.workerId}_${m}`;
     const g = want.get(id) || { workerId: s.workerId, workerName: s.workerName || 'Worker', month: m, receipts: 0, errors: 0, shifts: 0 };
     g.receipts += num(s.receiptCount); g.errors += num(s.errorCount); g.shifts += 1;
     want.set(id, g);
   });
   // Anything stored before that no longer has submissions (edited, rejected, deleted) is reset to zero.
-  // This function is admin-only (see the guard above), so every worker id in validIds is fair game.
   data.leaderboard.forEach(d => {
-    if (!validIds.has(d.workerId) || want.has(d.id)) return;
+    if (!(admin ? validIds.has(d.workerId) : d.workerId === uid) || want.has(d.id)) return;
     if (num(d.receipts) || num(d.errors) || num(d.shifts)) want.set(d.id, { workerId: d.workerId, workerName: d.workerName || 'Worker', month: d.month, receipts: 0, errors: 0, shifts: 0 });
   });
   const old = new Map(data.leaderboard.map(d => [d.id, d]));
@@ -1268,85 +1006,6 @@ async function syncLeaderboard() {
   } catch (e) { console.warn('leaderboard write failed (check Firestore rules for /leaderboard)', e); }
 }
 
-/* Company-wide public rankings. This is the only collection the dashboard reads for ranking,
-   and it deliberately holds no totals: a worker can read these documents directly from the
-   database and still learn nothing but a display name and a place. The exact receipt and error
-   figures stay in /leaderboard, which only the admin may read. Derived from the same approved
-   submissions as the leaderboard, so the two can never disagree about who ranks where. */
-// The old version recomputed on every keystroke-sized change from any client. It now waits 10s
-// after the last change, will not re-run within 2 minutes, and skips entirely when the numbers it
-// would write are the ones already there.
-function scheduleRankingsSync() {
-  if (!subsComplete()) return;
-  clearTimeout(rankTimer);
-  rankTimer = setTimeout(syncRankings, 10000);
-}
-function computeRankings() {
-  if (!configured || !isAdmin() || !loaded.submissions || !loaded.users) return null;
-  const validIds = new Set(liveUsers().filter(u => u.role !== 'admin').map(u => u.id));
-  const g = new Map(); // `${workerId}_${month}` -> totals
-  data.submissions.forEach(s => {
-    if (s.status !== 'approved' || !s.workerId || !validIds.has(s.workerId)) return;
-    const m = monthOf(s);
-    if (!/^\d{4}-\d{2}$/.test(m)) return;
-    const id = `${s.workerId}_${m}`;
-    const e = g.get(id) || { workerId: s.workerId, workerName: s.workerName || 'Worker', month: m, receipts: 0, errors: 0 };
-    e.receipts += num(s.receiptCount); e.errors += num(s.errorCount);
-    if (s.workerName) e.workerName = s.workerName;
-    g.set(id, e);
-  });
-  const byMonth = new Map();
-  g.forEach(e => { if (!byMonth.has(e.month)) byMonth.set(e.month, []); byMonth.get(e.month).push(e); });
-  const out = new Map();
-  byMonth.forEach((list, m) => {
-    const withOut = list.filter(e => e.receipts > 0).sort((a, b) => b.receipts - a.receipts || a.workerName.localeCompare(b.workerName));
-    withOut.forEach((e, i) => out.set(`${e.workerId}_${m}`, { workerId: e.workerId, workerName: e.workerName, month: m, outPlace: i + 1 }));
-    // "most errors" ranks only workers who actually recorded an error, worst first.
-    const withErr = list.filter(e => e.errors > 0).sort((a, b) => b.errors - a.errors || b.receipts - a.receipts || a.workerName.localeCompare(b.workerName));
-    withErr.forEach((e, i) => {
-      const id = `${e.workerId}_${m}`;
-      const rec = out.get(id) || { workerId: e.workerId, workerName: e.workerName, month: m, outPlace: null };
-      rec.errPlace = i + 1;
-      out.set(id, rec);
-    });
-  });
-  return out;
-}
-async function syncRankings() {
-  if (!subsComplete()) return; // never publish places computed from a partial month
-  const want = computeRankings();
-  if (!want) return;
-  // A signature of exactly what would be written: identical numbers cost nothing at all.
-  const sig = [...want].map(([id, g]) => `${id}:${g.outPlace ?? ''}/${g.errPlace ?? ''}/${g.workerName || ''}`).sort().join('|');
-  if (sig === rankSig && Date.now() - rankLastRun < 600000) return;
-  rankSig = sig;
-  rankLastRun = Date.now();
-  let docs;
-  try {
-    const s = await fb.getDocs(fb.collection(db, 'rankings'));
-    docs = s.docs.map(d => ({ id: d.id, ...d.data() }));
-  } catch (e) { console.warn('could not read /rankings (check Firestore rules)', e); return; }
-  const cm = monthKeyOf(0);
-  const old = new Map(docs.map(d => [d.id, d]));
-  const writes = [...want].filter(([id, g]) => {
-    if (g.month !== cm) return false; // only this month's places are published
-    if (!monthSafe(g.month)) return false; // month partly outside the loaded window
-    const o = old.get(id);
-    return !o || num(o.outPlace) !== num(g.outPlace) || num(o.errPlace) !== num(g.errPlace) || (o.workerName || '') !== g.workerName;
-  }).map(([id, g]) => b => b.set(fb.doc(db, 'rankings', id), {
-    workerId: g.workerId, workerName: g.workerName, month: g.month,
-    outPlace: g.outPlace ?? null, errPlace: g.errPlace ?? null,
-    updatedAt: fb.serverTimestamp()
-  }, { merge: true }));
-  // A month that no longer has approved submissions (edited, rejected, worker deleted) is cleared.
-  const mineIds = new Set(liveUsers().filter(u => u.role !== 'admin').map(u => u.id));
-  docs.filter(d => mineIds.has(d.workerId) && !want.has(d.id) && (num(d.outPlace) || num(d.errPlace)))
-    .forEach(d => writes.push(b => b.set(fb.doc(db, 'rankings', d.id), { workerId: d.workerId, workerName: d.workerName || 'Worker', month: d.month, outPlace: null, errPlace: null, updatedAt: fb.serverTimestamp() }, { merge: true })));
-  if (!writes.length) return;
-  try { await commitInChunks(writes); }
-  catch (e) { console.warn('rankings write failed (check Firestore rules for /rankings)', e); }
-}
-
 const medal = i => ['🥇', '🥈', '🥉'][i] || `#${i + 1}`;
 const errMedal = i => ['😡', '😭', '😢', '😟', '😕'][i] || `#${i + 1}`; // emojis for the error ranking
 
@@ -1357,98 +1016,43 @@ function top5Panel(title, sub, list, kind) {
   return `<div class="panel"><div class="panel-head"><div><h3>${title}</h3><p>${sub}</p></div></div>${rows || `<div class="empty">${kind === 'out' ? '🏆' : '✓'}<b>${kind === 'out' ? 'No output recorded yet' : 'No errors recorded'}</b>${kind === 'out' ? 'Rankings appear after shifts are submitted.' : 'Great — nobody has errors in this period.'}</div>`}</div>`;
 }
 
-/* Company-wide Top 5 for workers: worker name and ranking position only.
-   Reads /rankings, whose documents contain a display name and a place -- no receipt count, no
-   error count, no output total. There is no numeric performance field to render, so the numbers
-   cannot be exposed by the UI even if a worker inspects the live payload. */
-function rankTop5(kind, period) {
-  const placeKey = kind === 'err' ? 'errPlace' : 'outPlace';
-  const best = new Map(); // workerId -> best place in period
-  rankingsData.forEach(r => {
-    if (!inPeriod(r.month, period)) return;
-    const p = num(r[placeKey]);
-    if (p < 1) return;
-    const cur = best.get(r.workerId);
-    if (!cur || p < cur.place) best.set(r.workerId, { name: r.workerName || 'Worker', place: p });
-  });
-  const list = [...best.values()].sort((a, b) => a.place - b.place || a.name.localeCompare(b.name)).slice(0, 5);
-  const ico = kind === 'err' ? errMedal : medal;
-  return list.map(r => `<div class="lb-row"><span class="lb-rank ${r.place > 3 ? 'txt' : ''}">${ico(r.place - 1)}</span><div class="avatar">${esc(initials(r.name))}</div><div class="lb-main"><div class="lb-top"><b>${esc(r.name)}</b><span class="lb-place">${ordinal(r.place)} place</span></div></div></div>`).join('');
-}
-
-function rankPanel(title, sub, kind, period) {
-  const rows = rankTop5(kind, period);
-  const isOut = kind === 'out';
-  return `<div class="panel"><div class="panel-head"><div><h3>${title}</h3><p>${sub}</p></div></div>${rows || `<div class="empty">${isOut ? '🏆' : '✓'}<b>${isOut ? 'No output recorded yet' : 'No errors recorded'}</b>${isOut ? 'Rankings appear after shifts are approved and published.' : 'Great — nobody has errors in this period.'}</div>`}</div>`;
-}
-
-/* Places and totals for the signed-in worker on a worker's own dashboard.
-   Places come from /rankings (published, identically, to every account); the receipt and error
-   figures are the worker's own approved submissions, read from the records they already own.
-   No other worker's totals are ever loaded, so none can be rendered or inspected. */
-function myStanding(period) {
-  const uid = currentUser.uid;
-  const mine = data.submissions.filter(s => s.workerId === uid && s.status === 'approved' && inPeriod(monthOf(s), period));
-  if (!mine.length) return null;
-  const receipts = mine.reduce((n, s) => n + num(s.receiptCount), 0);
-  const errors = mine.reduce((n, s) => n + num(s.errorCount), 0);
-  const months = new Set(mine.map(monthOf));
-  const pub = rankingsData.filter(r => r.workerId === uid && months.has(r.month));
-  const myRank = key => {
-    const p = pub.map(r => num(r[key])).filter(v => v > 0);
-    return p.length ? Math.min(...p) : 0; // best place across the period's months
-  };
-  const nOut = new Set(rankingsData.filter(r => months.has(r.month) && num(r.outPlace) > 0).map(r => `${r.month}#${r.outPlace}`)).size;
-  const nErr = new Set(rankingsData.filter(r => months.has(r.month) && num(r.errPlace) > 0).map(r => `${r.month}#${r.errPlace}`)).size;
-  return { receipts, errors, nOut, nErr, rankOut: myRank('outPlace'), rankErr: myRank('errPlace') };
-}
-
-function workerStandings(period) {
+function workerStandings(rk, period) {
   const label = periodLabel(period);
   const uid = currentUser.uid;
-  const own = myStanding(period);
-  if (!own) return [{ cls: 'info', icon: '📝', title: 'No submissions yet', text: `Submit a shift for ${label} to see your ranking.` }];
-  const { receipts, errors, nOut, nErr, rankOut: rank, rankErr: er } = own;
-  // "behind the leader" is no longer available: reading how far ahead somebody else is would
-  // mean reading their totals, which is exactly what the ranking data must not expose.
+  const me = rk.rows.find(r => r.id === uid);
+  if (!me) return [{ cls: 'info', icon: '📝', title: 'No submissions yet', text: `Submit a shift for ${label} to see your ranking.` }];
+  const n = rk.byOut.length;
+  const rank = rk.byOut.findIndex(r => r.id === uid) + 1;
+  const top = rk.byOut[0];
+  const gap = top.receipts - me.receipts;
   let out;
-  if (rank === 1) out = { cls: 'gold', icon: '🏆', title: 'Congratulations! You are the TOP PERFORMER', text: `You processed the most receipts (${receipts.toLocaleString()}) in ${label}. Outstanding work — keep it up!` };
-  else if (rank === 2) out = { cls: 'silver', icon: '🥈', title: 'You are 2nd place in output', text: `${receipts.toLocaleString()} receipts processed in ${label} — you are almost at the top. Keep pushing!` };
-  else if (rank === 3) out = { cls: 'bronze', icon: '🥉', title: 'You are 3rd place in output', text: `${receipts.toLocaleString()} receipts processed in ${label}. Great effort, keep pushing!` };
-  else if (rank > 0 && nOut > 1 && rank === nOut) out = { cls: 'warn', icon: '📉', title: 'You have the lowest output', text: `${receipts.toLocaleString()} receipts processed in ${label}. Let's aim higher on your next shift — you can do it!` };
-  else if (rank > 0) out = { cls: 'info', icon: '📊', title: `You are ${ordinal(rank)} of ${nOut} in output`, text: `${receipts.toLocaleString()} receipts processed in ${label}. Keep your accuracy improving!` };
-  else out = { cls: 'info', icon: '📊', title: 'You are not ranked yet in output', text: `${receipts.toLocaleString()} receipts processed in ${label}. Your place appears once the monthly ranking is published.` };
+  if (rank === 1) out = { cls: 'gold', icon: '🏆', title: 'Congratulations! You are the TOP PERFORMER', text: `You processed the most receipts (${me.receipts.toLocaleString()}) in ${label}. Outstanding work — keep it up!` };
+  else if (rank === 2) out = { cls: 'silver', icon: '🥈', title: 'You are 2nd place in output', text: `${me.receipts.toLocaleString()} receipts processed — only ${gap.toLocaleString()} behind the top performer. You are almost there!` };
+  else if (rank === 3) out = { cls: 'bronze', icon: '🥉', title: 'You are 3rd place in output', text: `${me.receipts.toLocaleString()} receipts processed — ${gap.toLocaleString()} behind the top performer. Great effort, keep pushing!` };
+  else if (rank === n && n > 1) out = { cls: 'warn', icon: '📉', title: 'You have the lowest output', text: `${me.receipts.toLocaleString()} receipts processed in ${label}. Let's aim higher on your next shift — you can do it!` };
+  else out = { cls: 'info', icon: '📊', title: `You are ${ordinal(rank)} of ${n} in output`, text: `${me.receipts.toLocaleString()} receipts processed — ${gap.toLocaleString()} behind the top performer.` };
 
+  const er = rk.byErr.findIndex(r => r.id === uid) + 1;
   let err;
-  if (errors === 0) err = { cls: 'good', icon: '✅', title: 'Zero errors — excellent accuracy!', text: `No error receipts recorded in ${label}. Keep up the clean work!` };
-  else if (er === 1) err = { cls: 'danger', icon: '😡', title: 'You have the MOST errors', text: `${errors.toLocaleString()} error(s) in ${label}, the highest in the team. Please double-check each receipt before submitting.` };
-  else if (er === 2) err = { cls: 'danger', icon: '😭', title: 'You have the 2nd highest errors', text: `${errors.toLocaleString()} error(s) in ${label}. Slow down a little and review your work to bring this down.` };
-  else if (er === 3) err = { cls: 'warn', icon: '😢', title: 'You have the 3rd highest errors', text: `${errors.toLocaleString()} error(s) in ${label}. A little more checking will bring this down.` };
-  else err = { cls: 'info', icon: '😕', title: `${errors.toLocaleString()} error(s) recorded`, text: nErr > 3 ? `You are outside the top 3 for errors in ${label}. Keep your accuracy improving!` : `${errors.toLocaleString()} error(s) in ${label}. Keep your accuracy improving!` };
+  if (me.errors === 0) err = { cls: 'good', icon: '✅', title: 'Zero errors — excellent accuracy!', text: `No error receipts recorded in ${label}. Keep up the clean work!` };
+  else if (er === 1) err = { cls: 'danger', icon: '😡', title: 'You have the MOST errors', text: `${me.errors.toLocaleString()} error(s) in ${label}, the highest in the team. Please double-check each receipt before submitting.` };
+  else if (er === 2) err = { cls: 'danger', icon: '😭', title: 'You have the 2nd highest errors', text: `${me.errors.toLocaleString()} error(s) in ${label}. Slow down a little and review your work to bring this down.` };
+  else if (er === 3) err = { cls: 'warn', icon: '😢', title: 'You have the 3rd highest errors', text: `${me.errors.toLocaleString()} error(s) in ${label}. A little more checking will bring this down.` };
+  else err = { cls: 'info', icon: '😕', title: `${me.errors.toLocaleString()} error(s) recorded`, text: `You are outside the top 3 for errors in ${label}. Keep your accuracy improving!` };
   return [out, err];
 }
 
 function performanceSection() {
-  const admin = isAdmin();
+  const rk = rankings(lbPeriod);
   const label = periodLabel(lbPeriod);
   const tabs = `<div class="lb-tabs">${[['month', 'This month'], ['prev', 'Last month'], ['all', 'All time']].map(([k, l]) => `<button type="button" class="lb-tab ${lbPeriod === k ? 'active' : ''}" data-lb-period="${k}">${l}</button>`).join('')}</div>`;
-  const head = `<div class="panel-head" style="margin:0 0 12px"><div><h3>🏆 ${admin ? 'Team performance' : 'My standing'}</h3><p>${esc(label)} · only approved shifts are counted</p></div>${tabs}</div>`;
-
-  const rankBlock = `${rankPanel('Top 5 performers', 'Company-wide · most receipts processed · ' + esc(label), 'out', lbPeriod)}
-    ${rankPanel('Top 5 most errors', 'Company-wide · highest error count · ' + esc(label), 'err', lbPeriod)}
-    <p class="rank-scope">Places only — receipt and error totals are not shown. Rankings cover every approved worker, in every account.</p>`;
-  const rankWarn = rankingsErr ? `<div class="notice warn" style="margin:0 0 10px">Company rankings could not be loaded. Publish the Firestore rules for the "rankings" collection.</div>` : '';
-
-  if (admin) {
-    const rk = rankings(lbPeriod);
-    const warn = lbError ? `<div class="notice warn" style="margin:0 0 10px">Team ranking could not be loaded. Update your Firestore rules for the "leaderboard" collection.</div>` : '';
-    return `<div class="perf">${head}${warn}<div class="grid-2">${top5Panel('Top 5 performers', 'Most receipts processed · ' + esc(label), rk.byOut, 'out')}${top5Panel('Top 5 most errors', 'Highest error count · ' + esc(label), rk.byErr, 'err')}</div></div>
-      <div class="perf">${rankWarn}${rankBlock}</div>`;
+  const head = `<div class="panel-head" style="margin:0 0 12px"><div><h3>🏆 ${isAdmin() ? 'Team performance' : 'My standing'}</h3><p>${esc(label)} · only approved shifts are counted</p></div>${tabs}</div>`;
+  if (isAdmin()) {
+    return `<div class="perf">${head}<div class="grid-2">${top5Panel('Top 5 performers', 'Most receipts processed · ' + esc(label), rk.byOut, 'out')}${top5Panel('Top 5 most errors', 'Highest error count · ' + esc(label), rk.byErr, 'err')}</div></div>`;
   }
-
-  const cards = workerStandings(lbPeriod).map(c => `<div class="standing ${c.cls}"><div class="standing-ico">${c.icon}</div><div><b>${esc(c.title)}</b><p>${esc(c.text)}</p></div></div>`).join('');
-  return `<div class="perf">${head}${rankWarn}<div class="standing-grid">${cards}</div></div>
-    <div class="perf">${rankBlock}</div>`;
+  const cards = workerStandings(rk, lbPeriod).map(c => `<div class="standing ${c.cls}"><div class="standing-ico">${c.icon}</div><div><b>${esc(c.title)}</b><p>${esc(c.text)}</p></div></div>`).join('');
+  const warn = lbError ? `<div class="notice warn" style="margin-bottom:10px">Team ranking could not be loaded. Update your Firestore rules for the "leaderboard" collection.</div>` : '';
+  return `<div class="perf">${head}${warn}<div class="standing-grid">${cards}</div></div>`;
 }
 
 /* ───────────────────────── Team chat: popups, badge, live feed ───────────────────────── */
@@ -1471,7 +1075,7 @@ function showChatPopup(m) {
     if (e.target.closest('.chat-pop-x')) { el.remove(); return; }
     el.remove();
     if (m.peer) { peerSel = peerContacts().find(c => c.convId === m.convId) || peerSel; stopPeerMsgs(); peerMsgs = []; go('coworkers'); return; }
-    if (m.dm) { chatConv = 'dm'; if (isAdmin()) { dmWith = m.dmId; openDm(); } } else { chatConv = 'group'; }
+    if (m.dm) { chatConv = 'dm'; if (isAdmin()) { dmWith = m.dmId; startDm(); } } else { chatConv = 'group'; }
     go('chat');
   });
   box.appendChild(el);
@@ -1557,58 +1161,18 @@ function startAudit() {
 }
 function stopAudit() { if (auditUnsub) { try { auditUnsub(); } catch {} auditUnsub = null; } }
 
-// This month's leaderboard totals. A few times an hour the listener is rebuilt so a month that
-// rolls over mid-session is picked up; only documents that changed are ever re-billed.
-function startLbListener() {
-  if (lbUnsub) { try { lbUnsub(); } catch {} lbUnsub = null; }
-  if (!configured || !db || !isAdmin()) return;
-  lbUnsub = fb.onSnapshot(fb.query(fb.collection(db, 'leaderboard'), fb.where('month', '==', monthKeyOf(0))), s => {
-    lbError = false;
-    data.leaderboard = s.docs.map(d => ({ id: d.id, ...d.data() }));
-    loaded.leaderboard = true;
-    scheduleLbSync();
-    requestRender();
-  }, err => {
-    console.warn('leaderboard listener (check Firestore rules for /leaderboard)', err);
-    lbError = true;
-    requestRender();
-  });
-  clearTimeout(lbReloadTimer);
-  lbReloadTimer = setTimeout(() => { if (!document.hidden && currentUser && isAdmin()) startLbListener(); }, 900000);
-}
-// Names and places for this month only, so the half of the collection nobody looks at stays unread.
-function startRankingsListener() {
-  if (rankUnsub) { try { rankUnsub(); } catch {} rankUnsub = null; }
-  if (!configured || !db || !currentUser) return;
-  rankUnsub = fb.onSnapshot(fb.query(fb.collection(db, 'rankings'), fb.where('month', '==', monthKeyOf(0))), s => {
-    rankingsErr = false;
-    rankingsData = s.docs.map(d => ({ id: d.id, ...d.data() }));
-    loaded.rankings = true;
-    scheduleRankingsSync();
-    requestRender();
-  }, err => {
-    console.warn('rankings listener (check Firestore rules for /rankings)', err);
-    rankingsErr = true;
-    requestRender();
-  });
-}
-
 // Private chat = one thread per worker (worker <-> admins). Workers can never read each other's threads.
 const dmId = () => isAdmin() ? dmWith : currentUser?.uid;
 const chatPeerName = () => { const u = data.users.find(x => x.id === dmWith); return u?.displayName || u?.email || 'Worker'; };
-function stopDm() { if (chatSubs.dm) { try { chatSubs.dm(); } catch {} delete chatSubs.dm; } dmUnsub = null; }
-// Opens (or re-opens at the current dmLimit) the listener for the selected thread.
-function openDm() {
-  const id = dmId();
-  const switching = data.dmThreadId !== id;
-  if (chatSubs.dm && !switching) return; // already listening to this very thread
+function stopDm() { if (dmUnsub) { try { dmUnsub(); } catch {} dmUnsub = null; } }
+function startDm() {
   stopDm();
-  if (!configured || !db || !id || !currentUser) { data.dmMessages = []; data.dmThreadId = ''; return; }
+  data.dmMessages = [];
+  dmReady = false;
+  const id = dmId();
+  if (!configured || !db || !id || !currentUser) return;
   const { collection, onSnapshot, query, orderBy, limit } = fb;
-  dmCapped = false;
-  if (switching) { dmReady = false; data.dmMessages = []; data.dmThreadId = id; }
-  chatSubs.dm = onSnapshot(query(collection(db, 'privateThreads', id, 'messages'), orderBy('createdAt', 'desc'), limit(dmLimit)), s => {
-    if (data.dmThreadId !== id) return; // a later thread took over
+  dmUnsub = onSnapshot(query(collection(db, 'privateThreads', id, 'messages'), orderBy('createdAt', 'desc'), limit(CHAT_LIMIT)), s => {
     if (dmReady && !isAdmin()) { // workers get a popup for admin replies (admins are notified from the thread list)
       s.docChanges().forEach(ch => {
         if (ch.type !== 'added' || ch.doc.metadata.hasPendingWrites) return;
@@ -1621,50 +1185,40 @@ function openDm() {
       });
     }
     dmReady = true;
-    dmCapped = s.size >= dmLimit;
     data.dmMessages = s.docs.map(d => ({ id: d.id, ...d.data() })).sort((a, b) => timeVal(a.createdAt) - timeVal(b.createdAt));
     requestRender('chat');
   }, err => { console.warn('private messages (check Firestore rules for /privateThreads)', err); toast('Could not load private messages. Check Firestore rules.'); });
 }
 function setupPrivateChat(uid) {
-  const { collection, doc } = fb;
+  const { collection, doc, onSnapshot } = fb;
   if (isAdmin()) {
-    // One tiny document per worker: this is the address book AND the unread badge, so it stays
-    // live at all times. That is the one listener deliberately kept open outside the chat page.
-    startThreads();
+    let ready = false;
+    unsubs.push(onSnapshot(collection(db, 'privateThreads'), s => {
+      if (ready) {
+        s.docChanges().forEach(ch => {
+          if (ch.type === 'removed' || ch.doc.metadata.hasPendingWrites) return;
+          const t = ch.doc.data();
+          if (!t.adminUnread || t.lastSenderId === uid) return;
+          if (page === 'chat' && chatConv === 'dm' && dmWith === ch.doc.id && !document.hidden) return;
+          unreadChat++;
+          updateChatBadge();
+          showChatPopup({ senderName: t.lastSenderName || t.workerName, text: t.lastText, dm: true, dmId: ch.doc.id });
+        });
+      }
+      ready = true;
+      data.threads = s.docs.map(d => ({ id: d.id, ...d.data() }));
+      requestRender('chat');
+    }, err => console.warn('privateThreads listener (check Firestore rules)', err)));
   } else {
-    openDm();
-    unsubs.push(fb.onSnapshot(doc(db, 'privateThreads', uid), s => {
+    startDm();
+    unsubs.push(onSnapshot(doc(db, 'privateThreads', uid), s => {
       data.threads = s.exists() ? [{ id: s.id, ...s.data() }] : [];
       requestRender('chat');
     }, err => console.warn('private thread listener (check Firestore rules)', err)));
   }
 }
-function startThreads() {
-  if (threadsUnsub) { try { threadsUnsub(); } catch {} threadsUnsub = null; }
-  if (!configured || !db || !isAdmin()) return;
-  let ready = false;
-  const uid = currentUser?.uid;
-  threadsUnsub = fb.onSnapshot(fb.collection(db, 'privateThreads'), s => {
-    if (ready) {
-      s.docChanges().forEach(ch => {
-        if (ch.type === 'removed' || ch.doc.metadata.hasPendingWrites) return;
-        const t = ch.doc.data();
-        if (!t.adminUnread || t.lastSenderId === uid) return;
-        if (page === 'chat' && chatConv === 'dm' && dmWith === ch.doc.id && !document.hidden) return;
-        unreadChat++;
-        updateChatBadge();
-        showChatPopup({ senderName: t.lastSenderName || t.workerName, text: t.lastText, dm: true, dmId: ch.doc.id });
-      });
-    }
-    ready = true;
-    data.threads = s.docs.map(d => ({ id: d.id, ...d.data() }));
-    requestRender('chat');
-  }, err => console.warn('privateThreads listener (check Firestore rules)', err));
-}
 function markDmRead() {
   if (!configured || !db || page !== 'chat' || chatConv !== 'dm' || document.hidden) return;
-  if (!chatSubs.dm) openDm(); // a hidden tab closed the listener; reading it is a reason to reopen
   const id = dmId();
   const t = data.threads.find(x => x.id === id);
   const flag = isAdmin() ? 'adminUnread' : 'workerUnread';
@@ -1692,7 +1246,7 @@ function openChat(conv, id) {
     if (isAdmin()) stopDm();
   } else {
     chatConv = 'dm';
-    if (isAdmin() && (dmWith !== id || !chatSubs.dm)) { dmWith = id; openDm(); }
+    if (isAdmin() && (dmWith !== id || !dmUnsub)) { dmWith = id; startDm(); }
   }
   renderPage();
 }
@@ -1728,12 +1282,6 @@ function submissionRowsPaged(rows) {
   const more = sorted.length > subLimit ? `<tr><td colspan="8" style="text-align:center"><button type="button" class="small-btn" data-more-subs>Show 50 more (${sorted.length - subLimit} left)</button></td></tr>` : '';
   return submissionRows(sorted.slice(0, subLimit)) + more;
 }
-// The admin only downloads a window of history. This puts the "load further back" control at the
-// bottom of the submissions table, where it is only offered while the window is partial.
-function olderSubsBar() {
-  if (!isAdmin() || adminFull) return '';
-  return `<div class="right" style="justify-content:center;padding:10px 0"><button type="button" class="small-btn" data-older-subs>⤓ Load older submissions (older than ${esc(dayStr(-(subDays - 1)))})${subsCapped ? '' : ' · all'}</button></div>`;
-}
 
 /* ───────────────────────── Demo mode ───────────────────────── */
 function demoSignIn(role) {
@@ -1753,17 +1301,6 @@ function demoSignIn(role) {
   data.messages = [{ id: 'm1', senderId: 'worker-2', senderName: 'Jamie Santos', text: 'Hi team, my shift submission is ready for review.', createdAt: new Date() }];
   data.presence = [{ id: 'demo-worker', displayName: 'Demo Worker', role: 'worker', demo: true }, { id: 'worker-2', displayName: 'Jamie Santos', role: 'worker', demo: true }];
   data.leaderboard = [];
-  // Sample company-wide ranking docs: display name and place only, exactly the shape /rankings stores.
-  const cm = monthKeyOf(0), pm = monthKeyOf(-1);
-  rankingsData = [
-    { id: `worker-2_${cm}`, workerId: 'worker-2', workerName: 'Jamie Santos', month: cm, outPlace: 1, errPlace: null },
-    { id: `demo-worker_${cm}`, workerId: 'demo-worker', workerName: 'Demo Worker', month: cm, outPlace: 2, errPlace: 1 },
-    { id: `worker-4_${cm}`, workerId: 'worker-4', workerName: 'Maria Cruz', month: cm, outPlace: 3, errPlace: 3 },
-    { id: `worker-5_${cm}`, workerId: 'worker-5', workerName: 'Pat Reyes', month: cm, outPlace: 4, errPlace: 2 },
-    { id: `worker-2_${pm}`, workerId: 'worker-2', workerName: 'Jamie Santos', month: pm, outPlace: 2, errPlace: 2 },
-    { id: `demo-worker_${pm}`, workerId: 'demo-worker', workerName: 'Demo Worker', month: pm, outPlace: 1, errPlace: null }
-  ].filter(r => /^\d{4}-\d{2}$/.test(r.month));
-  rankingsErr = false;
   data.audit = [];
   data.activeShifts = [];
   data.threads = []; data.dmMessages = []; chatConv = 'group'; dmWith = '';
@@ -1848,7 +1385,7 @@ function submissionRows(rows) {
   if (!rows.length) return `<tr><td colspan="8"><div class="empty">▤<b>No submissions yet</b>Shift submissions will appear here.</div></td></tr>`;
   return rows.slice().sort((a, b) => timeVal(b.createdAt) - timeVal(a.createdAt)).map(s => {
     const err = num(s.errorCount);
-    return `<tr><td><div class="person"><div class="avatar">${esc(initials(s.workerName))}</div><div><strong>${esc(s.workerName || 'Worker')}</strong><small>${esc(s.accountName || 'No account')}</small></div></div></td><td>${esc(date(s.shiftDate))}</td><td>${esc(s.shiftType || '—')}<small style="display:block;color:var(--chat-meta);margin-top:4px">${esc(s.startTime || '')} – ${esc(s.endTime || '')}</small></td><td>${num(s.receiptCount).toLocaleString()}</td><td${err > 0 ? ' style="color:var(--red-text);font-weight:600"' : ''}>${err.toLocaleString()}</td><td>${money(s.netCents)}</td><td>${status(s.status)}</td><td><div class="sh-row-actions"><button class="small-btn" data-view="${esc(s.id)}">View</button>${isAdmin() ? rowAdminBtns(s) : ''}</div></td></tr>`;
+    return `<tr><td><div class="person"><div class="avatar">${esc(initials(s.workerName))}</div><div><strong>${esc(s.workerName || 'Worker')}</strong><small>${esc(s.accountName || 'No account')}</small></div></div></td><td>${esc(date(s.shiftDate))}</td><td>${esc(s.shiftType || '—')}<small style="display:block;color:#8a958e;margin-top:4px">${esc(s.startTime || '')} – ${esc(s.endTime || '')}</small></td><td>${num(s.receiptCount).toLocaleString()}</td><td${err > 0 ? ' style="color:#c0392b;font-weight:600"' : ''}>${err.toLocaleString()}</td><td>${money(s.netCents)}</td><td>${status(s.status)}</td><td><div class="sh-row-actions"><button class="small-btn" data-view="${esc(s.id)}">View</button>${isAdmin() ? rowAdminBtns(s) : ''}</div></td></tr>`;
   }).join('');
 }
 
@@ -2173,7 +1710,7 @@ async function releaseShift(accountId) {
 function receipts() {
   const rows = filteredSubmissions();
   const sel = v => filters.status === v ? 'selected' : '';
-  return `<div class="welcome"><div><h2>${isAdmin() ? 'Review submissions' : 'My shifts'}</h2><p>${isAdmin() ? 'Review worker activity, edit processed/error counts, and approve or reject shift records.' : 'Start and end your shift here, and track the status of your submissions.'}</p></div>${!isAdmin() ? '<button class="btn btn-primary" id="newSubmission">▶ Shift tracker</button>' : ''}</div>${!isAdmin() ? trackerPanel() : activeShiftsPanel()}<div class="panel"><div class="toolbar"><input id="receiptSearch" placeholder="Search worker or account…" value="${esc(filters.q)}"><select id="statusFilter"><option value="all">All statuses</option><option ${sel('pending')}>pending</option><option ${sel('approved')}>approved</option><option ${sel('rejected')}>rejected</option></select><span class="spacer"></span><span class="muted" id="recordCount">${rows.length} record(s)</span></div><div class="table-wrap"><table><thead><tr><th>Worker / account</th><th>Shift date</th><th>Shift</th><th>Processed</th><th>Errors</th><th>Net pay</th><th>Status</th><th>Action</th></tr></thead><tbody id="submissionRows">${submissionRowsPaged(rows)}</tbody></table></div>${olderSubsBar()}</div>`;
+  return `<div class="welcome"><div><h2>${isAdmin() ? 'Review submissions' : 'My shifts'}</h2><p>${isAdmin() ? 'Review worker activity, edit processed/error counts, and approve or reject shift records.' : 'Start and end your shift here, and track the status of your submissions.'}</p></div>${!isAdmin() ? '<button class="btn btn-primary" id="newSubmission">▶ Shift tracker</button>' : ''}</div>${!isAdmin() ? trackerPanel() : activeShiftsPanel()}<div class="panel"><div class="toolbar"><input id="receiptSearch" placeholder="Search worker or account…" value="${esc(filters.q)}"><select id="statusFilter"><option value="all">All statuses</option><option ${sel('pending')}>pending</option><option ${sel('approved')}>approved</option><option ${sel('rejected')}>rejected</option></select><span class="spacer"></span><span class="muted" id="recordCount">${rows.length} record(s)</span></div><div class="table-wrap"><table><thead><tr><th>Worker / account</th><th>Shift date</th><th>Shift</th><th>Processed</th><th>Errors</th><th>Net pay</th><th>Status</th><th>Action</th></tr></thead><tbody id="submissionRows">${submissionRowsPaged(rows)}</tbody></table></div></div>`;
 }
 
 function workerNamesFor(a) {
@@ -2217,7 +1754,7 @@ function accounts() {
     t.cr += x.st.cur.receipts; t.ce += x.st.cur.errors;
     return t;
   }, { pr: 0, pe: 0, cr: 0, ce: 0 });
-  const errCell = n => `<td${n > 0 ? ' style="color:var(--red-text);font-weight:600"' : ''}>${n.toLocaleString()}</td>`;
+  const errCell = n => `<td${n > 0 ? ' style="color:#c0392b;font-weight:600"' : ''}>${n.toLocaleString()}</td>`;
 
   const body = rows.map(({ a, st }) => `<tr><td><strong>${esc(a.name)}</strong></td><td>${esc(a.code || '—')}</td><td>${esc(workerNamesFor(a))}</td><td>${st.prev.receipts.toLocaleString()}</td>${errCell(st.prev.errors)}<td>${st.cur.receipts.toLocaleString()}</td>${errCell(st.cur.errors)}<td>${status(a.isActive === false ? 'inactive' : 'active')}</td><td>${esc(a.notes || '—')}</td><td>${isAdmin() ? `<div class="sh-row-actions"><button class="btn btn-secondary" data-assign="${esc(a.id)}">Assign workers</button><button class="small-btn" data-edit-account="${esc(a.id)}">Edit</button><button class="small-btn" data-toggle-account="${esc(a.id)}">${a.isActive === false ? 'Activate' : 'Deactivate'}</button><button class="btn btn-danger" data-delete-account="${esc(a.id)}">Delete</button></div>` : '—'}</td></tr>`).join('');
 
@@ -2237,7 +1774,7 @@ function errorsPage() {
   const body = rows.length ? rows.map(s => {
     const p = num(s.receiptCount), er = num(s.errorCount);
     const rt = p > 0 ? (er / p * 100).toFixed(1) : '0.0';
-    return `<tr><td><div class="person"><div class="avatar">${esc(initials(s.workerName))}</div><div><strong>${esc(s.workerName || 'Worker')}</strong><small>${esc(s.accountName || 'No account')}</small></div></div></td><td>${esc(date(s.shiftDate))}</td><td>${esc(s.shiftType || '—')}</td><td>${p.toLocaleString()}</td><td style="color:var(--red-text);font-weight:600">${er.toLocaleString()}</td><td${errWarnPct() > 0 && errRatePct(p, er) >= errWarnPct() ? ' style="color:var(--red-text);font-weight:600"' : ''}>${rt}%${errWarnPct() > 0 && errRatePct(p, er) >= errWarnPct() ? ' ⚠' : ''}</td><td>${esc(s.errorNote || '—')}</td><td>${status(s.status)}</td><td><div class="sh-row-actions"><button class="small-btn" data-view="${esc(s.id)}">View</button>${isAdmin() ? rowAdminBtns(s) : ''}</div></td></tr>`;
+    return `<tr><td><div class="person"><div class="avatar">${esc(initials(s.workerName))}</div><div><strong>${esc(s.workerName || 'Worker')}</strong><small>${esc(s.accountName || 'No account')}</small></div></div></td><td>${esc(date(s.shiftDate))}</td><td>${esc(s.shiftType || '—')}</td><td>${p.toLocaleString()}</td><td style="color:#c0392b;font-weight:600">${er.toLocaleString()}</td><td${errWarnPct() > 0 && errRatePct(p, er) >= errWarnPct() ? ' style="color:#c0392b;font-weight:600"' : ''}>${rt}%${errWarnPct() > 0 && errRatePct(p, er) >= errWarnPct() ? ' ⚠' : ''}</td><td>${esc(s.errorNote || '—')}</td><td>${status(s.status)}</td><td><div class="sh-row-actions"><button class="small-btn" data-view="${esc(s.id)}">View</button>${isAdmin() ? rowAdminBtns(s) : ''}</div></td></tr>`;
   }).join('') : `<tr><td colspan="9"><div class="empty">✓<b>No errors recorded</b>Submissions with an error count above zero will appear here.</div></td></tr>`;
 
   return `<div class="welcome"><div><h2>${isAdmin() ? 'Error processed' : 'My error processed'}</h2><p>${isAdmin() ? 'Shifts with error receipts. Use Edit to correct processed or error counts.' : 'Shifts where you recorded error receipts.'}</p></div></div><div class="stats">${stat('Total errors', totalErr.toLocaleString(), 'Across listed submissions', '⚠')}${stat('Shifts with errors', rows.length, `of ${all.length} submission(s)`, '▤')}${stat('Error rate', overall + '%', 'Errors ÷ processed (errors are included in processed)', '%')}${stat('Processed receipts', totalProcessed.toLocaleString(), 'Basis of pay (includes error receipts)', '✓')}</div><div class="panel"><div class="table-wrap"><table><thead><tr><th>Worker / account</th><th>Shift date</th><th>Shift</th><th>Processed</th><th>Errors</th><th>Error rate</th><th>Note</th><th>Status</th><th>Action</th></tr></thead><tbody>${body}</tbody></table></div></div>`;
@@ -2312,9 +1849,7 @@ function updateChat() {
 function chat() {
   if (isAdmin() && chatConv === 'dm' && !dmWith) chatConv = 'group';
   const who = chatConv === 'group' ? 'Public group: everyone can read these messages.' : (isAdmin() ? `Private chat with ${esc(chatPeerName())}: only you and this worker can read it.` : 'Private chat with the admin: only you and the admin can read it.');
-  // Only the newest CHAT_LIMIT messages are loaded; the button fetches one more page.
-  const older = (chatConv === 'group' ? groupCapped : dmCapped) ? `<div style="text-align:center;padding:4px 0 8px"><button type="button" class="small-btn" data-older-chat>↑ Load older messages</button></div>` : '';
-  return `<div class="welcome"><div><h2>Team conversation</h2><p>${who}</p></div></div><div class="chat-layout"><div class="chat-list" id="chatList">${chatListHtml()}</div><div class="chat-window"><div class="chat-messages" id="chatMessages">${older}${chatBubbles()}</div><form class="chat-compose" id="chatForm"><input name="message" placeholder="${chatConv === 'group' ? 'Message the whole team…' : 'Write a private message…'}" maxlength="2000" autocomplete="off" required><button class="btn btn-primary" type="submit">Send ↗</button></form></div></div>`;
+  return `<div class="welcome"><div><h2>Team conversation</h2><p>${who}</p></div></div><div class="chat-layout"><div class="chat-list" id="chatList">${chatListHtml()}</div><div class="chat-window"><div class="chat-messages" id="chatMessages">${chatBubbles()}</div><form class="chat-compose" id="chatForm"><input name="message" placeholder="${chatConv === 'group' ? 'Message the whole team…' : 'Write a private message…'}" maxlength="2000" autocomplete="off" required><button class="btn btn-primary" type="submit">Send ↗</button></form></div></div>`;
 }
 
 /* ───────────────────────── User agreement (must accept before using the app) ───────────────────────── */
@@ -2475,10 +2010,6 @@ function renderPage() {
 
 function go(p) {
   if (page === 'coworkers' && p !== 'coworkers') stopPeerMsgs(); // no open message listener while on another page
-  // Chat listeners live only while the chat page is open. Leaving closes them; coming back
-  // reopens them, dropping anything typed into the outstanding page's state.
-  if (p === 'chat' && page !== 'chat' && chatConv === 'dm') openDm();
-  if (p !== 'chat' && page === 'chat' && chatConv === 'dm') stopChatMsgs();
   page = p;
   detailId = null;
   if (p === 'chat') unreadChat = 0;
@@ -2512,8 +2043,6 @@ function wireShell() {
     if ((el = t.closest('[data-peer]'))) return openPeer(el.dataset.peer);
     if ((el = t.closest('[data-chat-conv]'))) return openChat(el.dataset.chatConv, el.dataset.chatId);
     if ((el = t.closest('[data-more-subs]'))) { subLimit += 50; return filterRows(); }
-    if ((el = t.closest('[data-older-chat]'))) return loadOlderChat();
-    if ((el = t.closest('[data-older-subs]'))) return showOlderSubmissions();
     if ((el = t.closest('[data-allow-resubmit]'))) return allowResubmit(el.dataset.allowResubmit);
     if ((el = t.closest('[data-edit-counts]'))) return editCounts(el.dataset.editCounts);
     if ((el = t.closest('[data-del-announcement]'))) return removeAnnouncement(el.dataset.delAnnouncement);
@@ -2548,7 +2077,6 @@ function wirePage() {
     $$('#pageContent tbody tr').forEach(r => r.classList.toggle('hidden', !r.textContent.toLowerCase().includes(q)));
   });
   $('#peerSearch')?.addEventListener('input', e => { peerSearch = e.target.value; updatePeerList(); });
-  $('[data-older-peer]')?.addEventListener('click', loadOlderPeer);
   $('#peerWindow')?.addEventListener('submit', e => { if (e.target.id === 'peerForm') { e.preventDefault(); sendPeer(e.target.elements.message); } });
   const pm = $('#peerMessages');
   if (pm) pm.scrollTop = pm.scrollHeight;
@@ -2581,7 +2109,7 @@ function viewSubmission(id, scroll = true) {
   const lateNote = num(s.lateErrors) > 0 ? `<div class="notice">+${num(s.lateErrors).toLocaleString()} late error(s) were added after this shift ended (they appeared later in Abukai).</div>` : '';
   const editedNote = s.editedByName ? `<div class="notice">Counts edited by ${esc(s.editedByName)}${s.editedAt ? ' on ' + esc(date(s.editedAt)) + ' ' + esc(fmtTime(s.editedAt)) : ''}.</div>` : '';
   const stats = s.startStats && s.endStats ? `<div class="notice">Abukai stats (pasted by the worker) · start: ${num(s.startStats.submitted).toLocaleString()} submitted / ${num(s.startStats.errors).toLocaleString()} errors → end: ${num(s.endStats.submitted).toLocaleString()} submitted / ${num(s.endStats.errors).toLocaleString()} errors.</div>` : '';
-  const html = `<div class="panel"><div class="panel-head"><div><h3>Submission details</h3><p>${esc(s.id)}</p></div><button class="btn btn-ghost" id="closeDetails">Close</button></div><div class="form-grid"><div><p class="muted">Worker</p><b>${esc(s.workerName)}</b></div><div><p class="muted">Status</p>${status(s.status)}</div><div><p class="muted">Account</p><b>${esc(s.accountName)}</b></div><div><p class="muted">Shift date</p><b>${esc(date(s.shiftDate))}</b></div><div><p class="muted">Shift hours</p><b>${esc(s.startTime)} – ${esc(s.endTime)}</b></div><div><p class="muted">Processed receipts</p><b>${processed.toLocaleString()}</b></div><div><p class="muted">Error count</p><b${errs > 0 ? ' style="color:var(--red-text)"' : ''}>${errs.toLocaleString()}</b></div><div><p class="muted">Error rate</p><b>${errRate}</b></div><div><p class="muted">Gross pay</p><b>${money(s.grossCents)}</b></div><div><p class="muted">Deductions</p><b>${money(s.deductionCents)}</b></div><div><p class="muted">Net pay</p><b>${money(s.netCents)}</b></div></div>${stats}${errNote}${lateNote}${reason}${editedNote}<div class="right" style="justify-content:flex-end;margin-top:20px;gap:8px">${actions}</div></div>`;
+  const html = `<div class="panel"><div class="panel-head"><div><h3>Submission details</h3><p>${esc(s.id)}</p></div><button class="btn btn-ghost" id="closeDetails">Close</button></div><div class="form-grid"><div><p class="muted">Worker</p><b>${esc(s.workerName)}</b></div><div><p class="muted">Status</p>${status(s.status)}</div><div><p class="muted">Account</p><b>${esc(s.accountName)}</b></div><div><p class="muted">Shift date</p><b>${esc(date(s.shiftDate))}</b></div><div><p class="muted">Shift hours</p><b>${esc(s.startTime)} – ${esc(s.endTime)}</b></div><div><p class="muted">Processed receipts</p><b>${processed.toLocaleString()}</b></div><div><p class="muted">Error count</p><b${errs > 0 ? ' style="color:#c0392b"' : ''}>${errs.toLocaleString()}</b></div><div><p class="muted">Error rate</p><b>${errRate}</b></div><div><p class="muted">Gross pay</p><b>${money(s.grossCents)}</b></div><div><p class="muted">Deductions</p><b>${money(s.deductionCents)}</b></div><div><p class="muted">Net pay</p><b>${money(s.netCents)}</b></div></div>${stats}${errNote}${lateNote}${reason}${editedNote}<div class="right" style="justify-content:flex-end;margin-top:20px;gap:8px">${actions}</div></div>`;
   $('#detailsPanel')?.remove();
   $('#pageContent').insertAdjacentHTML('afterbegin', `<div id="detailsPanel">${html}</div>`);
   $('#closeDetails').onclick = () => { detailId = null; $('#detailsPanel')?.remove(); };
@@ -3020,7 +2548,6 @@ async function deleteWorker(u) {
     data.activeShifts.filter(s => s.workerId === u.id).forEach(s => ops.push(b => b.delete(fb.doc(db, 'activeShifts', s.id))));
     // Remove their ranking totals so they no longer appear in team rankings.
     data.leaderboard.filter(d => d.workerId === u.id).forEach(d => ops.push(b => b.delete(fb.doc(db, 'leaderboard', d.id))));
-    rankingsData.filter(d => d.workerId === u.id).forEach(d => ops.push(b => b.delete(fb.doc(db, 'rankings', d.id))));
     await commitInChunks(ops);
     try { await fb.deleteDoc(fb.doc(db, 'presence', u.id)); } catch {} // best effort: stop showing them as online
     logAudit('Deleted worker', `${u.displayName || ''} · ${u.email || ''}`);
@@ -3166,62 +2693,6 @@ function stopPeer() {
   peerMsgs = []; peerSel = null; peerSearch = '';
 }
 
-/* ───────────────────────── Running shifts (activeShifts) ───────────────────────── */
-// "The second query did not work" is fixed here: the worker's view of running shifts is
-// loaded per assigned account instead of with one collection query. firestore.rules
-// allows isAssigned() on a single document read but cannot apply it across a collection
-// query, so the whole-collection listener was refused and the tracker rendered empty.
-function stopTracker() {
-  Object.values(trackerUnsubs).forEach(f => { try { f(); } catch {} });
-  trackerUnsubs = {};
-}
-function applyTrackerDocs(docs) {
-  data.activeShifts = docs;
-  loaded.activeShifts = true;
-  requestRender();
-}
-function setupTracker() {
-  if (!configured || !db || !currentUser) return;
-  const { collection, onSnapshot } = fb;
-  if (isAdmin()) { // admins may read every running shift
-    unsubs.push(onSnapshot(collection(db, 'activeShifts'), s => {
-      trackerErr = false;
-      applyTrackerDocs(s.docs.map(d => ({ id: d.id, ...d.data() })));
-    }, err => {
-      console.warn('activeShifts listener (check Firestore rules for /activeShifts)', err);
-      trackerErr = true; requestRender();
-    }));
-    return;
-  }
-  syncTrackerListeners();
-}
-// One point listener per assigned account. Re-run whenever accounts change, so a newly
-// assigned (or de-assigned) account starts (or stops) reporting its running shift.
-function syncTrackerListeners() {
-  if (!configured || !db || !currentUser || isAdmin()) return;
-  const { doc, onSnapshot } = fb;
-  const uid = currentUser.uid;
-  const want = new Set(data.accounts.filter(a => a.isActive !== false && (!a.assignedWorkerIds || a.assignedWorkerIds.includes(uid))).map(a => a.id));
-  Object.keys(trackerUnsubs).forEach(id => {
-    if (want.has(id)) return;
-    try { trackerUnsubs[id](); } catch {}
-    delete trackerUnsubs[id];
-    data.activeShifts = data.activeShifts.filter(s => s.id !== id);
-  });
-  want.forEach(id => {
-    if (trackerUnsubs[id]) return;
-    trackerUnsubs[id] = onSnapshot(doc(db, 'activeShifts', id), s => {
-      trackerErr = false;
-      const others = data.activeShifts.filter(x => x.id !== id);
-      applyTrackerDocs(s.exists() ? [...others, { id: s.id, ...s.data() }] : others);
-    }, e => {
-      console.warn('activeShifts/' + id + ' listener (check Firestore rules for /activeShifts)', e);
-      trackerErr = true; requestRender();
-    });
-  });
-  requestRender();
-}
-
 // One list listener per assigned account (cheap: only my conversations). Re-run whenever accounts change.
 function syncPeerListeners() {
   if (!configured || !db || !currentUser || !profile || isAdmin()) return;
@@ -3251,10 +2722,9 @@ function syncPeerListeners() {
         });
       }
       peerReady[id] = true;
-      if (page !== 'coworkers') return; // a hidden page still receives, but does not repaint
       Object.keys(peerConvs).forEach(k => { if (peerConvs[k].accountId === id) delete peerConvs[k]; });
       s.docs.forEach(d => { peerConvs[d.id] = { id: d.id, ...d.data() }; });
-      updatePeerList();
+      if (page === 'coworkers') updatePeerList();
       updatePeerBadge();
       markPeerRead();
     }, err => console.warn('peerChats listener (check Firestore rules for /peerChats)', err));
@@ -3266,26 +2736,17 @@ function startPeerMsgs() {
   if (!configured || !db || !peerSel) return;
   const id = peerSel.convId;
   const { collection, onSnapshot, query, orderBy, limit } = fb;
-  peerCapped = false;
-  peerMsgUnsub = onSnapshot(query(collection(db, 'peerChats', id, 'messages'), orderBy('createdAt', 'desc'), limit(peerLimit)), s => {
+  peerMsgUnsub = onSnapshot(query(collection(db, 'peerChats', id, 'messages'), orderBy('createdAt', 'desc'), limit(CHAT_LIMIT)), s => {
     if (peerSel?.convId !== id) return;
-    peerCapped = s.size >= peerLimit;
     peerMsgs = s.docs.map(d => ({ id: d.id, ...d.data() })).sort((a, b) => timeVal(a.createdAt) - timeVal(b.createdAt));
     updatePeerMessages();
     markPeerRead();
   }, err => { console.warn('peer messages (check Firestore rules for /peerChats)', err); toast('Could not load this conversation. Check Firestore rules.'); });
 }
-// One more page of history for the open co-worker conversation.
-function loadOlderPeer() {
-  peerLimit += CHAT_LIMIT;
-  startPeerMsgs();
-  toast('Loading older messages…');
-}
 
 // Marks messages I received as read and clears my unread counter (only while the conversation is on screen).
 function markPeerRead() {
   if (!configured || !db || page !== 'coworkers' || document.hidden || !peerSel || !currentUser) return;
-  if (!peerMsgUnsub) startPeerMsgs(); // a hidden tab closed it; reading it is a reason to reopen
   const uid = currentUser.uid, id = peerSel.convId;
   const unread = peerMsgs.filter(m => m.receiverId === uid && m.isRead !== true && !m.id.startsWith('local'));
   const conv = peerConvs[id];
@@ -3385,7 +2846,7 @@ function peerBubbles() {
 }
 function peerWindowHtml() {
   if (!peerSel) return `<div class="chat-messages" id="peerMessages"><div class="empty">💬<b>Select a co-worker</b>Pick someone on the left to start a private chat.</div></div>`;
-  return `<div class="peer-head"><div class="avatar">${esc(initials(peerSel.name))}</div><div><strong>${esc(peerSel.name)}</strong><small id="peerStatus">${peerStatusHtml()}</small></div><small>Account: ${esc(peerSel.accountName)}</small></div><div class="chat-messages" id="peerMessages">${peerCapped ? `<div style="text-align:center;padding:4px 0 8px"><button type="button" class="small-btn" data-older-peer>↑ Load older messages</button></div>` : ''}${peerBubbles()}</div><form class="chat-compose" id="peerForm"><input name="message" placeholder="Message ${esc(peerSel.name)}…" maxlength="2000" autocomplete="off" required><button class="btn btn-primary" type="submit">Send ↗</button></form>`;
+  return `<div class="peer-head"><div class="avatar">${esc(initials(peerSel.name))}</div><div><strong>${esc(peerSel.name)}</strong><small id="peerStatus">${peerStatusHtml()}</small></div><small>Account: ${esc(peerSel.accountName)}</small></div><div class="chat-messages" id="peerMessages">${peerBubbles()}</div><form class="chat-compose" id="peerForm"><input name="message" placeholder="Message ${esc(peerSel.name)}…" maxlength="2000" autocomplete="off" required><button class="btn btn-primary" type="submit">Send ↗</button></form>`;
 }
 function updatePeerBadge() {
   const b = $('[data-nav="coworkers"]');
@@ -3407,7 +2868,7 @@ function updatePeerMessages() {
   if (!box || !peerSel) return;
   const nearBottom = box.scrollHeight - box.scrollTop - box.clientHeight < 120;
   const lastMine = peerMsgs.slice(-1)[0]?.senderId === currentUser?.uid;
-  box.innerHTML = peerCapped ? `<div style="text-align:center;padding:4px 0 8px"><button type="button" class="small-btn" data-older-peer>↑ Load older messages</button></div>${peerBubbles()}` : peerBubbles();
+  box.innerHTML = peerBubbles();
   if (nearBottom || lastMine) box.scrollTo({ top: box.scrollHeight, behavior: 'smooth' });
   updatePeerList();
 }
