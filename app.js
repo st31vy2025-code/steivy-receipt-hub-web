@@ -1013,10 +1013,11 @@ function boardRows(period) {
 }
 
 function rankings(period) {
-  const rows = boardRows(period).filter(r => r.receipts > 0 || r.errors > 0);
+  const all = boardRows(period);
+  const rows = all.filter(r => r.receipts > 0 || r.errors > 0);
   const byOut = [...rows].sort((a, b) => b.receipts - a.receipts || a.errors - b.errors || a.name.localeCompare(b.name));
   const byErr = rows.filter(r => r.errors > 0).sort((a, b) => b.errors - a.errors || b.receipts - a.receipts || a.name.localeCompare(b.name));
-  return { rows, byOut, byErr };
+  return { rows, byOut, byErr, all };
 }
 
 // Keeps /leaderboard in sync. Admin only: Firestore rules intentionally deny worker writes.
@@ -1089,13 +1090,35 @@ function workerStandings(rk, period) {
   return [out, err];
 }
 
+// Admin: total output / errors of EVERY worker for the selected period, approved + pending shifts (rejected are left out).
+// Built from data the admin already has loaded, so it costs no extra reads or listeners.
+function workerTotalsPanel(rk, label, period) {
+  const byId = new Map(rk.all.map(r => [r.id, { ...r, pending: 0 }])); // rk.all = approved shifts (older months of "All time" come from /leaderboard)
+  const valid = new Set(liveUsers().filter(u => u.role !== 'admin').map(u => u.id));
+  data.submissions.forEach(s => {
+    if (s.status !== 'pending' || !s.workerId || !valid.has(s.workerId) || !inPeriod(monthOf(s), period)) return;
+    const g = byId.get(s.workerId) || { id: s.workerId, name: s.workerName || 'Worker', receipts: 0, errors: 0, shifts: 0, pending: 0 };
+    g.receipts += num(s.receiptCount); g.errors += num(s.errorCount); g.shifts += 1; g.pending += 1;
+    byId.set(s.workerId, g);
+  });
+  liveUsers().filter(u => u.role !== 'admin' && (u.status || 'approved') === 'approved' && u.isActive !== false).forEach(u => {
+    if (!byId.has(u.id)) byId.set(u.id, { id: u.id, name: u.displayName || u.email || 'Worker', receipts: 0, errors: 0, shifts: 0, pending: 0 });
+  });
+  const list = [...byId.values()].sort((a, b) => b.receipts - a.receipts || a.errors - b.errors || a.name.localeCompare(b.name));
+  const tot = list.reduce((t, r) => ({ receipts: t.receipts + r.receipts, errors: t.errors + r.errors, shifts: t.shifts + r.shifts, pending: t.pending + r.pending }), { receipts: 0, errors: 0, shifts: 0, pending: 0 });
+  const pct = r => errRatePct(r.receipts, r.errors).toFixed(1) + '%';
+  const body = list.map(r => `<tr><td><strong>${esc(r.name)}</strong></td><td>${r.shifts}</td><td>${r.receipts.toLocaleString()}</td><td>${r.errors.toLocaleString()}</td><td>${pct(r)}</td><td>${r.pending || '–'}</td></tr>`).join('');
+  const foot = `<tr><td><strong>Total</strong></td><td><strong>${tot.shifts}</strong></td><td><strong>${tot.receipts.toLocaleString()}</strong></td><td><strong>${tot.errors.toLocaleString()}</strong></td><td><strong>${pct(tot)}</strong></td><td><strong>${tot.pending || '–'}</strong></td></tr>`;
+  return `<div class="panel" style="margin-top:12px"><div class="panel-head"><div><h3>Worker totals</h3><p>${esc(label)} · approved + pending shifts · "Pending" = shifts still awaiting review (already included)</p></div></div><div class="table-wrap"><table><thead><tr><th>Worker</th><th>Shifts</th><th>Output</th><th>Errors</th><th>Error rate</th><th>Pending</th></tr></thead><tbody>${body ? body + foot : '<tr><td colspan="6"><div class="empty">No workers yet.</div></td></tr>'}</tbody></table></div></div>`;
+}
+
 function performanceSection() {
   const rk = rankings(lbPeriod);
   const label = periodLabel(lbPeriod);
   const tabs = `<div class="lb-tabs">${[['month', 'This month'], ['prev', 'Last month'], ['all', 'All time']].map(([k, l]) => `<button type="button" class="lb-tab ${lbPeriod === k ? 'active' : ''}" data-lb-period="${k}">${l}</button>`).join('')}</div>`;
   const head = `<div class="panel-head" style="margin:0 0 12px"><div><h3>🏆 ${isAdmin() ? 'Team performance' : 'My standing'}</h3><p>${esc(label)} · only approved shifts are counted</p></div>${tabs}</div>`;
   if (isAdmin()) {
-    return `<div class="perf">${head}<div class="grid-2">${top5Panel('Top 5 performers', 'Most receipts processed · ' + esc(label), rk.byOut, 'out')}${top5Panel('Top 5 most errors', 'Highest error count · ' + esc(label), rk.byErr, 'err')}</div></div>`;
+    return `<div class="perf">${head}<div class="grid-2">${top5Panel('Top 5 performers', 'Most receipts processed · ' + esc(label), rk.byOut, 'out')}${top5Panel('Top 5 most errors', 'Highest error count · ' + esc(label), rk.byErr, 'err')}</div>${workerTotalsPanel(rk, label, lbPeriod)}</div>`;
   }
   const cards = workerStandings(rk, lbPeriod).map(c => `<div class="standing ${c.cls}"><div class="standing-ico">${c.icon}</div><div><b>${esc(c.title)}</b><p>${esc(c.text)}</p></div></div>`).join('');
   const warn = lbError ? `<div class="notice warn" style="margin-bottom:10px">Team ranking could not be loaded. Update your Firestore rules for the "leaderboard" collection.</div>` : '';
