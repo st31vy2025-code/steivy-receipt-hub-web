@@ -26,6 +26,7 @@ let detailId = null;
 let chatReady = false, unreadChat = 0;
 let theme = 'light';
 let lbPeriod = 'month', lbError = false, lbTimer = null;
+let perfView = 'top'; // admin dashboard: 'top' (Top 5 lists) or 'totals' (every worker)
 let loaded = {};
 let accessErr = {}; // collections the admin could not read (permission-denied)
 let missedFrom = '', missedTo = '';
@@ -430,6 +431,7 @@ button:disabled{opacity:.6;cursor:not-allowed}
 /* leaderboard + standing */
 .perf{margin-bottom:16px}
 .lb-tabs{display:flex;gap:6px;flex-wrap:wrap}
+.wt-wrap{max-height:440px;overflow:auto}.wt-wrap thead th{position:sticky;top:0;z-index:1;background:#fff}
 .lb-tab{border:1px solid #d5ddd8;background:#fff;color:#1a2420;border-radius:999px;padding:6px 14px;font-size:12px;font-weight:600;cursor:pointer}
 .lb-tab.active{background:#1e8449;border-color:#1e8449;color:#fff}
 .lb-row{display:flex;gap:12px;align-items:center;padding:10px 0;border-top:1px solid var(--line,#eee)}
@@ -516,6 +518,7 @@ button:disabled{opacity:.6;cursor:not-allowed}
 [data-theme="dark"] .muted,[data-theme="dark"] .panel-head p,[data-theme="dark"] .welcome p,[data-theme="dark"] .stat small,[data-theme="dark"] .stat-head,[data-theme="dark"] .quick small{color:#a9b6ae}
 [data-theme="dark"] td{color:#dbe5de;border-bottom-color:#222c26}
 [data-theme="dark"] th{color:#93a29a;border-bottom-color:#28332c}
+[data-theme="dark"] .wt-wrap thead th{background:#171f1a}
 [data-theme="dark"] .person small,[data-theme="dark"] .trk-info small{color:#9daba3}
 [data-theme="dark"] .field label{color:#c2cec6}
 [data-theme="dark"] .field input,[data-theme="dark"] .field select,[data-theme="dark"] .field textarea,[data-theme="dark"] .toolbar input,[data-theme="dark"] .toolbar select,[data-theme="dark"] .chat-compose input,[data-theme="dark"] .peer-search input,[data-theme="dark"] .sh-modal-card input,[data-theme="dark"] .sh-modal-card textarea,[data-theme="dark"] .sh-modal-card select{background:#101713;border-color:#33413a;color:#e8efe9}
@@ -1109,7 +1112,7 @@ function workerTotalsPanel(rk, label, period) {
   const pct = r => errRatePct(r.receipts, r.errors).toFixed(1) + '%';
   const body = list.map(r => `<tr><td><strong>${esc(r.name)}</strong></td><td>${r.shifts}</td><td>${r.receipts.toLocaleString()}</td><td>${r.errors.toLocaleString()}</td><td>${pct(r)}</td><td>${r.pending || '–'}</td></tr>`).join('');
   const foot = `<tr><td><strong>Total</strong></td><td><strong>${tot.shifts}</strong></td><td><strong>${tot.receipts.toLocaleString()}</strong></td><td><strong>${tot.errors.toLocaleString()}</strong></td><td><strong>${pct(tot)}</strong></td><td><strong>${tot.pending || '–'}</strong></td></tr>`;
-  return `<div class="panel" style="margin-top:12px"><div class="panel-head"><div><h3>Worker totals</h3><p>${esc(label)} · approved + pending shifts · "Pending" = shifts still awaiting review (already included)</p></div></div><div class="table-wrap"><table><thead><tr><th>Worker</th><th>Shifts</th><th>Output</th><th>Errors</th><th>Error rate</th><th>Pending</th></tr></thead><tbody>${body ? body + foot : '<tr><td colspan="6"><div class="empty">No workers yet.</div></td></tr>'}</tbody></table></div></div>`;
+  return `<div class="panel"><div class="panel-head"><div><h3>Worker totals</h3><p>${esc(label)} · approved + pending shifts · "Pending" = shifts still awaiting review (already included)</p></div></div><div class="table-wrap wt-wrap"><table><thead><tr><th>Worker</th><th>Shifts</th><th>Output</th><th>Errors</th><th>Error rate</th><th>Pending</th></tr></thead><tbody>${body ? body + foot : '<tr><td colspan="6"><div class="empty">No workers yet.</div></td></tr>'}</tbody></table></div></div>`;
 }
 
 function performanceSection() {
@@ -1118,7 +1121,11 @@ function performanceSection() {
   const tabs = `<div class="lb-tabs">${[['month', 'This month'], ['prev', 'Last month'], ['all', 'All time']].map(([k, l]) => `<button type="button" class="lb-tab ${lbPeriod === k ? 'active' : ''}" data-lb-period="${k}">${l}</button>`).join('')}</div>`;
   const head = `<div class="panel-head" style="margin:0 0 12px"><div><h3>🏆 ${isAdmin() ? 'Team performance' : 'My standing'}</h3><p>${esc(label)} · only approved shifts are counted</p></div>${tabs}</div>`;
   if (isAdmin()) {
-    return `<div class="perf">${head}<div class="grid-2">${top5Panel('Top 5 performers', 'Most receipts processed · ' + esc(label), rk.byOut, 'out')}${top5Panel('Top 5 most errors', 'Highest error count · ' + esc(label), rk.byErr, 'err')}</div>${workerTotalsPanel(rk, label, lbPeriod)}</div>`;
+    const views = `<div class="lb-tabs" style="margin:0 0 12px">${[['top', '🏆 Top performers'], ['totals', '👥 Worker totals']].map(([k, l]) => `<button type="button" class="lb-tab ${perfView === k ? 'active' : ''}" data-perf-view="${k}">${l}</button>`).join('')}</div>`;
+    const view = perfView === 'totals'
+      ? workerTotalsPanel(rk, label, lbPeriod) // computed only when this tab is open
+      : `<div class="grid-2">${top5Panel('Top 5 performers', 'Most receipts processed · ' + esc(label), rk.byOut, 'out')}${top5Panel('Top 5 most errors', 'Highest error count · ' + esc(label), rk.byErr, 'err')}</div>`;
+    return `<div class="perf">${head}${views}${view}</div>`;
   }
   const cards = workerStandings(rk, lbPeriod).map(c => `<div class="standing ${c.cls}"><div class="standing-ico">${c.icon}</div><div><b>${esc(c.title)}</b><p>${esc(c.text)}</p></div></div>`).join('');
   const warn = lbError ? `<div class="notice warn" style="margin-bottom:10px">Team ranking could not be loaded. Update your Firestore rules for the "leaderboard" collection.</div>` : '';
@@ -2109,6 +2116,7 @@ function wireShell() {
     const t = e.target;
     let el;
     if ((el = t.closest('[data-lb-period]'))) { lbPeriod = el.dataset.lbPeriod; return renderPage(); }
+    if ((el = t.closest('[data-perf-view]'))) { perfView = el.dataset.perfView === 'totals' ? 'totals' : 'top'; return renderPage(); }
     if ((el = t.closest('[data-page]'))) return go(el.dataset.page);
     if ((el = t.closest('[data-start-shift]'))) { if (el.disabled) return; return startShift(el.dataset.startShift); }
     if ((el = t.closest('[data-end-shift]'))) return endShift(el.dataset.endShift);
