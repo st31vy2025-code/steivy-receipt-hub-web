@@ -557,7 +557,7 @@ function toggleTheme() { applyTheme(theme === 'dark' ? 'light' : 'dark'); }
 })();
 
 /* ───────────────────────── Presence (who is online) ───────────────────────── */
-const ONLINE_WINDOW_MS = 420000; // a worker counts as online if seen in the last 7 minutes (the heartbeat is every 5 minutes to save Firestore reads)
+const ONLINE_WINDOW_MS = 780000; // a worker counts as online if seen in the last 13 minutes (the heartbeat is every 10 minutes to save Firestore reads)
 let heartbeatTimer = null, onlineTimer = null, lastBeatMs = 0;
 
 const isOnlineEntry = p => !!p && (p.demo || (p.online !== false && Date.now() - timeVal(p.lastSeen) < ONLINE_WINDOW_MS));
@@ -608,7 +608,7 @@ function startPresence() {
   if (!configured) return;
   presenceWriteErr = false;
   beat(true);
-  heartbeatTimer = setInterval(() => { if (!document.hidden) beat(true); }, 300000); // every 5 minutes (each beat is billed as a read for every open screen)
+  heartbeatTimer = setInterval(() => { if (!document.hidden) beat(true); }, 600000); // every 10 minutes (each beat is billed as a read for every open screen)
   onlineTimer = setInterval(updateOnline, 30000);
 }
 function clearPresenceTimers() {
@@ -779,7 +779,13 @@ async function initFirebase() {
     fb = { ...authmod, ...fsmod, initializeApp: appmod.initializeApp, deleteApp: appmod.deleteApp };
     const app = appmod.initializeApp(firebaseConfig);
     auth = authmod.getAuth(app);
-    db = fsmod.getFirestore(app);
+    // Local cache (IndexedDB, works across tabs): a page reload or a re-opened tab only pays for documents that changed.
+    try {
+      db = fsmod.initializeFirestore(app, { localCache: fsmod.persistentLocalCache({ tabManager: fsmod.persistentMultipleTabManager() }) });
+    } catch (e) {
+      console.warn('Local cache unavailable, using the default (memory) cache.', e);
+      db = fsmod.getFirestore(app);
+    }
     return true;
   } catch (e) {
     console.error(e);
@@ -849,7 +855,7 @@ async function loadData() {
     listen('accounts', 'accounts');
     listen('submissions', 'submissions');
     listen('users', 'users');
-    startAudit();
+    // audit log listener starts only when the Audit log page is opened (see go())
   } else {
     // Workers only query what they are allowed to read.
     listen('accounts', 'accounts', (ref, q) => q.query(ref, q.where('assignedWorkerIds', 'array-contains', uid)));
@@ -992,7 +998,7 @@ async function syncLeaderboard() {
   });
   // Anything stored before that no longer has submissions (edited, rejected, deleted) is reset to zero.
   data.leaderboard.forEach(d => {
-    if (!(admin ? validIds.has(d.workerId) : d.workerId === uid) || want.has(d.id)) return;
+    if (!validIds.has(d.workerId) || want.has(d.id)) return;
     if (num(d.receipts) || num(d.errors) || num(d.shifts)) want.set(d.id, { workerId: d.workerId, workerName: d.workerName || 'Worker', month: d.month, receipts: 0, errors: 0, shifts: 0 });
   });
   const old = new Map(data.leaderboard.map(d => [d.id, d]));
@@ -2013,6 +2019,7 @@ function go(p) {
   page = p;
   detailId = null;
   if (p === 'chat') unreadChat = 0;
+  if (p === 'audit') { if (isAdmin() && !auditUnsub) startAudit(); } else stopAudit(); // no audit listener on other pages
   renderPage();
   window.scrollTo(0, 0);
 }
