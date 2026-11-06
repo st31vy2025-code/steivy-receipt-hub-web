@@ -1070,6 +1070,23 @@ function workerStandings(rk, period) {
   return [out, err];
 }
 
+const MIN_ACCURACY_RECEIPTS = 100; // a worker needs at least this many receipts in the period to qualify for "Most accurate"
+function top3Panel(title, sub, list, kind) {
+  const uid = currentUser.uid;
+  const top = list.slice(0, 3);
+  const acc = r => 100 - (r.errors / r.receipts) * 100;
+  const maxOut = Math.max(1, ...top.map(r => r.receipts));
+  const rows = top.map((r, i) => {
+    const shown = kind === 'out' ? `${r.receipts.toLocaleString()} receipts` : `${acc(r).toFixed(1)}% accurate`;
+    const width = kind === 'out' ? r.receipts / maxOut * 100 : acc(r);
+    return `<div class="lb-row"><span class="lb-rank">${medal(i)}</span><div class="avatar">${esc(initials(r.name))}</div><div class="lb-main"><div class="lb-top"><b>${esc(r.name)}${r.id === uid ? ' (you)' : ''}</b><span class="lb-val">${shown}</span></div><div class="lb-bar"><div class="lb-fill" style="width:${width.toFixed(1)}%"></div></div><small class="muted">${num(r.receipts).toLocaleString()} processed · ${r.shifts} shift(s)</small></div></div>`;
+  }).join('');
+  const empty = kind === 'out'
+    ? '<div class="empty">🏆<b>No output recorded yet</b>Rankings appear after shifts are submitted.</div>'
+    : `<div class="empty">🎯<b>No one qualifies yet</b>Appears once someone reaches ${MIN_ACCURACY_RECEIPTS} receipts in this period.</div>`;
+  return `<div class="panel"><div class="panel-head"><div><h3>${title}</h3><p>${sub}</p></div></div>${rows || empty}</div>`;
+}
+
 function performanceSection() {
   const rk = rankings(lbPeriod);
   const label = periodLabel(lbPeriod);
@@ -1080,7 +1097,11 @@ function performanceSection() {
   }
   const cards = workerStandings(rk, lbPeriod).map(c => `<div class="standing ${c.cls}"><div class="standing-ico">${c.icon}</div><div><b>${esc(c.title)}</b><p>${esc(c.text)}</p></div></div>`).join('');
   const warn = lbError ? `<div class="notice warn" style="margin-bottom:10px">Team ranking could not be loaded. Update your Firestore rules for the "leaderboard" collection.</div>` : '';
-  return `<div class="perf">${head}${warn}<div class="standing-grid">${cards}</div></div>`;
+  // Top 3 panels (positive rankings only) — computed from the leaderboard data already loaded, no extra reads
+  const accurate = rk.rows.filter(r => r.receipts >= MIN_ACCURACY_RECEIPTS)
+    .sort((a, b) => (a.errors / a.receipts) - (b.errors / b.receipts) || b.receipts - a.receipts || a.name.localeCompare(b.name));
+  const top3 = lbError ? '' : `<div class="grid-2" style="margin-top:14px">${top3Panel('Top 3 most output', 'Most receipts processed · ' + esc(label), rk.byOut, 'out')}${top3Panel('Top 3 most accurate', 'Lowest error rate · min. ' + MIN_ACCURACY_RECEIPTS + ' receipts · ' + esc(label), accurate, 'acc')}</div>`;
+  return `<div class="perf">${head}${warn}<div class="standing-grid">${cards}</div>${top3}</div>`;
 }
 
 /* ───────────────────────── Team chat: popups, badge, live feed ───────────────────────── */
