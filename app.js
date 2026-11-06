@@ -38,7 +38,8 @@ const filters = { q: '', status: 'all' };
 const DEFAULT_SETTINGS = { grossRateCents: 100, deductionPercent: 10, errorWarnPercent: 5, workUrl: '' };
 const CHAT_LIMIT = 30; // messages loaded per conversation (keeps reads small)
 const SUB_WINDOW_MONTHS = 3; // admin loads only submissions of this many months (current + previous) to save Firestore reads
-let presenceUnsub = null; // /presence listener: runs only while a worker is on the Co-workers page
+let presenceDocs = {}; // worker: one /presence doc listener per co-worker, active only on the Co-workers page
+let shiftDocs = {};    // worker: one /activeShifts doc listener per assigned account
 const data = { submissions: [], accounts: [], users: [], messages: [], presence: [], announcements: [], annRead: [], leaderboard: [], audit: [], threads: [], dmMessages: [], activeShifts: [], settings: { ...DEFAULT_SETTINGS } };
 
 /* ───────────────────────── Helpers ───────────────────────── */
@@ -335,21 +336,64 @@ function toast(msg) {
   clearTimeout(toastTimer);
   toastTimer = setTimeout(() => el.classList.remove('show'), 3500);
 }
-function unlisten() { unsubs.forEach(fn => { try { fn(); } catch {} }); unsubs = []; stopDm(); stopAudit(); stopPeer(); stopPresenceListen(); }
+function unlisten() { unsubs.forEach(fn => { try { fn(); } catch {} }); unsubs = []; stopDm(); stopAudit(); stopPeer(); stopPresenceListen(); stopShiftDocs(); }
 function startPresenceListen() {
-  if (presenceUnsub || !configured || !db || !currentUser || isAdmin()) return;
-  const { collection, onSnapshot } = fb;
-  presenceUnsub = onSnapshot(collection(db, 'presence'), s => {
-    presenceReadErr = false;
-    data.presence = s.docs.map(d => ({ id: d.id, ...d.data() }));
-    updateOnline();
-  }, err => {
-    console.warn('presence listener (check Firestore rules for /presence)', err);
-    presenceReadErr = true;
-    updateOnline();
+  if (!configured || !db || !currentUser || isAdmin()) return;
+  const { doc, onSnapshot } = fb;
+  const uid = currentUser.uid;
+  // The rules let a worker read /presence/{uid} one document at a time (co-workers on a shared account), never the whole collection.
+  const want = new Set();
+  data.accounts.forEach(a => (a.assignedWorkerIds || []).forEach(id => { if (id !== uid) want.add(id); }));
+  Object.keys(presenceDocs).forEach(id => {
+    if (want.has(id)) return;
+    try { presenceDocs[id](); } catch {}
+    delete presenceDocs[id];
+    data.presence = data.presence.filter(p => p.id !== id);
+  });
+  want.forEach(id => {
+    if (presenceDocs[id]) return;
+    presenceDocs[id] = onSnapshot(doc(db, 'presence', id), s => {
+      presenceReadErr = false;
+      data.presence = data.presence.filter(p => p.id !== id);
+      if (s.exists()) data.presence.push({ id: s.id, ...s.data() });
+      updateOnline();
+    }, err => {
+      console.warn('presence listener (check Firestore rules for /presence)', err);
+      presenceReadErr = true;
+      updateOnline();
+    });
   });
 }
-function stopPresenceListen() { if (presenceUnsub) { try { presenceUnsub(); } catch {} presenceUnsub = null; } }
+function stopPresenceListen() { Object.values(presenceDocs).forEach(f => { try { f(); } catch {} }); presenceDocs = {}; }
+
+// Worker: running shifts are read one account document at a time (the rules only allow a collection query for the admin).
+function syncShiftListeners() {
+  if (!configured || !db || !currentUser || isAdmin()) return;
+  const { doc, onSnapshot } = fb;
+  const want = new Set(data.accounts.map(a => a.id)); // the accounts query already returns only my assigned accounts
+  Object.keys(shiftDocs).forEach(id => {
+    if (want.has(id)) return;
+    try { shiftDocs[id](); } catch {}
+    delete shiftDocs[id];
+    data.activeShifts = data.activeShifts.filter(x => x.id !== id);
+  });
+  want.forEach(id => {
+    if (shiftDocs[id]) return;
+    shiftDocs[id] = onSnapshot(doc(db, 'activeShifts', id), s => {
+      trackerErr = false;
+      data.activeShifts = data.activeShifts.filter(x => x.id !== id);
+      if (s.exists()) data.activeShifts.push({ id: s.id, ...s.data() });
+      loaded.activeShifts = true;
+      requestRender();
+    }, err => {
+      console.warn('activeShifts listener (check Firestore rules for /activeShifts)', err);
+      trackerErr = true;
+      requestRender();
+    });
+  });
+  if (!want.size) { loaded.activeShifts = true; requestRender(); }
+}
+function stopShiftDocs() { Object.values(shiftDocs).forEach(f => { try { f(); } catch {} }); shiftDocs = {}; }
 
 const isAdmin = () => profile?.role === 'admin';
 const visibleSubmissions = () => isAdmin() ? data.submissions : data.submissions.filter(s => s.workerId === currentUser?.uid);
@@ -867,7 +911,7 @@ function listen(path, key, queryFn) {
     loaded[key] = true;
     if (accessErr[key]) delete accessErr[key];
     if (key === 'submissions' || key === 'users') scheduleLbSync();
-    if (key === 'accounts') syncPeerListeners();
+    if (key === 'accounts') { syncPeerListeners(); syncShiftListeners(); }
     requestRender();
   }, err => {
     console.error(path, err);
@@ -937,7 +981,8 @@ async function loadData() {
   // /presence is no longer listened to here: it starts only on the Co-workers page (startPresenceListen), because every heartbeat is billed as a read for each listener.
 
   // Running shifts: one document per account while somebody is working on it.
-  unsubs.push(onSnapshot(collection(db, 'activeShifts'), s => {
+  // Admin: the whole collection (one doc per running shift). Workers: per-account docs, started from the accounts listener (syncShiftListeners).
+  if (isAdmin()) unsubs.push(onSnapshot(collection(db, 'activeShifts'), s => {
     trackerErr = false;
     data.activeShifts = s.docs.map(d => ({ id: d.id, ...d.data() }));
     loaded.activeShifts = true;
