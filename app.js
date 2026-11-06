@@ -510,6 +510,28 @@ button:disabled{opacity:.6;cursor:not-allowed}
 [data-theme="dark"] .mode-pill,[data-theme="dark"] .demo-banner{background:#1e2f27;color:#9fe0b8}
 [data-theme="dark"] .notice{background:#16241c;color:#a6d9bd}
 [data-theme="dark"] .notice.warn{background:#2c2411;color:#e8c877}
+/* My standing / team performance cards: they had light backgrounds in dark mode, so the text was unreadable */
+[data-theme="dark"] .standing{background:#171f1a;border-color:#28332c;color:#e8efe9}
+[data-theme="dark"] .standing b{color:#eef4ef}
+[data-theme="dark"] .standing p{color:#b9c6be}
+[data-theme="dark"] .standing.gold{background:linear-gradient(135deg,#3a3213,#2b2410);border-color:#7a6620}
+[data-theme="dark"] .standing.gold b{color:#ffe58a}
+[data-theme="dark"] .standing.silver{background:linear-gradient(135deg,#2a2f36,#20252b);border-color:#4a5562}
+[data-theme="dark"] .standing.silver b{color:#e3e8ee}
+[data-theme="dark"] .standing.bronze{background:linear-gradient(135deg,#3b2a1b,#2c2016);border-color:#7a5a3a}
+[data-theme="dark"] .standing.bronze b{color:#f3cfa6}
+[data-theme="dark"] .standing.danger{background:#3a1f1c;border-color:#6b3530}
+[data-theme="dark"] .standing.danger b{color:#f6b3ab}
+[data-theme="dark"] .standing.warn{background:#2c2411;border-color:#6b5a22}
+[data-theme="dark"] .standing.warn b{color:#f0d487}
+[data-theme="dark"] .standing.good{background:#16301f;border-color:#2f6b45}
+[data-theme="dark"] .standing.good b{color:#a6e3bc}
+[data-theme="dark"] .standing.info{background:#16241c;border-color:#28332c}
+[data-theme="dark"] .lb-tab{background:#1e2f27;border-color:#33413a;color:#cfe3d6}
+[data-theme="dark"] .lb-tab.active{background:#1e8449;border-color:#1e8449;color:#fff}
+[data-theme="dark"] .lb-bar{background:#26332b}
+[data-theme="dark"] .lb-val{color:#7fd9a1}
+[data-theme="dark"] .lb-val.err{color:#f08a7e}
 [data-theme="dark"] .chat-list{background:#131a16;border-right-color:#28332c}
 [data-theme="dark"] .chat-list button{border-bottom-color:#222c26}
 [data-theme="dark"] .chat-list button.active{background:#1e2f27}
