@@ -35,7 +35,7 @@ let trackerErr = false; // could not read /activeShifts (Firestore rules)
 let peerConvs = {}, peerUnsubs = {}, peerReady = {}, peerSel = null, peerMsgUnsub = null, peerMsgs = [], peerSearch = ''; // co-worker private chat
 const filters = { q: '', status: 'all' };
 const DEFAULT_SETTINGS = { grossRateCents: 100, deductionPercent: 10, errorWarnPercent: 5, workUrl: '' };
-const CHAT_LIMIT = 50; // messages loaded per conversation (keeps reads small)
+const CHAT_LIMIT = 30; // messages loaded per conversation (keeps reads small)
 const data = { submissions: [], accounts: [], users: [], messages: [], presence: [], announcements: [], annRead: [], leaderboard: [], audit: [], threads: [], dmMessages: [], activeShifts: [], settings: { ...DEFAULT_SETTINGS } };
 
 /* ───────────────────────── Helpers ───────────────────────── */
