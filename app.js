@@ -40,7 +40,9 @@ const CHAT_LIMIT = 30; // messages loaded per conversation (keeps reads small)
 const SUB_WINDOW_MONTHS = 3; // admin loads only submissions of this many months (current + previous) to save Firestore reads
 let presenceDocs = {}; // worker: one /presence doc listener per co-worker, active only on the Co-workers page
 let shiftDocs = {};    // worker: one /activeShifts doc listener per assigned account
-const data = { submissions: [], accounts: [], users: [], messages: [], presence: [], announcements: [], annRead: [], leaderboard: [], audit: [], threads: [], dmMessages: [], activeShifts: [], settings: { ...DEFAULT_SETTINGS } };
+let statsDocs = {}, statsMonth = '', statsErr = false, statsTimer = null; // per-account totals: worker listeners (Co-workers page only) + admin sync timer
+let watchConvs = [], watchSel = null, watchMsgs = [], watchUnsub = null, watchMsgUnsub = null, watchSearch = ''; // admin: read-only monitor of co-worker chats
+const data = { submissions: [], accounts: [], users: [], messages: [], presence: [], announcements: [], annRead: [], leaderboard: [], accountStats: [], audit: [], threads: [], dmMessages: [], activeShifts: [], settings: { ...DEFAULT_SETTINGS } };
 
 /* ───────────────────────── Helpers ───────────────────────── */
 const $ = s => document.querySelector(s);
@@ -336,7 +338,7 @@ function toast(msg) {
   clearTimeout(toastTimer);
   toastTimer = setTimeout(() => el.classList.remove('show'), 3500);
 }
-function unlisten() { unsubs.forEach(fn => { try { fn(); } catch {} }); unsubs = []; stopDm(); stopAudit(); stopPeer(); stopPresenceListen(); stopShiftDocs(); }
+function unlisten() { unsubs.forEach(fn => { try { fn(); } catch {} }); unsubs = []; stopDm(); stopAudit(); stopPeer(); stopPresenceListen(); stopShiftDocs(); stopStatsListen(); stopWatch(); }
 function startPresenceListen() {
   if (!configured || !db || !currentUser || isAdmin()) return;
   const { doc, onSnapshot } = fb;
@@ -855,25 +857,23 @@ async function initFirebase() {
   if (!configured) return false;
   try {
     const base = 'https://www.gstatic.com/firebasejs/10.12.5/';
-    const [appmod, authmod, fsmod] = await Promise.all([
+    // App Check is optional: it turns on only when firebase-config.js has  appCheckSiteKey: '<reCAPTCHA v3 site key>'.
+    const useAppCheck = isSet(firebaseConfig.appCheckSiteKey);
+    const [appmod, authmod, fsmod, acmod] = await Promise.all([
       import(base + 'firebase-app.js'),
       import(base + 'firebase-auth.js'),
-      import(base + 'firebase-firestore.js')
+      import(base + 'firebase-firestore.js'),
+      useAppCheck ? import(base + 'firebase-app-check.js').catch(e => { console.warn('App Check could not load', e); return null; }) : null
     ]);
     // initializeApp/deleteApp are kept so we can create (and clean up) a secondary app when an admin creates a worker.
     fb = { ...authmod, ...fsmod, initializeApp: appmod.initializeApp, deleteApp: appmod.deleteApp };
     const app = appmod.initializeApp(firebaseConfig);
-    // App Check (reCAPTCHA Enterprise). Only runs if appCheckSiteKey is set in firebase-config.js; failures never block the app.
-    try {
-      if (firebaseConfig.appCheckSiteKey) {
-        const acmod = await import(base + 'firebase-app-check.js');
-        acmod.initializeAppCheck(app, {
-          provider: new acmod.ReCaptchaEnterpriseProvider(firebaseConfig.appCheckSiteKey),
-          isTokenAutoRefreshEnabled: true
-        });
-      }
-    } catch (e) {
-      console.warn('App Check could not start.', e);
+    // App Check must start before the first Firestore request: it proves the request comes from this website, not from a script using the public API key.
+    if (acmod) {
+      try {
+        if (['localhost', '127.0.0.1'].includes(location.hostname)) self.FIREBASE_APPCHECK_DEBUG_TOKEN = true; // local testing only: register the debug token printed in the console
+        acmod.initializeAppCheck(app, { provider: new acmod.ReCaptchaV3Provider(firebaseConfig.appCheckSiteKey), isTokenAutoRefreshEnabled: true });
+      } catch (e) { console.warn('App Check could not start', e); }
     }
     auth = authmod.getAuth(app);
     // Local cache (IndexedDB, works across tabs): a page reload or a re-opened tab only pays for documents that changed.
@@ -922,7 +922,7 @@ function listen(path, key, queryFn) {
     data[key] = s.docs.map(d => ({ id: d.id, ...d.data() }));
     loaded[key] = true;
     if (accessErr[key]) delete accessErr[key];
-    if (key === 'submissions' || key === 'users') scheduleLbSync();
+    if (key === 'submissions' || key === 'users') { scheduleLbSync(); scheduleStatsSync(); }
     if (key === 'accounts') { syncPeerListeners(); syncShiftListeners(); }
     requestRender();
   }, err => {
@@ -943,7 +943,7 @@ async function loadData() {
   // Reset so nothing from a previous login can leak into this session.
   data.announcements = []; data.annRead = [];
   data.submissions = []; data.accounts = []; data.users = [];
-  data.messages = []; data.presence = []; data.leaderboard = []; data.audit = [];
+  data.messages = []; data.presence = []; data.leaderboard = []; data.accountStats = []; data.audit = [];
   data.threads = []; data.dmMessages = []; data.activeShifts = []; chatConv = 'group'; dmWith = ''; auditLimit = 50; subLimit = 50;
   data.settings = { ...DEFAULT_SETTINGS };
   loaded = {}; chatReady = false; unreadChat = 0; lbError = false; accessErr = {}; trackerErr = false;
@@ -1017,6 +1017,13 @@ async function loadData() {
     lbError = true;
     requestRender();
   }));
+
+  // Per-account, per-worker monthly totals (for the Co-worker page). Admin keeps them in sync; workers read only their own accounts, only on that page.
+  if (isAdmin()) unsubs.push(onSnapshot(query(collection(db, 'accountStats'), where('month', '>=', subWindowMonth())), s => {
+    data.accountStats = s.docs.map(d => ({ id: d.id, ...d.data() }));
+    loaded.accountStats = true;
+    scheduleStatsSync();
+  }, err => console.warn('accountStats listener (publish the latest firestore.rules)', err)));
 
   const msgQuery = query(collection(db, 'conversations', 'company_group', 'messages'), orderBy('createdAt', 'desc'), limit(CHAT_LIMIT));
   unsubs.push(onSnapshot(msgQuery, s => {
@@ -1436,7 +1443,7 @@ function demoSignIn(role) {
     { id: 'demo-2', workerId: 'worker-2', workerName: 'Jamie Santos', accountId: 'abk-01', accountName: 'Abukai Team Alpha', shiftDate: t, shiftType: 'Afternoon', startTime: '14:00', endTime: '22:00', receiptCount: 96, errorCount: 0, errorNote: '', status: 'pending', rateCents: 100, deductionPercent: 10, grossCents: 9600, deductionCents: 960, netCents: 8640, createdAt: new Date() }];
   data.messages = [{ id: 'm1', senderId: 'worker-2', senderName: 'Jamie Santos', text: 'Hi team, my shift submission is ready for review.', createdAt: new Date() }];
   data.presence = [{ id: 'demo-worker', displayName: 'Demo Worker', role: 'worker', demo: true }, { id: 'worker-2', displayName: 'Jamie Santos', role: 'worker', demo: true }];
-  data.leaderboard = [];
+  data.leaderboard = []; data.accountStats = [];
   data.audit = [];
   data.activeShifts = [];
   data.threads = []; data.dmMessages = []; chatConv = 'group'; dmWith = '';
@@ -1491,14 +1498,14 @@ function renderLogin() {
 }
 
 /* ───────────────────────── Layout ───────────────────────── */
-const PAGE_TITLES = { dashboard: 'Dashboard', receipts: 'Receipt submissions', errors: 'Error processed', accounts: 'Account management', reports: 'Reports & earnings', chat: 'Team chat', coworkers: 'Co-worker chat', workers: 'Worker management', settings: 'Pay settings', missed: 'Missed shifts', audit: 'Audit log' };
-const allowedPages = () => isAdmin() ? ['dashboard', 'receipts', 'errors', 'accounts', 'reports', 'chat', 'workers', 'settings', 'missed', 'audit'] : ['dashboard', 'receipts', 'errors', 'reports', 'chat', 'coworkers'];
+const PAGE_TITLES = { dashboard: 'Dashboard', receipts: 'Receipt submissions', errors: 'Error processed', accounts: 'Account management', reports: 'Reports & earnings', chat: 'Team chat', coworkers: 'Co-worker chat', peerwatch: 'Co-worker chats', workers: 'Worker management', settings: 'Pay settings', missed: 'Missed shifts', audit: 'Audit log' };
+const allowedPages = () => isAdmin() ? ['dashboard', 'receipts', 'errors', 'accounts', 'reports', 'chat', 'peerwatch', 'workers', 'settings', 'missed', 'audit'] : ['dashboard', 'receipts', 'errors', 'reports', 'chat', 'coworkers'];
 
 function shell() {
   const items = [['dashboard', '⌂', 'Dashboard'], ['receipts', '▤', 'Submissions'], ['errors', '⚠', 'Error processed']];
   if (isAdmin()) items.push(['accounts', '▦', 'Accounts']);
   items.push(['reports', '▥', 'Reports'], ['chat', '☏', 'Team chat']);
-  if (!isAdmin()) items.push(['coworkers', '☺', 'Co-worker chat']);
+  if (!isAdmin()) items.push(['coworkers', '☺', 'Co-worker chat']); else items.push(['peerwatch', '☺', 'Co-worker chats']);
   if (isAdmin()) items.push(['workers', '♙', 'Workers'], ['settings', '⚙', 'Pay settings'], ['missed', '⏱', 'Missed shifts'], ['audit', '✎', 'Audit log']);
   const title = PAGE_TITLES[page] || 'Dashboard';
   const badge = k => { const n = k === 'chat' ? unreadChat : k === 'coworkers' ? peerUnread() : 0; return n > 0 ? `<span class="nav-badge">${n > 9 ? '9+' : n}</span>` : ''; };
@@ -2136,11 +2143,12 @@ function renderPage() {
   if (!allowedPages().includes(page)) page = 'dashboard';
   if (page === 'chat') unreadChat = 0;
   $('#app').innerHTML = shell();
-  $('#pageContent').innerHTML = accessBanner() + ({ dashboard, receipts, errors: errorsPage, accounts, reports, chat, coworkers: coworkersPage, workers, settings, missed: missedPage, audit: auditPage })[page]();
+  $('#pageContent').innerHTML = accessBanner() + ({ dashboard, receipts, errors: errorsPage, accounts, reports, chat, coworkers: coworkersPage, peerwatch: peerWatchPage, workers, settings, missed: missedPage, audit: auditPage })[page]();
   wireShell();
   wirePage();
   if (page === 'chat') markDmRead();
-  if (page === 'coworkers') { startPresenceListen(); if (peerSel && !peerMsgUnsub) startPeerMsgs(); markPeerRead(); }
+  if (page === 'coworkers') { startPresenceListen(); startStatsListen(); if (peerSel && !peerMsgUnsub) startPeerMsgs(); markPeerRead(); }
+  if (page === 'peerwatch') startWatch();
   if (detailId) { const s = visibleSubmissions().find(x => x.id === detailId); if (s) viewSubmission(s.id, false); else detailId = null; }
   syncAnnouncementPopup();
 }
@@ -2151,7 +2159,8 @@ function go(p) {
   detailId = null;
   if (p === 'chat') unreadChat = 0;
   if (p === 'audit') { if (isAdmin() && !auditUnsub) startAudit(); } else stopAudit(); // no audit listener on other pages
-  if (p === 'coworkers') startPresenceListen(); else stopPresenceListen(); // online status is read only on the Co-workers page
+  if (p === 'coworkers') { startPresenceListen(); startStatsListen(); } else { stopPresenceListen(); stopStatsListen(); } // online status and team totals are read only on the Co-workers page
+  if (p === 'peerwatch') startWatch(); else stopWatch(); // admin chat monitor runs only on its page
   renderPage();
   window.scrollTo(0, 0);
 }
@@ -2181,6 +2190,7 @@ function wireShell() {
     if ((el = t.closest('[data-release-shift]'))) return releaseShift(el.dataset.releaseShift);
     if ((el = t.closest('[data-view]'))) return viewSubmission(el.dataset.view);
     if ((el = t.closest('[data-peer]'))) return openPeer(el.dataset.peer);
+    if ((el = t.closest('[data-watch]'))) return openWatch(el.dataset.watch);
     if ((el = t.closest('[data-chat-conv]'))) return openChat(el.dataset.chatConv, el.dataset.chatId);
     if ((el = t.closest('[data-more-subs]'))) { subLimit += 50; return filterRows(); }
     if ((el = t.closest('[data-allow-resubmit]'))) return allowResubmit(el.dataset.allowResubmit);
@@ -2217,6 +2227,8 @@ function wirePage() {
     $$('#pageContent tbody tr').forEach(r => r.classList.toggle('hidden', !r.textContent.toLowerCase().includes(q)));
   });
   $('#peerSearch')?.addEventListener('input', e => { peerSearch = e.target.value; updatePeerList(); });
+  $('#watchSearch')?.addEventListener('input', e => { watchSearch = e.target.value; updateWatchList(); });
+  $('#watchWindow')?.addEventListener('submit', e => { if (e.target.id === 'watchForm') { e.preventDefault(); sendWatch(e.target.elements.message); } });
   $('#peerWindow')?.addEventListener('submit', e => { if (e.target.id === 'peerForm') { e.preventDefault(); sendPeer(e.target.elements.message); } });
   const pm = $('#peerMessages');
   if (pm) pm.scrollTop = pm.scrollHeight;
@@ -2858,7 +2870,7 @@ function syncPeerListeners() {
           if (num(d.unread?.[uid]) <= num(peerConvs[ch.doc.id]?.unread?.[uid])) return; // nothing new for me
           if (page === 'coworkers' && peerSel?.convId === ch.doc.id && !document.hidden) return; // already reading it
           const c = peerContacts().find(x => x.convId === ch.doc.id);
-          showChatPopup({ senderName: peerName(d.lastSenderId, c?.name), text: d.lastMessage, peer: true, convId: ch.doc.id });
+          showChatPopup({ senderName: (d.participants || []).includes(d.lastSenderId) ? peerName(d.lastSenderId, c?.name) : 'Admin', text: d.lastMessage, peer: true, convId: ch.doc.id });
         });
       }
       peerReady[id] = true;
@@ -2966,7 +2978,7 @@ function peerListHtml() {
   return list.map(c => {
     const conv = peerConvs[c.convId];
     const unread = num(conv?.unread?.[uid]);
-    const prev = conv?.lastMessage ? (conv.lastSenderId === uid ? 'You: ' : '') + conv.lastMessage : 'No messages yet';
+    const prev = conv?.lastMessage ? (conv.lastSenderId === uid ? 'You: ' : (conv.participants || []).includes(conv.lastSenderId) ? '' : 'Admin: ') + conv.lastMessage : 'No messages yet';
     return `<button type="button" class="${peerSel?.convId === c.convId ? 'active' : ''}" data-peer="${esc(c.convId)}"><div class="avatar peer-av">${esc(initials(c.name))}<i class="peer-dot ${peerOnline(c.peerId) ? 'on' : ''}"></i></div><div class="peer-meta"><strong>${esc(c.name)}</strong><small>${esc(prev)}</small><small>${esc(c.accountName)}</small></div><div class="peer-side"><small>${esc(peerTime(conv?.lastMessageAt))}</small>${unread ? `<span class="nav-badge">${unread > 9 ? '9+' : unread}</span>` : ''}</div></button>`;
   }).join('');
 }
@@ -2981,7 +2993,7 @@ function peerBubbles() {
     const sep = day !== lastDay ? `<div class="peer-day">${esc(date(x))}</div>` : '';
     lastDay = day;
     const tick = mine ? `<span class="peer-tick" title="${m.isRead ? 'Read' : 'Sent'}">${m.isRead ? '✓✓' : '✓'}</span>` : '';
-    return `${sep}<div class="bubble ${mine ? 'mine' : ''}">${esc(m.message || '')}<small>${esc(fmtTime(m.createdAt))}${tick}</small></div>`;
+    return `${sep}<div class="bubble ${mine ? 'mine' : ''}">${m.fromAdmin ? '<b style="display:block;font-size:11px;color:#d9a400;margin-bottom:2px">🛡 Admin</b>' : ''}${esc(m.message || '')}<small>${esc(fmtTime(m.createdAt))}${tick}</small></div>`;
   }).join('');
 }
 function peerWindowHtml() {
@@ -3012,9 +3024,193 @@ function updatePeerMessages() {
   if (nearBottom || lastMine) box.scrollTo({ top: box.scrollHeight, behavior: 'smooth' });
   updatePeerList();
 }
+/* ───────────────── Team totals per account (Co-worker page) ───────────────── */
+const statsId = (m, acct, w) => `${m}_${acct}_${w}`;
+const demoStat = (acct, w, m) => data.submissions.filter(s => s.accountId === acct && s.workerId === w && (s.status === 'approved' || s.status === 'pending') && monthOf(s) === m)
+  .reduce((t, s) => ({ receipts: t.receipts + num(s.receiptCount), errors: t.errors + num(s.errorCount), shifts: t.shifts + 1 }), { receipts: 0, errors: 0, shifts: 0 });
+
+// ADMIN: keeps /accountStats in sync (approved + pending shifts, rejected left out). Writes only the documents whose numbers changed.
+function scheduleStatsSync() { clearTimeout(statsTimer); statsTimer = setTimeout(syncAccountStats, 2000); }
+async function syncAccountStats() {
+  if (!configured || !db || !currentUser || !isAdmin() || !loaded.accountStats || !loaded.submissions || !loaded.users) return;
+  const validIds = new Set(liveUsers().filter(u => u.role !== 'admin').map(u => u.id));
+  const winStart = subWindowMonth();
+  const want = new Map();
+  data.submissions.forEach(s => {
+    if (!s.accountId || !s.workerId || !validIds.has(s.workerId) || (s.status !== 'approved' && s.status !== 'pending')) return;
+    const m = monthOf(s);
+    if (!/^\d{4}-\d{2}$/.test(m) || m < winStart) return;
+    const id = statsId(m, s.accountId, s.workerId);
+    const g = want.get(id) || { accountId: s.accountId, accountName: data.accounts.find(a => a.id === s.accountId)?.name || s.accountName || 'Account', workerId: s.workerId, workerName: s.workerName || 'Worker', month: m, receipts: 0, errors: 0, shifts: 0 };
+    g.receipts += num(s.receiptCount); g.errors += num(s.errorCount); g.shifts += 1;
+    want.set(id, g);
+  });
+  data.accountStats.forEach(d => { // stored, but no submissions back it any more (edited, rejected, deleted): reset to zero
+    if (want.has(d.id) || String(d.month || '') < winStart) return;
+    if (num(d.receipts) || num(d.errors) || num(d.shifts)) want.set(d.id, { accountId: d.accountId, accountName: d.accountName || 'Account', workerId: d.workerId, workerName: d.workerName || 'Worker', month: d.month, receipts: 0, errors: 0, shifts: 0 });
+  });
+  const old = new Map(data.accountStats.map(d => [d.id, d]));
+  const writes = [...want].filter(([id, g]) => {
+    const o = old.get(id);
+    return !o || num(o.receipts) !== g.receipts || num(o.errors) !== g.errors || num(o.shifts) !== g.shifts || (o.workerName || '') !== g.workerName || (o.accountName || '') !== g.accountName;
+  });
+  if (!writes.length) return;
+  try {
+    await commitInChunks(writes.map(([id, g]) => b => b.set(fb.doc(db, 'accountStats', id), { ...g, updatedAt: fb.serverTimestamp() }, { merge: true })));
+  } catch (e) { console.warn('accountStats write failed (publish the latest firestore.rules)', e); }
+}
+
+// WORKER: one small query per assigned account (this month only), started only while the Co-workers page is open.
+function startStatsListen() {
+  if (!configured || !db || !currentUser || isAdmin()) return;
+  const { collection, onSnapshot, query, where } = fb;
+  const uid = currentUser.uid, month = monthKeyOf(0);
+  if (statsMonth && statsMonth !== month) { stopStatsListen(); data.accountStats = []; }
+  statsMonth = month;
+  const want = new Set(data.accounts.filter(a => a.isActive !== false && (a.assignedWorkerIds || []).includes(uid)).map(a => a.id));
+  Object.keys(statsDocs).forEach(id => {
+    if (want.has(id)) return;
+    try { statsDocs[id](); } catch {}
+    delete statsDocs[id];
+    data.accountStats = data.accountStats.filter(x => x.accountId !== id);
+  });
+  want.forEach(id => {
+    if (statsDocs[id]) return;
+    statsDocs[id] = onSnapshot(query(collection(db, 'accountStats'), where('accountId', '==', id), where('month', '==', month)), s => {
+      statsErr = false;
+      data.accountStats = data.accountStats.filter(x => x.accountId !== id).concat(s.docs.map(d => ({ id: d.id, ...d.data() })));
+      updateTeamStats();
+    }, err => {
+      console.warn('accountStats listener (publish the latest firestore.rules)', err);
+      statsErr = true;
+      updateTeamStats();
+    });
+  });
+}
+function stopStatsListen() { Object.values(statsDocs).forEach(f => { try { f(); } catch {} }); statsDocs = {}; statsMonth = ''; }
+
+function teamStatsHtml() {
+  if (!currentUser || isAdmin()) return '';
+  const uid = currentUser.uid, month = monthKeyOf(0);
+  const accts = data.accounts.filter(a => a.isActive !== false && (a.assignedWorkerIds || []).includes(uid)).sort((a, b) => (a.name || '').localeCompare(b.name || ''));
+  if (!accts.length) return '';
+  const warn = statsErr ? `<div class="empty">⚠<b>Team totals are not available yet</b>Ask the admin to publish the latest Firestore rules.</div>` : '';
+  const panels = accts.map(a => {
+    const rows = (a.assignedWorkerIds || []).map((id, i) => {
+      const st = (configured ? data.accountStats.find(x => x.id === statsId(month, a.id, id)) : demoStat(a.id, id, month)) || {};
+      const name = id === uid ? 'You' : (st.workerName || a.assignedWorkerNames?.[i] || peerName(id));
+      return { id, name, receipts: num(st.receipts), errors: num(st.errors), shifts: num(st.shifts) };
+    }).sort((x, y) => (y.id === uid) - (x.id === uid) || y.receipts - x.receipts || x.name.localeCompare(y.name));
+    const tot = rows.reduce((t, r) => ({ receipts: t.receipts + r.receipts, errors: t.errors + r.errors }), { receipts: 0, errors: 0 });
+    const pct = (r, e) => errRatePct(r, e).toFixed(1) + '%';
+    const body = rows.map(r => `<tr><td><strong>${esc(r.name)}</strong></td><td>${r.receipts.toLocaleString()}</td><td>${r.errors.toLocaleString()}</td><td>${pct(r.receipts, r.errors)}</td></tr>`).join('');
+    return `<div class="panel" style="margin-bottom:12px"><div class="panel-head"><div><h3>${esc(a.name || 'Account')}</h3><p>${esc(monthLabel(month))} · total output and errors per co-worker · approved + pending shifts</p></div></div><div class="table-wrap"><table><thead><tr><th>Co-worker</th><th>Total output</th><th>Errors</th><th>Error rate</th></tr></thead><tbody>${body}<tr><td><strong>Account total</strong></td><td><strong>${tot.receipts.toLocaleString()}</strong></td><td><strong>${tot.errors.toLocaleString()}</strong></td><td><strong>${pct(tot.receipts, tot.errors)}</strong></td></tr></tbody></table></div></div>`;
+  }).join('');
+  return warn + panels;
+}
+function updateTeamStats() { const el = $('#teamStats'); if (el) el.innerHTML = teamStatsHtml(); }
+
+/* ───────────────── Admin: read-only monitor of co-worker chats ───────────────── */
+const userNameOf = id => { const u = data.users.find(x => x.id === id); return u?.displayName || u?.email || 'Worker'; };
+const watchInfo = c => ({ account: data.accounts.find(a => a.id === c.accountId)?.name || 'Account', a: userNameOf((c.participants || [])[0]), b: userNameOf((c.participants || [])[1]) });
+function startWatch() {
+  if (watchUnsub || !configured || !db || !isAdmin()) return;
+  const { collection, onSnapshot, query, orderBy, limit } = fb;
+  watchUnsub = onSnapshot(query(collection(db, 'peerChats'), orderBy('lastMessageAt', 'desc'), limit(60)), s => {
+    watchConvs = s.docs.map(d => ({ id: d.id, ...d.data() }));
+    updateWatchList();
+  }, err => { console.warn('peerChats monitor (publish the latest firestore.rules)', err); toast('Could not load co-worker chats. Publish the latest Firestore rules.'); });
+}
+function stopWatchMsgs() { if (watchMsgUnsub) { try { watchMsgUnsub(); } catch {} watchMsgUnsub = null; } }
+function stopWatch() { if (watchUnsub) { try { watchUnsub(); } catch {} watchUnsub = null; } stopWatchMsgs(); watchConvs = []; watchSel = null; watchMsgs = []; }
+function openWatch(id) {
+  const c = watchConvs.find(x => x.id === id);
+  if (!c || !configured || !db) return;
+  if (watchSel !== id) {
+    watchSel = id; stopWatchMsgs(); watchMsgs = [];
+    const i = watchInfo(c);
+    logAudit('Viewed co-worker chat', `${i.a} ↔ ${i.b} · ${i.account}`); // every look is on record
+    const { collection, onSnapshot, query, orderBy, limit } = fb;
+    watchMsgUnsub = onSnapshot(query(collection(db, 'peerChats', id, 'messages'), orderBy('createdAt', 'desc'), limit(50)), s => {
+      if (watchSel !== id) return;
+      watchMsgs = s.docs.map(d => ({ id: d.id, ...d.data() })).sort((x, y) => timeVal(x.createdAt) - timeVal(y.createdAt));
+      updateWatchWindow();
+    }, err => { console.warn('peerChats messages (publish the latest firestore.rules)', err); toast('Could not load this conversation. Publish the latest Firestore rules.'); });
+  }
+  updateWatchList(); updateWatchWindow();
+}
+// ADMIN: reply inside a co-worker conversation. The message carries fromAdmin:true (workers cannot forge it: the rules only accept it from an admin)
+// and bumps both workers' unread counters, so they get the usual badge and popup.
+async function sendWatch(input) {
+  const text = input.value.trim();
+  const c = watchConvs.find(x => x.id === watchSel);
+  if (!text || !c || !configured || !db || !currentUser || !isAdmin()) return;
+  const [p1, p2] = c.participants || [];
+  if (!p1 || !p2) return;
+  const uid = currentUser.uid, i = watchInfo(c);
+  input.value = '';
+  try {
+    const b = fb.writeBatch(db);
+    b.set(fb.doc(fb.collection(db, 'peerChats', c.id, 'messages')), {
+      accountId: c.accountId, conversationId: c.id, senderId: uid, senderName: profile.displayName || 'Admin', receiverId: 'both',
+      message: text, createdAt: fb.serverTimestamp(), isRead: false, readAt: null, fromAdmin: true
+    });
+    b.update(fb.doc(db, 'peerChats', c.id), {
+      lastMessage: text.slice(0, 200), lastMessageAt: fb.serverTimestamp(), lastSenderId: uid, updatedAt: fb.serverTimestamp(),
+      [`unread.${p1}`]: fb.increment(1), [`unread.${p2}`]: fb.increment(1)
+    });
+    await b.commit();
+    logAudit('Replied in co-worker chat', `${i.a} ↔ ${i.b} · ${i.account}`);
+  } catch (err) {
+    console.error(err);
+    input.value = text; // restore so nothing is lost
+    toast('Could not send. Publish the latest Firestore rules.');
+  }
+}
+function watchListHtml() {
+  const q = watchSearch.trim().toLowerCase();
+  const list = watchConvs.filter(c => { const i = watchInfo(c); return !q || `${i.a} ${i.b} ${i.account} ${c.lastMessage || ''}`.toLowerCase().includes(q); });
+  if (!list.length) return `<div class="empty">💬<b>${watchConvs.length ? 'No match' : 'No co-worker chats yet'}</b>${watchConvs.length ? 'Try another name.' : 'Conversations appear here once workers start chatting.'}</div>`;
+  return list.map(c => {
+    const i = watchInfo(c);
+    return `<button type="button" class="${watchSel === c.id ? 'active' : ''}" data-watch="${esc(c.id)}"><div class="avatar peer-av">${esc(initials(i.a))}</div><div class="peer-meta"><strong>${esc(i.a)} ↔ ${esc(i.b)}</strong><small>${esc(c.lastMessage || 'No messages yet')}</small><small>${esc(i.account)}</small></div><div class="peer-side"><small>${esc(peerTime(c.lastMessageAt))}</small></div></button>`;
+  }).join('');
+}
+function watchBubbles() {
+  const c = watchConvs.find(x => x.id === watchSel);
+  if (!c) return '';
+  if (!watchMsgs.length) return '<div class="empty">💬<b>No messages yet</b></div>';
+  const first = (c.participants || [])[0];
+  let lastDay = '';
+  return watchMsgs.map(m => {
+    const x = toDate(m.createdAt) || new Date(), day = x.toDateString();
+    const sep = day !== lastDay ? `<div class="peer-day">${esc(date(x))}</div>` : '';
+    lastDay = day;
+    return `${sep}<div class="bubble ${m.senderId === first ? '' : 'mine'}"><b style="display:block;font-size:11px;opacity:.75;margin-bottom:2px">${esc(userNameOf(m.senderId))}${m.fromAdmin ? ' · 🛡 Admin' : ''}</b>${esc(m.message || '')}<small>${esc(fmtTime(m.createdAt))}</small></div>`;
+  }).join('');
+}
+function watchWindowHtml() {
+  const c = watchConvs.find(x => x.id === watchSel);
+  if (!c) return `<div class="chat-messages" id="watchMessages"><div class="empty">💬<b>Select a conversation</b>Pick a chat on the left to read it and reply as Admin.</div></div>`;
+  const i = watchInfo(c);
+  return `<div class="peer-head"><div class="avatar">${esc(initials(i.a))}</div><div><strong>${esc(i.a)} ↔ ${esc(i.b)}</strong><small>You can reply as Admin · last 50 messages</small></div><small>Account: ${esc(i.account)}</small></div><div class="chat-messages" id="watchMessages">${watchBubbles()}</div><form class="chat-compose" id="watchForm"><input name="message" placeholder="Reply as Admin…" maxlength="2000" autocomplete="off" required><button class="btn btn-primary" type="submit">Send ↗</button></form>`;
+}
+function updateWatchList() { const el = $('#watchItems'); if (el) el.innerHTML = watchListHtml(); }
+function updateWatchWindow() {
+  const w = $('#watchWindow');
+  if (!w) return;
+  w.innerHTML = watchWindowHtml();
+  const box = $('#watchMessages');
+  if (box) box.scrollTop = box.scrollHeight;
+}
+function peerWatchPage() {
+  if (!isAdmin()) return '';
+  return `<div class="welcome"><div><h2>Co-worker chats</h2><p>Read the chats between workers on the same account and reply as Admin. Your messages show to both workers with an Admin badge. Workers are told that admins may review these chats, and every conversation you open or reply in is recorded in the audit log.</p></div></div><div class="chat-layout peer-layout"><div class="chat-list" id="watchList"><div class="peer-search"><input id="watchSearch" placeholder="Search worker, account or message…" value="${esc(watchSearch)}" autocomplete="off"></div><div id="watchItems">${watchListHtml()}</div></div><div class="chat-window peer-window" id="watchWindow">${watchWindowHtml()}</div></div>`;
+}
+
 function coworkersPage() {
   if (isAdmin()) return `<div class="empty">👥<b>Workers only</b>Co-worker chat is private between workers on the same account.</div>`;
-  return `<div class="welcome"><div><h2>Co-worker chat</h2><p>Private one-on-one messages with workers assigned to the same account as you.</p></div></div><div class="chat-layout peer-layout"><div class="chat-list" id="peerList"><div class="peer-search"><input id="peerSearch" placeholder="Search co-workers…" value="${esc(peerSearch)}" autocomplete="off"></div><div id="peerItems">${peerListHtml()}</div></div><div class="chat-window peer-window" id="peerWindow">${peerWindowHtml()}</div></div>`;
+  return `<div class="welcome"><div><h2>Co-worker chat</h2><p>One-on-one messages with workers assigned to the same account as you. Admins may review these chats for quality and safety.</p></div></div><div id="teamStats">${teamStatsHtml()}</div><div class="chat-layout peer-layout"><div class="chat-list" id="peerList"><div class="peer-search"><input id="peerSearch" placeholder="Search co-workers…" value="${esc(peerSearch)}" autocomplete="off"></div><div id="peerItems">${peerListHtml()}</div></div><div class="chat-window peer-window" id="peerWindow">${peerWindowHtml()}</div></div>`;
 }
 
 /* ───────────────────────── Boot ───────────────────────── */
