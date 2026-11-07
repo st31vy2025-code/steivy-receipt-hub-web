@@ -3164,12 +3164,12 @@ function startWatch() {
 }function stopWatchMsgs() { if (watchMsgUnsub) { try { watchMsgUnsub(); } catch {} watchMsgUnsub = null; } }
 function stopWatch() { if (watchUnsub) { try { watchUnsub(); } catch {} watchUnsub = null; } stopWatchMsgs(); watchConvs = []; watchSel = null; watchMsgs = []; watchReady = false; watchSeen = null; }
 function openWatch(id) {
-  const c = watchConvs.find(x => x.id === id);
+  const c = watchFind(id);
   if (!c || !configured || !db) return;
   if (watchSel !== id) {
     watchSel = id; stopWatchMsgs(); watchMsgs = [];
     const i = watchInfo(c);
-    logAudit('Viewed co-worker chat', `${i.a} ↔ ${i.b} · ${i.account}`); // every look is on record
+    if (!c.virtual) logAudit('Viewed co-worker chat', `${i.a} ↔ ${i.b} · ${i.account}`); // every look is on record
     const { collection, onSnapshot, query, orderBy, limit } = fb;
     watchMsgUnsub = onSnapshot(query(collection(db, 'peerChats', id, 'messages'), orderBy('createdAt', 'desc'), limit(50)), s => {
       if (watchSel !== id) return;
@@ -3185,7 +3185,7 @@ function openWatch(id) {
 // and bumps both workers' unread counters, so they get the usual badge and popup.
 async function sendWatch(input) {
   const text = input.value.trim();
-  const c = watchConvs.find(x => x.id === watchSel);
+  const c = watchFind(watchSel);
   if (!text || !c || !configured || !db || !currentUser || !isAdmin()) return;
   const [p1, p2] = c.participants || [];
   if (!p1 || !p2) return;
@@ -3197,10 +3197,17 @@ async function sendWatch(input) {
       accountId: c.accountId, conversationId: c.id, senderId: uid, senderName: profile.displayName || 'Admin', receiverId: 'both',
       message: text, createdAt: fb.serverTimestamp(), isRead: false, readAt: null, fromAdmin: true
     });
-    b.update(fb.doc(db, 'peerChats', c.id), {
-      lastMessage: text.slice(0, 200), lastMessageAt: fb.serverTimestamp(), lastSenderId: uid, updatedAt: fb.serverTimestamp(),
-      [`unread.${p1}`]: fb.increment(1), [`unread.${p2}`]: fb.increment(1)
-    });
+    if (c.virtual) { // first message of this pair: the admin creates the conversation (the rules check both workers are assigned to the account)
+      b.set(fb.doc(db, 'peerChats', c.id), {
+        accountId: c.accountId, participants: [p1, p2], lastMessage: text.slice(0, 200), lastMessageAt: fb.serverTimestamp(), lastSenderId: uid, updatedAt: fb.serverTimestamp(),
+        unread: { [p1]: 1, [p2]: 1 }
+      });
+    } else {
+      b.update(fb.doc(db, 'peerChats', c.id), {
+        lastMessage: text.slice(0, 200), lastMessageAt: fb.serverTimestamp(), lastSenderId: uid, updatedAt: fb.serverTimestamp(),
+        [`unread.${p1}`]: fb.increment(1), [`unread.${p2}`]: fb.increment(1)
+      });
+    }
     await b.commit();
     logAudit('Replied in co-worker chat', `${i.a} ↔ ${i.b} · ${i.account}`);
   } catch (err) {
@@ -3209,6 +3216,23 @@ async function sendWatch(input) {
     toast('Could not send. Publish the latest Firestore rules.');
   }
 }
+// Every pair of workers who share an account, merged with the chats that already exist, so the admin sees ALL of them (also pairs who never wrote yet).
+function allWatch() {
+  const real = new Set(watchConvs.map(c => c.id));
+  const out = [...watchConvs];
+  data.accounts.forEach(a => {
+    if (a.isActive === false) return;
+    const ids = (a.assignedWorkerIds || []).filter(id => { const u = data.users.find(x => x.id === id); return u && u.role !== 'admin' && u.isActive !== false && (u.status || 'approved') === 'approved'; });
+    for (let i = 0; i < ids.length; i++) for (let j = i + 1; j < ids.length; j++) {
+      const [lo, hi] = [ids[i], ids[j]].sort();
+      const id = pairId(a.id, lo, hi);
+      if (!real.has(id)) out.push({ id, accountId: a.id, participants: [lo, hi], virtual: true });
+    }
+  });
+  return out;
+}
+const watchFind = id => allWatch().find(c => c.id === id);
+
 // Output / errors of an account this month (approved + pending), from the submissions the admin already has: no extra reads, always current.
 function acctMonthTotals() {
   const m = monthKeyOf(0), t = new Map();
@@ -3223,16 +3247,21 @@ function acctMonthTotals() {
 const watchTotHtml = g => `<span style="font-size:11px;font-weight:600;opacity:.85;white-space:nowrap">Output ${num(g?.receipts).toLocaleString()} · Errors ${num(g?.errors).toLocaleString()}</span>`;
 function watchListHtml() {
   const q = watchSearch.trim().toLowerCase();
-  const list = watchConvs.filter(c => { const i = watchInfo(c); return !q || `${i.account} ${i.a} ${i.b} ${c.lastMessage || ''}`.toLowerCase().includes(q); });
-  if (!list.length) return `<div class="empty">💬<b>${watchConvs.length ? 'No match' : 'No co-worker chats yet'}</b>${watchConvs.length ? 'Try another name.' : 'Conversations appear here once workers start chatting.'}</div>`;
+  const all = allWatch();
+  const list = all.filter(c => { const i = watchInfo(c); return !q || `${i.account} ${i.a} ${i.b} ${c.lastMessage || ''}`.toLowerCase().includes(q); })
+    .sort((x, y) => (!!x.virtual - !!y.virtual) || convMs(y) - convMs(x) || watchInfo(x).account.localeCompare(watchInfo(y).account) || watchInfo(x).a.localeCompare(watchInfo(y).a));
+  if (!list.length) return `<div class="empty">💬<b>${all.length ? 'No match' : 'No co-workers share an account yet'}</b>${all.length ? 'Try another name.' : 'Assign two or more workers to the same account to see them here.'}</div>`;
   const tot = acctMonthTotals();
+  let sawVirtual = false;
   return list.map(c => {
     const i = watchInfo(c), fresh = watchIsNew(c);
-    return `<button type="button" class="${watchSel === c.id ? 'active' : ''}" data-watch="${esc(c.id)}"><div class="avatar peer-av">${esc(initials(i.account))}</div><div class="peer-meta"><strong style="display:flex;gap:8px;align-items:baseline;flex-wrap:wrap">${esc(i.account)}${watchTotHtml(tot.get(c.accountId))}</strong><small>${esc(i.a)} ↔ ${esc(i.b)}</small><small>${esc(c.lastMessage || 'No messages yet')}</small></div><div class="peer-side"><small>${esc(peerTime(c.lastMessageAt))}</small>${fresh ? '<span class="nav-badge">New</span>' : ''}</div></button>`;
+    const head = c.virtual && !sawVirtual ? `<div style="padding:10px 14px 4px;font-size:11px;font-weight:700;letter-spacing:.06em;text-transform:uppercase;opacity:.7">No messages yet</div>` : '';
+    if (c.virtual) sawVirtual = true;
+    return `${head}<button type="button" class="${watchSel === c.id ? 'active' : ''}" data-watch="${esc(c.id)}"><div class="avatar peer-av">${esc(initials(i.account))}</div><div class="peer-meta"><strong style="display:flex;gap:8px;align-items:baseline;flex-wrap:wrap">${esc(i.account)}${watchTotHtml(tot.get(c.accountId))}</strong><small>${esc(i.a)} ↔ ${esc(i.b)}</small><small>${esc(c.lastMessage || 'No messages yet')}</small></div><div class="peer-side"><small>${esc(peerTime(c.lastMessageAt))}</small>${fresh ? '<span class="nav-badge">New</span>' : ''}</div></button>`;
   }).join('');
 }
 function watchBubbles() {
-  const c = watchConvs.find(x => x.id === watchSel);
+  const c = watchFind(watchSel);
   if (!c) return '';
   if (!watchMsgs.length) return '<div class="empty">💬<b>No messages yet</b></div>';
   const first = (c.participants || [])[0];
@@ -3245,10 +3274,10 @@ function watchBubbles() {
   }).join('');
 }
 function watchWindowHtml() {
-  const c = watchConvs.find(x => x.id === watchSel);
+  const c = watchFind(watchSel);
   if (!c) return `<div class="chat-messages" id="watchMessages"><div class="empty">💬<b>Select a conversation</b>Pick a chat on the left to read it and reply as Admin.</div></div>`;
   const i = watchInfo(c), g = acctMonthTotals().get(c.accountId);
-  return `<div class="peer-head"><div class="avatar">${esc(initials(i.account))}</div><div><strong style="display:flex;gap:8px;align-items:baseline;flex-wrap:wrap">${esc(i.account)}${watchTotHtml(g)}</strong><small>${esc(i.a)} ↔ ${esc(i.b)} · you can reply as Admin</small></div></div><div class="chat-messages" id="watchMessages">${watchBubbles()}</div><form class="chat-compose" id="watchForm"><input name="message" placeholder="Reply as Admin…" maxlength="2000" autocomplete="off" required><button class="btn btn-primary" type="submit">Send ↗</button></form>`;
+  return `<div class="peer-head"><div class="avatar">${esc(initials(i.account))}</div><div><strong style="display:flex;gap:8px;align-items:baseline;flex-wrap:wrap">${esc(i.account)}${watchTotHtml(g)}</strong><small>${esc(i.a)} ↔ ${esc(i.b)} · ${c.virtual ? 'no messages yet, your message starts the chat' : 'you can reply as Admin'}</small></div></div><div class="chat-messages" id="watchMessages">${watchBubbles()}</div><form class="chat-compose" id="watchForm"><input name="message" placeholder="Reply as Admin…" maxlength="2000" autocomplete="off" required><button class="btn btn-primary" type="submit">Send ↗</button></form>`;
 }
 function updateWatchList() { const el = $('#watchItems'); if (el) el.innerHTML = watchListHtml(); }
 function updateWatchWindow() {
