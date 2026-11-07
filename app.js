@@ -541,6 +541,7 @@ button:disabled{opacity:.6;cursor:not-allowed}
 .chat-messages .bubble b{color:#1a2420}
 .chat-messages .bubble small{color:#52605a}
 .chat-messages .bubble.mine small{color:#d8ece2}
+.chat-messages .bubble.mine,.chat-messages .bubble.mine b{color:#fff}
 .peer-meta strong,.chat-list button strong{color:#1a2420}
 .peer-meta small,.peer-side small,.peer-head small,.peer-day{color:var(--chat-meta)}
 .chat-compose input,.peer-search input{border-color:var(--chat-line)}
