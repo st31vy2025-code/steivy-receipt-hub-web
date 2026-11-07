@@ -616,7 +616,9 @@ button:disabled{opacity:.6;cursor:not-allowed}
 [data-theme="dark"] .demo-note{background:#2c2411;border-color:#4a3c17;color:#e8c877}
 [data-theme="dark"] .msg-ticker{background:#1b2a22;border-color:#2c4438}
 [data-theme="dark"] .msg-item,[data-theme="dark"] .msg-item b{color:#dfe9e2}
-[data-theme="dark"] .msg-item b{color:#9fe0b8}`;
+[data-theme="dark"] .msg-item b{color:#9fe0b8}
+[data-theme="dark"] button.small-btn,[data-theme="dark"] .small-btn{color:#9fe0b8!important}
+[data-theme="dark"] button.small-btn:hover,[data-theme="dark"] .small-btn:hover{color:#d2f5e0!important}`;
 document.head.appendChild(extraStyle);
 
 /* ───────────────────────── Theme (light / dark) ───────────────────────── */
