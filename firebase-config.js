@@ -1,5 +1,6 @@
 
 export const firebaseConfig = {
+  appCheckSiteKey: "6LeKUxQuAAAAAEy2wGARWVSATlPsLYKEeHVwVlE2",
   apiKey: "AIzaSyDjkmsFPtZQmIFap84F1Wd3xXaCqvHhURI",
   authDomain: "steivy-receipt-hub.firebaseapp.com",
   projectId: "steivy-receipt-hub",
