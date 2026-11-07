@@ -872,7 +872,7 @@ async function initFirebase() {
     if (acmod) {
       try {
         if (['localhost', '127.0.0.1'].includes(location.hostname)) self.FIREBASE_APPCHECK_DEBUG_TOKEN = true; // local testing only: register the debug token printed in the console
-        acmod.initializeAppCheck(app, { provider: new acmod.ReCaptchaV3Provider(firebaseConfig.appCheckSiteKey), isTokenAutoRefreshEnabled: true });
+        acmod.initializeAppCheck(app, { provider: new acmod.ReCaptchaEnterpriseProvider(firebaseConfig.appCheckSiteKey), isTokenAutoRefreshEnabled: true });
       } catch (e) { console.warn('App Check could not start', e); }
     }
     auth = authmod.getAuth(app);
