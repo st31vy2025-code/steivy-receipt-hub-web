@@ -863,6 +863,18 @@ async function initFirebase() {
     // initializeApp/deleteApp are kept so we can create (and clean up) a secondary app when an admin creates a worker.
     fb = { ...authmod, ...fsmod, initializeApp: appmod.initializeApp, deleteApp: appmod.deleteApp };
     const app = appmod.initializeApp(firebaseConfig);
+    // App Check (reCAPTCHA Enterprise). Only runs if appCheckSiteKey is set in firebase-config.js; failures never block the app.
+    try {
+      if (firebaseConfig.appCheckSiteKey) {
+        const acmod = await import(base + 'firebase-app-check.js');
+        acmod.initializeAppCheck(app, {
+          provider: new acmod.ReCaptchaEnterpriseProvider(firebaseConfig.appCheckSiteKey),
+          isTokenAutoRefreshEnabled: true
+        });
+      }
+    } catch (e) {
+      console.warn('App Check could not start.', e);
+    }
     auth = authmod.getAuth(app);
     // Local cache (IndexedDB, works across tabs): a page reload or a re-opened tab only pays for documents that changed.
     try {
