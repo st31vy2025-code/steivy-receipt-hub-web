@@ -1524,7 +1524,7 @@ function renderLogin() {
   $('#confirmBox')?.remove();
   $('#chatPopups')?.remove();
   unreadChat = 0;
-  $('#app').innerHTML = `<main class="login-wrap"><section class="login-art"><div class="brand"><img src="assets/logo.jpg" alt=""><div><strong>STEIVY</strong><small>RECEIPT HUB</small></div></div><div><h1>Keep every shift<br>in good order.</h1><p>Manage receipt submissions, track shift totals, review reports, and stay connected with your team.</p></div><ul class="login-points"><li><span>${EMPTY_ICONS.receipts}</span>Log every shift and receipt in one place</li><li><span>${EMPTY_ICONS.reports}</span>Clear reports and earnings, always up to date</li><li><span>${EMPTY_ICONS.chat}</span>Stay connected with your team in real time</li></ul><div class="art-foot"><p>One hub for your team's daily operations.</p></div></section><section class="login-form-side"><form id="loginForm" class="login-form"><div class="brand-mark">S</div><h2>Welcome back</h2><p class="muted">Sign in to continue to your workspace.</p>${!configured ? `<div class="demo-note"><b>Firebase setup required</b><br>This copy has no Firebase web credentials yet. You can preview the interface with demo accounts below; demo changes are not saved online.</div>` : ''}<div class="field"><label for="email">EMAIL ADDRESS</label><input id="email" type="email" placeholder="you@company.com" autocomplete="username" required></div><div class="field"><label for="password">PASSWORD</label><div class="pw-wrap"><input id="password" type="password" placeholder="Enter your password" autocomplete="current-password" required><button type="button" class="pw-toggle" id="pwToggle" aria-label="Show password">Show</button></div></div><button class="btn btn-primary btn-block" type="submit">Sign in <span>→</span></button><p class="muted" style="font-size:12px;text-align:center;margin:18px 0">Need an account? Ask your administrator to create or approve it.</p><p class="login-foot">🔒 Secure sign-in · © ${new Date().getFullYear()} Steivy Receipt Hub</p>${!configured ? `<div class="field"><label>PREVIEW WITHOUT FIREBASE</label><button class="btn btn-light btn-block" type="button" id="demoWorker">Continue as demo worker</button><button class="btn btn-ghost btn-block" style="margin-top:8px" type="button" id="demoAdmin">Preview admin dashboard</button></div>` : ''}<div class="footer-note">Steivy Receipt Hub · Web edition</div></form></section></main>`;
+  $('#app').innerHTML = `<main class="login-wrap"><section class="login-art"><div class="brand"><img src="assets/logo.jpg" alt=""><div><strong>STEIVY</strong><small>RECEIPT HUB</small></div></div><div><h1>Keep every shift<br>in good order.</h1><p>Manage receipt submissions, track shift totals, review reports, and stay connected with your team.</p></div><ul class="login-points"><li><span>${EMPTY_ICONS.receipts}</span>Log every shift and receipt in one place</li><li><span>${EMPTY_ICONS.reports}</span>Clear reports and earnings, always up to date</li><li><span>${EMPTY_ICONS.chat}</span>Stay connected with your team in real time</li></ul><div class="art-foot"><p>One hub for your team's daily operations.</p></div></section><section class="login-form-side"><form id="loginForm" class="login-form"><div class="brand-mark">S</div><h2>Welcome back</h2><p class="muted">Sign in to continue to your workspace.</p>${!configured ? `<div class="demo-note"><b>Firebase setup required</b><br>This copy has no Firebase web credentials yet. You can preview the interface with demo accounts below; demo changes are not saved online.</div>` : ''}<div class="field"><label for="email">EMAIL ADDRESS</label><input id="email" type="email" placeholder="you@company.com" autocomplete="username" required></div><div class="field"><label for="password">PASSWORD</label><div class="pw-wrap"><input id="password" type="password" placeholder="Enter your password" autocomplete="current-password" required><button type="button" class="pw-toggle" id="pwToggle" aria-label="Show password">Show</button></div><div class="forgot-row"><button type="button" class="forgot-link" id="forgotPw">Forgot password?</button></div></div><button class="btn btn-primary btn-block" type="submit">Sign in <span>→</span></button><p class="muted" style="font-size:12px;text-align:center;margin:18px 0">Need an account? Ask your administrator to create or approve it.</p><p class="login-foot">🔒 Secure sign-in · © ${new Date().getFullYear()} Steivy Receipt Hub</p>${!configured ? `<div class="field"><label>PREVIEW WITHOUT FIREBASE</label><button class="btn btn-light btn-block" type="button" id="demoWorker">Continue as demo worker</button><button class="btn btn-ghost btn-block" style="margin-top:8px" type="button" id="demoAdmin">Preview admin dashboard</button></div>` : ''}<div class="footer-note">Steivy Receipt Hub · Web edition</div></form></section></main>`;
 
   $('#loginForm').addEventListener('submit', async e => {
     e.preventDefault();
@@ -1539,6 +1539,23 @@ function renderLogin() {
     }
   });
   $('#pwToggle')?.addEventListener('click', e => { const i = $('#password'), show = i.type === 'password'; i.type = show ? 'text' : 'password'; e.currentTarget.textContent = show ? 'Hide' : 'Show'; e.currentTarget.setAttribute('aria-label', show ? 'Hide password' : 'Show password'); });
+  $('#forgotPw')?.addEventListener('click', async e => {
+    if (!configured || !auth) { toast('Password reset needs Firebase to be set up.'); return; }
+    const email = $('#email').value.trim();
+    if (!email) { toast('Type your email address above first, then tap "Forgot password?".'); $('#email').focus(); return; }
+    const btn = e.currentTarget;
+    btn.disabled = true;
+    try {
+      await fb.sendPasswordResetEmail(auth, email);
+      toast('If that email has an account, a reset link is on its way. Check your inbox and spam folder.');
+    } catch (err) {
+      if (err.code === 'auth/invalid-email') toast('Please enter a valid email address.');
+      else if (err.code === 'auth/too-many-requests') toast('Too many attempts. Please wait a few minutes and try again.');
+      else if (err.code === 'auth/network-request-failed') toast('No connection. Check your internet and try again.');
+      else toast('If that email has an account, a reset link is on its way. Check your inbox and spam folder.'); // same answer, so the form cannot be used to find out which emails exist
+    }
+    setTimeout(() => { btn.disabled = false; }, 8000); // brief pause so the button cannot be spammed
+  });
   $('#demoWorker')?.addEventListener('click', () => demoSignIn('worker'));
   $('#demoAdmin')?.addEventListener('click', () => demoSignIn('admin'));
 }
@@ -1584,7 +1601,7 @@ function shell() {
   const groupLabel = (groups.find(g => g[1].some(n => n[0] === page)) || ['WORKSPACE'])[0];
   const title = PAGE_TITLES[page] || 'Dashboard';
   const badge = k => { const n = k === 'chat' ? unreadChat : k === 'coworkers' ? peerUnread() : k === 'peerwatch' ? watchUnread() : 0; return n > 0 ? `<span class="nav-badge">${n > 9 ? '9+' : n}</span>` : ''; };
-  return `<div class="shell"><aside class="sidebar" id="sidebar"><div class="brand"><img src="assets/logo.jpg" alt=""><div><strong>STEIVY</strong><small>RECEIPT HUB</small></div></div><nav class="nav" aria-label="Main">${groups.map(g => `<div class="nav-label">${g[0]}</div>${g[1].map(n => `<button data-nav="${n[0]}" class="${page === n[0] ? 'active' : ''}"${page === n[0] ? ' aria-current="page"' : ''}><span class="ico">${NAV_ICONS[n[0]] || n[1]}</span>${n[2]}${badge(n[0])}</button>`).join('')}`).join('')}</nav>${!isAdmin() && workUrl() ? `<a class="btn btn-primary start-work" id="startWork" href="${esc(workUrl())}" target="_blank" rel="noopener noreferrer">▶ Start work</a>` : ''}<div class="sidebar-bottom"><button type="button" class="whats-new-link" id="whatsNewBtn">What’s new</button><div class="user-mini"><div class="avatar">${esc(initials(profile?.displayName))}</div><div><strong>${esc(profile?.displayName || 'User')}</strong><small>${isAdmin() ? 'Administrator' : 'Worker'}</small></div></div><button class="btn btn-ghost btn-block" id="logout">↪ Sign out</button></div></aside><main class="main"><header class="topbar"><div class="right"><button class="btn btn-ghost mobile-menu" id="menuBtn">☰</button><div><div class="crumb">${esc(groupLabel)} / ${esc(title.toUpperCase())}</div><h1>${esc(title)}</h1></div></div><div class="top-actions"><span class="mode-pill">${configured ? '● Connected app' : '◉ Demo preview'}</span><button type="button" class="btn btn-ghost" id="themeBtn" title="${theme === 'dark' ? 'Switch to light mode' : 'Switch to dark mode'}" aria-label="${theme === 'dark' ? 'Switch to light mode' : 'Switch to dark mode'}">${theme === 'dark' ? '☀' : '☾'}</button><button type="button" class="btn btn-ghost" id="logoutTop">↪ Sign out</button><div class="avatar">${esc(initials(profile?.displayName))}</div></div></header>${!configured ? '<div class="demo-banner">Demo preview — data is sample-only and will reset when you leave. Configure Firebase to use real accounts and save changes.</div>' : ''}<section class="content" id="pageContent"></section></main><nav class="bottom-nav" aria-label="Quick navigation">${[['dashboard', 'Home'], ['receipts', 'Shifts'], ['chat', 'Chat'], ['reports', 'Reports']].map(n => `<button type="button" data-nav="${n[0]}" class="${page === n[0] ? 'active' : ''}"${page === n[0] ? ' aria-current="page"' : ''}>${NAV_ICONS[n[0]]}<span>${n[1]}</span>${badge(n[0])}</button>`).join('')}<button type="button" id="moreBtn">${NAV_ICONS.more}<span>More</span></button></nav></div>`;
+  return `<div class="shell"><aside class="sidebar" id="sidebar"><div class="brand"><img src="assets/logo.jpg" alt=""><div><strong>STEIVY</strong><small>RECEIPT HUB</small></div></div><nav class="nav" aria-label="Main">${groups.map(g => `<div class="nav-label">${g[0]}</div>${g[1].map(n => `<button data-nav="${n[0]}" class="${page === n[0] ? 'active' : ''}"${page === n[0] ? ' aria-current="page"' : ''}><span class="ico">${NAV_ICONS[n[0]] || n[1]}</span>${n[2]}${badge(n[0])}</button>`).join('')}`).join('')}</nav>${!isAdmin() && workUrl() ? `<a class="btn btn-primary start-work" id="startWork" href="${esc(workUrl())}" target="_blank" rel="noopener noreferrer">▶ Start work</a>` : ''}<div class="sidebar-bottom"><button type="button" class="whats-new-link" id="whatsNewBtn">What’s new</button><div class="user-mini"><div class="avatar">${esc(initials(profile?.displayName))}</div><div><strong>${esc(profile?.displayName || 'User')}</strong><small>${isAdmin() ? 'Administrator' : 'Worker'}</small></div></div><button class="btn btn-ghost btn-block" id="logout">↪ Sign out</button></div></aside><main class="main"><header class="topbar"><div class="right"><button class="btn btn-ghost mobile-menu" id="menuBtn">☰</button><div><div class="crumb">${esc(groupLabel)} / ${esc(title.toUpperCase())}</div><h1>${esc(title)}</h1></div></div><div class="top-actions"><span class="mode-pill">${configured ? '● Connected app' : '◉ Demo preview'}</span><button type="button" class="btn btn-ghost wn-top" id="whatsNewTop" title="What’s new" aria-label="What’s new">✦${wnUnseen() ? '<i class="wn-dot"></i>' : ''}</button><button type="button" class="btn btn-ghost" id="themeBtn" title="${theme === 'dark' ? 'Switch to light mode' : 'Switch to dark mode'}" aria-label="${theme === 'dark' ? 'Switch to light mode' : 'Switch to dark mode'}">${theme === 'dark' ? '☀' : '☾'}</button><button type="button" class="btn btn-ghost" id="logoutTop">↪ Sign out</button><div class="avatar">${esc(initials(profile?.displayName))}</div></div></header>${!configured ? '<div class="demo-banner">Demo preview — data is sample-only and will reset when you leave. Configure Firebase to use real accounts and save changes.</div>' : ''}<section class="content" id="pageContent"></section></main><nav class="bottom-nav" aria-label="Quick navigation">${[['dashboard', 'Home'], ['receipts', 'Shifts'], ['chat', 'Chat'], ['reports', 'Reports']].map(n => `<button type="button" data-nav="${n[0]}" class="${page === n[0] ? 'active' : ''}"${page === n[0] ? ' aria-current="page"' : ''}>${NAV_ICONS[n[0]]}<span>${n[1]}</span>${badge(n[0])}</button>`).join('')}<button type="button" id="moreBtn">${NAV_ICONS.more}<span>More</span></button></nav></div>`;
 }
 
 const stat = (label, value, sub, ico) => `<div class="stat"><div class="stat-head">${label}<span class="stat-icon">${ico}</span></div><strong>${value}</strong><small>${sub}</small></div>`;
@@ -2312,6 +2329,7 @@ function wirePage() {
   $('#subTo')?.addEventListener('change', e => { filters.to = e.target.value; subLimit = 50; renderPage(); });
   $('#clearDates')?.addEventListener('click', () => { filters.from = ''; filters.to = ''; subLimit = 50; renderPage(); });
   $('#whatsNewBtn')?.addEventListener('click', () => showWhatsNew(true));
+  $('#whatsNewTop')?.addEventListener('click', () => showWhatsNew(true));
   $('#exportCsv')?.addEventListener('click', () => exportCsv());
   $('#repFrom')?.addEventListener('change', e => { reportFrom = e.target.value; renderPage(); });
   $('#repTo')?.addEventListener('change', e => { reportTo = e.target.value; renderPage(); });
@@ -2916,22 +2934,25 @@ function exportCsv(filtered = false) {
    Shown once per user per device after each update. To announce a new release: change WHATS_NEW_VERSION and
    edit the WHATS_NEW list. Workers see items with who: 'all' or 'worker'; admins see 'all' or 'admin'.
    The "What's new" link in the sidebar reopens it any time. */
-const WHATS_NEW_VERSION = '2026-11-d';
+const WHATS_NEW_VERSION = '2026-11-f';
 const WHATS_NEW = [
   { who: 'all', t: 'Mobile bottom navigation', d: 'Home, Shifts, Chat, Reports and More are one tap away on your phone, with a live unread badge on Chat.' },
   { who: 'all', t: 'Cleaner look', d: 'New icons, loading placeholders, friendlier empty pages and a refreshed sign-in screen.' },
   { who: 'all', t: 'Date range filter', d: 'In Submissions, pick a From and To date to see only the shifts you need.' },
+  { who: 'all', t: 'Forgot password', d: 'On the sign-in page, type your email and tap Forgot password? to get a reset link by email.' },
+  { who: 'all', t: 'Auto sign-out', d: 'For safety you are signed out after about an hour of no activity. You are never signed out while a shift is running.' },
   { who: 'all', t: 'Offline notice', d: 'A bar appears at the top when your internet drops, and disappears once you are back online.' },
   { who: 'all', t: 'Date range in Reports', d: 'Pick From and To dates to see earnings, export CSV and print payslips for just that period.' },
   { who: 'worker', t: 'Print your payslip', d: 'In Reports, choose a month and tap Print payslip. You can also save it as a PDF.' },
   { who: 'admin', t: 'Print payslips per worker', d: 'In Reports → By worker, tap Print payslip beside a worker. Pick the month first to limit the period.' }
 ];
 const whatsNewKey = () => `steivy_whatsnew_${currentUser?.uid || 'anon'}`;
+function wnUnseen() {
+  try { return (localStorage.getItem(whatsNewKey()) || '') !== WHATS_NEW_VERSION; } catch { return window.__wnSeen !== WHATS_NEW_VERSION; }
+}
 function maybeShowWhatsNew() {
   if (!currentUser || !profile || window.__wnTimer) return;
-  let seen = '';
-  try { seen = localStorage.getItem(whatsNewKey()) || ''; } catch { if (window.__wnSeen === WHATS_NEW_VERSION) return; }
-  if (seen === WHATS_NEW_VERSION) return;
+  if (!wnUnseen()) return;
   let tries = 0;
   const attempt = () => {
     window.__wnTimer = null;
@@ -2956,12 +2977,48 @@ function showWhatsNew(manual) {
     document.removeEventListener('keydown', onKey, true);
     wrap.remove();
     try { localStorage.setItem(whatsNewKey(), WHATS_NEW_VERSION); } catch { window.__wnSeen = WHATS_NEW_VERSION; }
+    $$('.wn-dot').forEach(d => d.remove());
   };
   document.addEventListener('keydown', onKey, true);
   wrap.addEventListener('mousedown', e => { if (e.target === wrap) done(); });
   wrap.querySelector('[data-wn-ok]').addEventListener('click', done);
   wrap.querySelector('[data-wn-ok]').focus();
 }
+
+/* ───────────────────────── Auto sign-out when idle ─────────────────────────
+   Protects payroll data on a phone or computer that was left open. Browser timers only: no Firebase calls.
+   After IDLE_MS without a tap, key press or scroll, a 1-minute warning shows, then the user is signed out.
+   A worker with a running shift is never signed out, so the shift reminders keep working. */
+const IDLE_MS = 60 * 60 * 1000, IDLE_WARN_MS = 60 * 1000;
+let lastActivity = Date.now(), lastActMark = 0;
+function idleHideWarn() { $('#idleBanner')?.remove(); }
+['pointerdown', 'keydown', 'touchstart', 'wheel', 'scroll'].forEach(ev => window.addEventListener(ev, () => {
+  const n = Date.now();
+  if ($('#idleBanner')) { lastActivity = n; lastActMark = n; idleHideWarn(); return; }
+  if (n - lastActMark < 2000) return; // throttle: scroll fires very often
+  lastActMark = n; lastActivity = n;
+}, { passive: true, capture: true }));
+setInterval(() => {
+  if (!currentUser || !profile) { idleHideWarn(); return; }
+  const idle = Date.now() - lastActivity;
+  if (idle < IDLE_MS - IDLE_WARN_MS) { idleHideWarn(); return; }
+  if (!isAdmin() && data.activeShifts.some(s => s.workerId === currentUser.uid)) { idleHideWarn(); return; } // shift in progress
+  if (idle >= IDLE_MS) {
+    idleHideWarn();
+    agreementSignOut().then(() => toast('You were signed out because of inactivity.'));
+    return;
+  }
+  if (!$('#idleBanner')) {
+    const el = document.createElement('div');
+    el.id = 'idleBanner';
+    el.setAttribute('role', 'alert');
+    el.textContent = 'No activity for a while. You will be signed out in about a minute. Tap anywhere to stay signed in.';
+    document.body.appendChild(el);
+  }
+}, 15000);
+
+// Safety net: does not depend on which screen rendered last. Cheap (reads one localStorage key), no Firebase.
+setInterval(maybeShowWhatsNew, 5000);
 
 /* ───────────────────────── Print payslip ─────────────────────────
    Builds a clean A4 payslip (approved shifts only) in a hidden #printArea and calls window.print().
