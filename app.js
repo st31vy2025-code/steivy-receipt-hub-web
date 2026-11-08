@@ -34,7 +34,7 @@ let chatConv = 'group', dmWith = '', dmUnsub = null, dmReady = false; // chat: '
 let auditUnsub = null, auditLimit = 50, auditMore = false, subLimit = 50;
 let trackerErr = false; // could not read /activeShifts (Firestore rules)
 let peerConvs = {}, peerUnsubs = {}, peerReady = {}, peerSel = null, peerMsgUnsub = null, peerMsgs = [], peerSearch = ''; // co-worker private chat
-const filters = { q: '', status: 'all' };
+const filters = { q: '', status: 'all', from: '', to: '' };
 const DEFAULT_SETTINGS = { grossRateCents: 100, deductionPercent: 10, errorWarnPercent: 5, workUrl: '' };
 const CHAT_LIMIT = 30; // messages loaded per conversation (keeps reads small)
 const WORKER_SUB_MONTHS = 2; // workers load only this many months of their OWN submissions (current + previous); older months of "All time" come from /leaderboard
@@ -1562,7 +1562,7 @@ function shell() {
   const groupLabel = (groups.find(g => g[1].some(n => n[0] === page)) || ['WORKSPACE'])[0];
   const title = PAGE_TITLES[page] || 'Dashboard';
   const badge = k => { const n = k === 'chat' ? unreadChat : k === 'coworkers' ? peerUnread() : k === 'peerwatch' ? watchUnread() : 0; return n > 0 ? `<span class="nav-badge">${n > 9 ? '9+' : n}</span>` : ''; };
-  return `<div class="shell"><aside class="sidebar" id="sidebar"><div class="brand"><img src="assets/logo.jpg" alt=""><div><strong>STEIVY</strong><small>RECEIPT HUB</small></div></div><nav class="nav" aria-label="Main">${groups.map(g => `<div class="nav-label">${g[0]}</div>${g[1].map(n => `<button data-nav="${n[0]}" class="${page === n[0] ? 'active' : ''}"${page === n[0] ? ' aria-current="page"' : ''}><span class="ico">${NAV_ICONS[n[0]] || n[1]}</span>${n[2]}${badge(n[0])}</button>`).join('')}`).join('')}</nav>${!isAdmin() && workUrl() ? `<a class="btn btn-primary start-work" id="startWork" href="${esc(workUrl())}" target="_blank" rel="noopener noreferrer">▶ Start work</a>` : ''}<div class="sidebar-bottom"><div class="user-mini"><div class="avatar">${esc(initials(profile?.displayName))}</div><div><strong>${esc(profile?.displayName || 'User')}</strong><small>${isAdmin() ? 'Administrator' : 'Worker'}</small></div></div><button class="btn btn-ghost btn-block" id="logout">↪ Sign out</button></div></aside><main class="main"><header class="topbar"><div class="right"><button class="btn btn-ghost mobile-menu" id="menuBtn">☰</button><div><div class="crumb">${esc(groupLabel)} / ${esc(title.toUpperCase())}</div><h1>${esc(title)}</h1></div></div><div class="top-actions"><span class="mode-pill">${configured ? '● Connected app' : '◉ Demo preview'}</span><button type="button" class="btn btn-ghost" id="themeBtn" title="${theme === 'dark' ? 'Switch to light mode' : 'Switch to dark mode'}" aria-label="${theme === 'dark' ? 'Switch to light mode' : 'Switch to dark mode'}">${theme === 'dark' ? '☀' : '☾'}</button><button type="button" class="btn btn-ghost" id="logoutTop">↪ Sign out</button><div class="avatar">${esc(initials(profile?.displayName))}</div></div></header>${!configured ? '<div class="demo-banner">Demo preview — data is sample-only and will reset when you leave. Configure Firebase to use real accounts and save changes.</div>' : ''}<section class="content" id="pageContent"></section></main><nav class="bottom-nav" aria-label="Quick navigation">${[['dashboard', 'Home'], ['receipts', 'Shifts'], ['chat', 'Chat'], ['reports', 'Reports']].map(n => `<button type="button" data-nav="${n[0]}" class="${page === n[0] ? 'active' : ''}"${page === n[0] ? ' aria-current="page"' : ''}>${NAV_ICONS[n[0]]}<span>${n[1]}</span>${badge(n[0])}</button>`).join('')}<button type="button" id="moreBtn">${NAV_ICONS.more}<span>More</span></button></nav></div>`;
+  return `<div class="shell"><aside class="sidebar" id="sidebar"><div class="brand"><img src="assets/logo.jpg" alt=""><div><strong>STEIVY</strong><small>RECEIPT HUB</small></div></div><nav class="nav" aria-label="Main">${groups.map(g => `<div class="nav-label">${g[0]}</div>${g[1].map(n => `<button data-nav="${n[0]}" class="${page === n[0] ? 'active' : ''}"${page === n[0] ? ' aria-current="page"' : ''}><span class="ico">${NAV_ICONS[n[0]] || n[1]}</span>${n[2]}${badge(n[0])}</button>`).join('')}`).join('')}</nav>${!isAdmin() && workUrl() ? `<a class="btn btn-primary start-work" id="startWork" href="${esc(workUrl())}" target="_blank" rel="noopener noreferrer">▶ Start work</a>` : ''}<div class="sidebar-bottom"><button type="button" class="whats-new-link" id="whatsNewBtn">What’s new</button><div class="user-mini"><div class="avatar">${esc(initials(profile?.displayName))}</div><div><strong>${esc(profile?.displayName || 'User')}</strong><small>${isAdmin() ? 'Administrator' : 'Worker'}</small></div></div><button class="btn btn-ghost btn-block" id="logout">↪ Sign out</button></div></aside><main class="main"><header class="topbar"><div class="right"><button class="btn btn-ghost mobile-menu" id="menuBtn">☰</button><div><div class="crumb">${esc(groupLabel)} / ${esc(title.toUpperCase())}</div><h1>${esc(title)}</h1></div></div><div class="top-actions"><span class="mode-pill">${configured ? '● Connected app' : '◉ Demo preview'}</span><button type="button" class="btn btn-ghost" id="themeBtn" title="${theme === 'dark' ? 'Switch to light mode' : 'Switch to dark mode'}" aria-label="${theme === 'dark' ? 'Switch to light mode' : 'Switch to dark mode'}">${theme === 'dark' ? '☀' : '☾'}</button><button type="button" class="btn btn-ghost" id="logoutTop">↪ Sign out</button><div class="avatar">${esc(initials(profile?.displayName))}</div></div></header>${!configured ? '<div class="demo-banner">Demo preview — data is sample-only and will reset when you leave. Configure Firebase to use real accounts and save changes.</div>' : ''}<section class="content" id="pageContent"></section></main><nav class="bottom-nav" aria-label="Quick navigation">${[['dashboard', 'Home'], ['receipts', 'Shifts'], ['chat', 'Chat'], ['reports', 'Reports']].map(n => `<button type="button" data-nav="${n[0]}" class="${page === n[0] ? 'active' : ''}"${page === n[0] ? ' aria-current="page"' : ''}>${NAV_ICONS[n[0]]}<span>${n[1]}</span>${badge(n[0])}</button>`).join('')}<button type="button" id="moreBtn">${NAV_ICONS.more}<span>More</span></button></nav></div>`;
 }
 
 const stat = (label, value, sub, ico) => `<div class="stat"><div class="stat-head">${label}<span class="stat-icon">${ico}</span></div><strong>${value}</strong><small>${sub}</small></div>`;
@@ -1607,7 +1607,8 @@ function dashboard() {
 function filteredSubmissions() {
   const q = filters.q.trim().toLowerCase();
   return visibleSubmissions().filter(x => (filters.status === 'all' || x.status === filters.status) &&
-    (!q || `${x.workerName || ''} ${x.accountName || ''} ${x.shiftDate || ''}`.toLowerCase().includes(q)));
+    (!q || `${x.workerName || ''} ${x.accountName || ''} ${x.shiftDate || ''}`.toLowerCase().includes(q)) &&
+    (!filters.from || String(x.shiftDate || '') >= filters.from) && (!filters.to || (x.shiftDate && String(x.shiftDate) <= filters.to)));
 }
 
 // (Old manual form. Workers now use the shift tracker below, so this is no longer shown. Kept for reference.)
@@ -1909,7 +1910,7 @@ async function releaseShift(accountId) {
 function receipts() {
   const rows = filteredSubmissions();
   const sel = v => filters.status === v ? 'selected' : '';
-  return `<div class="welcome"><div><h2>${isAdmin() ? 'Review submissions' : 'My shifts'}</h2><p>${isAdmin() ? 'Review worker activity, edit processed/error counts, and approve or reject shift records.' : 'Start and end your shift here, and track the status of your submissions.'}</p></div>${!isAdmin() ? '<button class="btn btn-primary" id="newSubmission">▶ Shift tracker</button>' : ''}</div>${!isAdmin() ? trackerPanel() : activeShiftsPanel()}<div class="panel"><div class="toolbar"><input id="receiptSearch" placeholder="Search worker or account…" value="${esc(filters.q)}"><select id="statusFilter"><option value="all">All statuses</option><option ${sel('pending')}>pending</option><option ${sel('approved')}>approved</option><option ${sel('rejected')}>rejected</option></select><span class="spacer"></span><span class="muted" id="recordCount">${rows.length} record(s)</span></div><div class="table-wrap"><table><thead><tr><th>Worker / account</th><th>Shift date</th><th>Shift</th><th>Processed</th><th>Errors</th><th>Net pay</th><th>Status</th><th>Action</th></tr></thead><tbody id="submissionRows">${submissionRowsPaged(rows)}</tbody></table></div></div>`;
+  return `<div class="welcome"><div><h2>${isAdmin() ? 'Review submissions' : 'My shifts'}</h2><p>${isAdmin() ? 'Review worker activity, edit processed/error counts, and approve or reject shift records.' : 'Start and end your shift here, and track the status of your submissions.'}</p></div>${!isAdmin() ? '<button class="btn btn-primary" id="newSubmission">▶ Shift tracker</button>' : ''}</div>${!isAdmin() ? trackerPanel() : activeShiftsPanel()}<div class="panel"><div class="toolbar"><input id="receiptSearch" placeholder="Search worker or account…" value="${esc(filters.q)}"><select id="statusFilter"><option value="all">All statuses</option><option ${sel('pending')}>pending</option><option ${sel('approved')}>approved</option><option ${sel('rejected')}>rejected</option></select><label class="muted date-f">From <input type="date" id="subFrom" value="${esc(filters.from)}" max="${esc(filters.to || todayStr())}"></label><label class="muted date-f">To <input type="date" id="subTo" value="${esc(filters.to)}" min="${esc(filters.from)}" max="${todayStr()}"></label>${filters.from || filters.to ? '<button type="button" class="small-btn" id="clearDates">Clear dates</button>' : ''}<span class="spacer"></span><span class="muted" id="recordCount">${rows.length} record(s)</span></div><div class="table-wrap"><table><thead><tr><th>Worker / account</th><th>Shift date</th><th>Shift</th><th>Processed</th><th>Errors</th><th>Net pay</th><th>Status</th><th>Action</th></tr></thead><tbody id="submissionRows">${submissionRowsPaged(rows)}</tbody></table></div></div>`;
 }
 
 function workerNamesFor(a) {
@@ -2208,6 +2209,7 @@ function renderPage() {
   if (page === 'peerwatch') startWatch();
   if (detailId) { const s = visibleSubmissions().find(x => x.id === detailId); if (s) viewSubmission(s.id, false); else detailId = null; }
   syncAnnouncementPopup();
+  maybeShowWhatsNew();
 }
 
 function go(p) {
@@ -2273,6 +2275,10 @@ function wirePage() {
   $('#addAnnouncement')?.addEventListener('click', addAnnouncement);
   $('#settingsForm')?.addEventListener('submit', saveSettings);
   $('#chatForm')?.addEventListener('submit', sendMessage);
+  $('#subFrom')?.addEventListener('change', e => { filters.from = e.target.value; subLimit = 50; renderPage(); });
+  $('#subTo')?.addEventListener('change', e => { filters.to = e.target.value; subLimit = 50; renderPage(); });
+  $('#clearDates')?.addEventListener('click', () => { filters.from = ''; filters.to = ''; subLimit = 50; renderPage(); });
+  $('#whatsNewBtn')?.addEventListener('click', () => showWhatsNew(true));
   $('#exportCsv')?.addEventListener('click', exportCsv);
   $('#printPayslip')?.addEventListener('click', () => printPayslip(''));
   $('#payslipMonth')?.addEventListener('change', e => { payslipMonth = e.target.value; renderPage(); });
@@ -2865,6 +2871,50 @@ function exportCsv() {
   a.click();
   a.remove();
   setTimeout(() => URL.revokeObjectURL(url), 1000);
+}
+
+/* ───────────────────────── What's new ─────────────────────────
+   Shown once per user per device after each update. To announce a new release: change WHATS_NEW_VERSION and
+   edit the WHATS_NEW list. Workers see items with who: 'all' or 'worker'; admins see 'all' or 'admin'.
+   The "What's new" link in the sidebar reopens it any time. */
+const WHATS_NEW_VERSION = '2026-11-b';
+const WHATS_NEW = [
+  { who: 'all', t: 'Mobile bottom navigation', d: 'Home, Shifts, Chat, Reports and More are one tap away on your phone, with a live unread badge on Chat.' },
+  { who: 'all', t: 'Cleaner look', d: 'New icons, loading placeholders, friendlier empty pages and a refreshed sign-in screen.' },
+  { who: 'all', t: 'Date range filter', d: 'In Submissions, pick a From and To date to see only the shifts you need.' },
+  { who: 'worker', t: 'Print your payslip', d: 'In Reports, choose a month and tap Print payslip. You can also save it as a PDF.' },
+  { who: 'admin', t: 'Print payslips per worker', d: 'In Reports → By worker, tap Print payslip beside a worker. Pick the month first to limit the period.' }
+];
+const whatsNewKey = () => `steivy_whatsnew_${currentUser?.uid || 'anon'}`;
+function maybeShowWhatsNew() {
+  if (!currentUser || !profile || window.__wnTimer) return;
+  let seen = '';
+  try { seen = localStorage.getItem(whatsNewKey()) || ''; } catch { if (window.__wnSeen === WHATS_NEW_VERSION) return; }
+  if (seen === WHATS_NEW_VERSION) return;
+  window.__wnTimer = setTimeout(() => {
+    window.__wnTimer = null;
+    if (!currentUser || document.querySelector('.sh-modal')) return; // never stack on another dialog; try again on the next render
+    showWhatsNew(false);
+  }, 900);
+}
+function showWhatsNew(manual) {
+  $('#whatsNew')?.remove();
+  const mine = WHATS_NEW.filter(i => i.who === 'all' || i.who === (isAdmin() ? 'admin' : 'worker'));
+  const wrap = document.createElement('div');
+  wrap.className = 'sh-modal';
+  wrap.id = 'whatsNew';
+  wrap.innerHTML = `<div class="sh-modal-card whats-new" role="dialog" aria-modal="true" aria-labelledby="wnTitle"><h3 id="wnTitle">What’s new</h3><ul>${mine.map(i => `<li><b>${esc(i.t)}</b><span>${esc(i.d)}</span></li>`).join('')}</ul><div class="sh-modal-actions"><button type="button" class="btn btn-primary" data-wn-ok>Got it</button></div></div>`;
+  document.body.appendChild(wrap);
+  const onKey = e => { if (e.key === 'Escape') done(); };
+  const done = () => {
+    document.removeEventListener('keydown', onKey, true);
+    wrap.remove();
+    try { localStorage.setItem(whatsNewKey(), WHATS_NEW_VERSION); } catch { window.__wnSeen = WHATS_NEW_VERSION; }
+  };
+  document.addEventListener('keydown', onKey, true);
+  wrap.addEventListener('mousedown', e => { if (e.target === wrap) done(); });
+  wrap.querySelector('[data-wn-ok]').addEventListener('click', done);
+  wrap.querySelector('[data-wn-ok]').focus();
 }
 
 /* ───────────────────────── Print payslip ─────────────────────────
