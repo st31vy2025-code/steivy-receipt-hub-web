@@ -228,6 +228,28 @@ function checkShiftReminder() {
 }
 setInterval(checkShiftReminder, 30000);
 
+/* ───────────────────────── Offline banner ─────────────────────────
+   Pure browser events (online/offline): no Firebase calls, no polling. Lives on <body>, outside #app,
+   so page re-renders never remove it. */
+let netTimer = null;
+function netBanner(state) {
+  let el = $('#netBanner');
+  if (!el) {
+    el = document.createElement('div');
+    el.id = 'netBanner';
+    el.setAttribute('role', 'status');
+    el.setAttribute('aria-live', 'polite');
+    document.body.appendChild(el);
+  }
+  clearTimeout(netTimer);
+  el.className = state;
+  el.textContent = state === 'off' ? 'You are offline. Changes may not save until your connection is back.' : 'Back online.';
+  if (state === 'on') netTimer = setTimeout(() => el.remove(), 2500);
+}
+window.addEventListener('offline', () => netBanner('off'));
+window.addEventListener('online', () => { if ($('#netBanner')) netBanner('on'); });
+if (navigator.onLine === false) window.addEventListener('DOMContentLoaded', () => netBanner('off'), { once: true });
+
 // Missed shift report: a scheduled worker with no non-rejected submission for an ended shift, per assigned account.
 function shiftEndAt(sc, dateStr) {
   const [y, m, d] = dateStr.split('-').map(Number);
@@ -1910,7 +1932,7 @@ async function releaseShift(accountId) {
 function receipts() {
   const rows = filteredSubmissions();
   const sel = v => filters.status === v ? 'selected' : '';
-  return `<div class="welcome"><div><h2>${isAdmin() ? 'Review submissions' : 'My shifts'}</h2><p>${isAdmin() ? 'Review worker activity, edit processed/error counts, and approve or reject shift records.' : 'Start and end your shift here, and track the status of your submissions.'}</p></div>${!isAdmin() ? '<button class="btn btn-primary" id="newSubmission">▶ Shift tracker</button>' : ''}</div>${!isAdmin() ? trackerPanel() : activeShiftsPanel()}<div class="panel"><div class="toolbar"><input id="receiptSearch" placeholder="Search worker or account…" value="${esc(filters.q)}"><select id="statusFilter"><option value="all">All statuses</option><option ${sel('pending')}>pending</option><option ${sel('approved')}>approved</option><option ${sel('rejected')}>rejected</option></select><label class="muted date-f">From <input type="date" id="subFrom" value="${esc(filters.from)}" max="${esc(filters.to || todayStr())}"></label><label class="muted date-f">To <input type="date" id="subTo" value="${esc(filters.to)}" min="${esc(filters.from)}" max="${todayStr()}"></label>${filters.from || filters.to ? '<button type="button" class="small-btn" id="clearDates">Clear dates</button>' : ''}<span class="spacer"></span><span class="muted" id="recordCount">${rows.length} record(s)</span></div><div class="table-wrap"><table><thead><tr><th>Worker / account</th><th>Shift date</th><th>Shift</th><th>Processed</th><th>Errors</th><th>Net pay</th><th>Status</th><th>Action</th></tr></thead><tbody id="submissionRows">${submissionRowsPaged(rows)}</tbody></table></div></div>`;
+  return `<div class="welcome"><div><h2>${isAdmin() ? 'Review submissions' : 'My shifts'}</h2><p>${isAdmin() ? 'Review worker activity, edit processed/error counts, and approve or reject shift records.' : 'Start and end your shift here, and track the status of your submissions.'}</p></div>${!isAdmin() ? '<button class="btn btn-primary" id="newSubmission">▶ Shift tracker</button>' : ''}</div>${!isAdmin() ? trackerPanel() : activeShiftsPanel()}<div class="panel"><div class="toolbar"><input id="receiptSearch" placeholder="Search worker or account…" value="${esc(filters.q)}"><select id="statusFilter"><option value="all">All statuses</option><option ${sel('pending')}>pending</option><option ${sel('approved')}>approved</option><option ${sel('rejected')}>rejected</option></select><label class="muted date-f">From <input type="date" id="subFrom" value="${esc(filters.from)}" max="${esc(filters.to || todayStr())}"></label><label class="muted date-f">To <input type="date" id="subTo" value="${esc(filters.to)}" min="${esc(filters.from)}" max="${todayStr()}"></label>${filters.from || filters.to ? '<button type="button" class="small-btn" id="clearDates">Clear dates</button>' : ''}<span class="spacer"></span><span class="muted" id="recordCount">${rows.length} record(s)</span><button type="button" class="small-btn" id="exportFiltered" title="Download the records matching the current search, status and dates">↓ Export CSV</button></div><div class="table-wrap"><table><thead><tr><th>Worker / account</th><th>Shift date</th><th>Shift</th><th>Processed</th><th>Errors</th><th>Net pay</th><th>Status</th><th>Action</th></tr></thead><tbody id="submissionRows">${submissionRowsPaged(rows)}</tbody></table></div></div>`;
 }
 
 function workerNamesFor(a) {
@@ -1983,7 +2005,7 @@ function errorsPage() {
 }
 
 function reports() {
-  const rows = visibleSubmissions();
+  const rows = visibleSubmissions().filter(inReportRange);
   const approved = rows.filter(s => s.status === 'approved');
   const gross = approved.reduce((n, s) => n + num(s.grossCents), 0);
   const deduct = approved.reduce((n, s) => n + num(s.deductionCents), 0);
@@ -2004,7 +2026,7 @@ function reports() {
     perWorker = `<div class="panel"><div class="panel-head"><div><h3>By worker</h3><p>Approved shifts only</p></div></div><div class="table-wrap"><table><thead><tr><th>Worker</th><th>Shifts</th><th>Receipts</th><th>Net pay</th><th></th></tr></thead><tbody>${list.map(w => `<tr><td><strong>${esc(w.name)}</strong></td><td>${w.shifts}</td><td>${w.receipts.toLocaleString()}</td><td>${money(w.net)}</td><td><button class="small-btn" data-payslip="${esc(w.key)}">Print payslip</button></td></tr>`).join('') || '<tr><td colspan="5"><div class="empty">No approved shifts yet.</div></td></tr>'}</tbody></table></div></div>`;
   }
 
-  return `<div class="welcome"><div><h2>${isAdmin() ? 'Team reports' : 'My earnings'}</h2><p>Approved submissions only are included in pay totals.</p></div><div class="welcome-actions">${payslipMonthSelect(approved)}${isAdmin() ? '' : '<button class="btn btn-primary" id="printPayslip">⎙ Print payslip</button>'}<button class="btn btn-ghost" id="exportCsv">↓ Export CSV</button></div></div><div class="stats">${stat('Gross pay', money(gross), 'Before deductions', '₱')}${stat('Deductions', money(deduct), `${dedPct()}% configured rate`, '−')}${stat('Net payable', money(net), 'Approved records', '✓')}${stat('Approved shifts', approved.length, 'Completed and approved', '▤')}</div><div class="grid-2"><div class="panel"><div class="panel-head"><div><h3>Monthly net pay</h3><p>By shift date, approved submissions</p></div></div><div class="report-bars">${Object.entries(months).sort((a, b) => a[0].localeCompare(b[0])).slice(-8).map(([m, v]) => `<div class="bar-line"><span>${esc(m)}</span><div class="bar-track"><div class="bar-fill" style="width:${(v / max * 100).toFixed(1)}%"></div></div><b>${money(v)}</b></div>`).join('') || '<div class="empty">No approved earnings to chart yet.</div>'}</div></div><div class="panel"><div class="panel-head"><div><h3>Calculation details</h3><p>Based on current pay settings</p></div></div><div class="right" style="justify-content:space-between;padding:14px 0;border-bottom:1px solid var(--line)"><span class="muted">Rate per receipt</span><b>${money(rate())}</b></div><div class="right" style="justify-content:space-between;padding:14px 0;border-bottom:1px solid var(--line)"><span class="muted">Deduction rate</span><b>${dedPct()}%</b></div><div class="right" style="justify-content:space-between;padding:14px 0"><span class="muted">Net after deductions</span><b>${money(net)}</b></div><div class="notice">Totals update from Firestore when Firebase is configured. Demo data is illustrative only.</div></div></div>${perWorker}`;
+  return `<div class="welcome"><div><h2>${isAdmin() ? 'Team reports' : 'My earnings'}</h2><p>Approved submissions only are included in pay totals.${reportFrom || reportTo ? ` Showing shifts from ${esc(reportFrom ? date(reportFrom) : 'the start')} to ${esc(reportTo ? date(reportTo) : 'today')}.` : ''}</p></div><div class="welcome-actions"><label class="muted date-f">From <input type="date" id="repFrom" value="${esc(reportFrom)}" max="${esc(reportTo || todayStr())}"></label><label class="muted date-f">To <input type="date" id="repTo" value="${esc(reportTo)}" min="${esc(reportFrom)}" max="${todayStr()}"></label>${reportFrom || reportTo ? '<button type="button" class="small-btn" id="repClear">Clear dates</button>' : ''}${payslipMonthSelect(approved)}${isAdmin() ? '' : '<button class="btn btn-primary" id="printPayslip">⎙ Print payslip</button>'}<button class="btn btn-ghost" id="exportCsv">↓ Export CSV</button></div></div><div class="stats">${stat('Gross pay', money(gross), 'Before deductions', '₱')}${stat('Deductions', money(deduct), `${dedPct()}% configured rate`, '−')}${stat('Net payable', money(net), 'Approved records', '✓')}${stat('Approved shifts', approved.length, 'Completed and approved', '▤')}</div><div class="grid-2"><div class="panel"><div class="panel-head"><div><h3>Monthly net pay</h3><p>By shift date, approved submissions</p></div></div><div class="report-bars">${Object.entries(months).sort((a, b) => a[0].localeCompare(b[0])).slice(-8).map(([m, v]) => `<div class="bar-line"><span>${esc(m)}</span><div class="bar-track"><div class="bar-fill" style="width:${(v / max * 100).toFixed(1)}%"></div></div><b>${money(v)}</b></div>`).join('') || '<div class="empty">No approved earnings to chart yet.</div>'}</div></div><div class="panel"><div class="panel-head"><div><h3>Calculation details</h3><p>Based on current pay settings</p></div></div><div class="right" style="justify-content:space-between;padding:14px 0;border-bottom:1px solid var(--line)"><span class="muted">Rate per receipt</span><b>${money(rate())}</b></div><div class="right" style="justify-content:space-between;padding:14px 0;border-bottom:1px solid var(--line)"><span class="muted">Deduction rate</span><b>${dedPct()}%</b></div><div class="right" style="justify-content:space-between;padding:14px 0"><span class="muted">Net after deductions</span><b>${money(net)}</b></div><div class="notice">Totals update from Firestore when Firebase is configured. Demo data is illustrative only.</div></div></div>${perWorker}`;
 }
 
 const agreementLabel = u => u.agreement?.version === AGREEMENT_VERSION
@@ -2279,7 +2301,11 @@ function wirePage() {
   $('#subTo')?.addEventListener('change', e => { filters.to = e.target.value; subLimit = 50; renderPage(); });
   $('#clearDates')?.addEventListener('click', () => { filters.from = ''; filters.to = ''; subLimit = 50; renderPage(); });
   $('#whatsNewBtn')?.addEventListener('click', () => showWhatsNew(true));
-  $('#exportCsv')?.addEventListener('click', exportCsv);
+  $('#exportCsv')?.addEventListener('click', () => exportCsv());
+  $('#repFrom')?.addEventListener('change', e => { reportFrom = e.target.value; renderPage(); });
+  $('#repTo')?.addEventListener('change', e => { reportTo = e.target.value; renderPage(); });
+  $('#repClear')?.addEventListener('click', () => { reportFrom = ''; reportTo = ''; renderPage(); });
+  $('#exportFiltered')?.addEventListener('click', () => exportCsv(true));
   $('#printPayslip')?.addEventListener('click', () => printPayslip(''));
   $('#payslipMonth')?.addEventListener('change', e => { payslipMonth = e.target.value; renderPage(); });
   $('#moreAudit')?.addEventListener('click', () => { auditLimit += 50; startAudit(); });
@@ -2852,8 +2878,10 @@ async function sendMessage(e) {
   }
 }
 
-function exportCsv() {
-  const rows = visibleSubmissions().slice().sort((a, b) => timeVal(b.createdAt) - timeVal(a.createdAt));
+function exportCsv(filtered = false) {
+  const list = filtered === true ? filteredSubmissions() : visibleSubmissions().filter(inReportRange);
+  if (!list.length) return toast('No records to export.');
+  const rows = list.slice().sort((a, b) => timeVal(b.createdAt) - timeVal(a.createdAt));
   const cell = v => {
     let s = String(v ?? '');
     if (/^[=+\-@\t\r]/.test(s)) s = "'" + s; // block spreadsheet formula injection
@@ -2866,7 +2894,7 @@ function exportCsv() {
   const url = URL.createObjectURL(new Blob([csv], { type: 'text/csv;charset=utf-8;' }));
   const a = document.createElement('a');
   a.href = url;
-  a.download = `steivy-receipt-report-${todayStr()}.csv`;
+  a.download = `steivy-receipt-${filtered === true ? 'submissions' : 'report'}-${todayStr()}.csv`;
   document.body.appendChild(a);
   a.click();
   a.remove();
@@ -2877,11 +2905,13 @@ function exportCsv() {
    Shown once per user per device after each update. To announce a new release: change WHATS_NEW_VERSION and
    edit the WHATS_NEW list. Workers see items with who: 'all' or 'worker'; admins see 'all' or 'admin'.
    The "What's new" link in the sidebar reopens it any time. */
-const WHATS_NEW_VERSION = '2026-11-b';
+const WHATS_NEW_VERSION = '2026-11-d';
 const WHATS_NEW = [
   { who: 'all', t: 'Mobile bottom navigation', d: 'Home, Shifts, Chat, Reports and More are one tap away on your phone, with a live unread badge on Chat.' },
   { who: 'all', t: 'Cleaner look', d: 'New icons, loading placeholders, friendlier empty pages and a refreshed sign-in screen.' },
   { who: 'all', t: 'Date range filter', d: 'In Submissions, pick a From and To date to see only the shifts you need.' },
+  { who: 'all', t: 'Offline notice', d: 'A bar appears at the top when your internet drops, and disappears once you are back online.' },
+  { who: 'all', t: 'Date range in Reports', d: 'Pick From and To dates to see earnings, export CSV and print payslips for just that period.' },
   { who: 'worker', t: 'Print your payslip', d: 'In Reports, choose a month and tap Print payslip. You can also save it as a PDF.' },
   { who: 'admin', t: 'Print payslips per worker', d: 'In Reports → By worker, tap Print payslip beside a worker. Pick the month first to limit the period.' }
 ];
@@ -2891,11 +2921,16 @@ function maybeShowWhatsNew() {
   let seen = '';
   try { seen = localStorage.getItem(whatsNewKey()) || ''; } catch { if (window.__wnSeen === WHATS_NEW_VERSION) return; }
   if (seen === WHATS_NEW_VERSION) return;
-  window.__wnTimer = setTimeout(() => {
+  let tries = 0;
+  const attempt = () => {
     window.__wnTimer = null;
-    if (!currentUser || document.querySelector('.sh-modal')) return; // never stack on another dialog; try again on the next render
-    showWhatsNew(false);
-  }, 900);
+    if (!currentUser || !profile || $('#whatsNew')) return;
+    // wait (up to ~1 minute) while another dialog is on screen, then show; never stack dialogs
+    const busy = Array.from(document.querySelectorAll('.sh-modal')).some(m => m.getClientRects().length);
+    if (busy && ++tries < 20) { window.__wnTimer = setTimeout(attempt, 3000); return; }
+    if (!busy) showWhatsNew(false);
+  };
+  window.__wnTimer = setTimeout(attempt, 900);
 }
 function showWhatsNew(manual) {
   $('#whatsNew')?.remove();
@@ -2921,7 +2956,8 @@ function showWhatsNew(manual) {
    Builds a clean A4 payslip (approved shifts only) in a hidden #printArea and calls window.print().
    styles.css has a @media print rule that hides the whole app and shows only #printArea.
    Workers print their own; admins print one worker at a time from Reports > By worker. */
-let payslipMonth = '';
+let payslipMonth = '', reportFrom = '', reportTo = '';
+const inReportRange = s => (!reportFrom || String(s.shiftDate || '') >= reportFrom) && (!reportTo || (s.shiftDate && String(s.shiftDate) <= reportTo));
 function payslipMonthSelect(approved) {
   const ms = [...new Set(approved.map(s => monthOf(s)).filter(Boolean))].sort().reverse();
   if (payslipMonth && !ms.includes(payslipMonth)) payslipMonth = '';
@@ -2929,13 +2965,14 @@ function payslipMonthSelect(approved) {
 }
 function printPayslip(key) {
   const admin = isAdmin();
-  let rows = visibleSubmissions().filter(s => s.status === 'approved');
+  let rows = visibleSubmissions().filter(s => s.status === 'approved' && inReportRange(s));
   if (admin) rows = rows.filter(s => (s.workerId || s.workerName || 'unknown') === key);
   if (payslipMonth) rows = rows.filter(s => monthOf(s) === payslipMonth);
   if (!rows.length) return toast('No approved shifts to print for this period.');
   rows = rows.slice().sort((a, b) => String(a.shiftDate || '').localeCompare(String(b.shiftDate || '')));
   const name = admin ? (rows[0].workerName || 'Worker') : (profile?.displayName || rows[0].workerName || 'Worker');
-  const period = payslipMonth ? monthLabel(payslipMonth) : 'All approved shifts';
+  const range = reportFrom || reportTo ? `${reportFrom ? date(reportFrom) : 'Start'} to ${reportTo ? date(reportTo) : date(todayStr())}` : '';
+  const period = [payslipMonth ? monthLabel(payslipMonth) : '', range].filter(Boolean).join(' · ') || 'All approved shifts';
   const sum = f => rows.reduce((n, s) => n + num(s[f]), 0);
   const body = rows.map(s => `<tr><td>${esc(date(s.shiftDate))}</td><td>${esc(s.accountName || '—')}</td><td>${esc(s.shiftType || '—')}</td><td class="r">${num(s.receiptCount).toLocaleString()}</td><td class="r">${num(s.errorCount).toLocaleString()}</td><td class="r">${money(s.grossCents)}</td><td class="r">${money(s.deductionCents)}</td><td class="r">${money(s.netCents)}</td></tr>`).join('');
   $('#printArea')?.remove();
