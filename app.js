@@ -1608,6 +1608,14 @@ function submissionRows(rows) {
   }).join('');
 }
 
+// How long the oldest pending submission has been waiting (plain maths on data already loaded)
+function pendingAge(pending) {
+  if (!pending.length) return '';
+  const ms = Date.now() - Math.min(...pending.map(s => timeVal(s.createdAt)));
+  const h = Math.floor(ms / 3600000), d = Math.floor(h / 24);
+  const t = d >= 1 ? `${d} day${d === 1 ? '' : 's'}` : h >= 1 ? `${h} hour${h === 1 ? '' : 's'}` : 'less than an hour';
+  return ` Oldest has been waiting ${t}.`;
+}
 function dashboard() {
   const rows = visibleSubmissions();
   const approved = rows.filter(s => s.status === 'approved');
@@ -1619,11 +1627,13 @@ function dashboard() {
   const prevMonth = monthKeyOf(-1);
   const earnedMonth = approved.filter(s => monthOf(s) === curMonth).reduce((n, s) => n + num(s.netCents), 0);
   const earnedPrev = approved.filter(s => monthOf(s) === prevMonth).reduce((n, s) => n + num(s.netCents), 0);
+  const monthPct = earnedPrev > 0 ? Math.round(earnedMonth / earnedPrev * 100) : null;
+  const monthBar = monthPct === null ? '' : `<span class="mini-bar" role="img" aria-label="${monthPct}% of last month"><i style="width:${Math.min(100, monthPct)}%"></i></span><span class="mini-bar-txt">${monthPct >= 100 ? 'Above last month' : monthPct + '% of last month'}</span>`;
   const recent = rows.slice().sort((a, b) => timeVal(b.createdAt) - timeVal(a.createdAt)).slice(0, 5);
   const first = esc((profile.displayName || 'there').split(' ')[0]);
-  const noticeBar = `<div class="notice">${isAdmin() ? `You have <b>${pending.length}</b> submission(s) waiting for review.${missedNotice()}` : `Your approved submissions show in earnings. If a shift is rejected, check the reason and submit a correction.`}</div>`;
+  const noticeBar = `<div class="notice">${isAdmin() ? `You have <b>${pending.length}</b> submission(s) waiting for review.${pendingAge(pending)}${pending.length ? ' <button type="button" class="small-btn" data-review-pending>Review now →</button>' : ''}${missedNotice()}` : `Your approved submissions show in earnings. If a shift is rejected, check the reason and submit a correction.`}</div>`;
   const recentPanel = `<div class="panel"><div class="panel-head"><div><h3>Recent submissions</h3><p>Latest shift records and review status</p></div><button class="small-btn" data-page="receipts">View all →</button></div><div class="table-wrap"><table><thead><tr><th>Worker / account</th><th>Shift date</th><th>Shift</th><th>Processed</th><th>Errors</th><th>Net pay</th><th>Status</th><th></th></tr></thead><tbody>${submissionRows(recent)}</tbody></table></div></div>`;
-  return `<div class="welcome"><div><h2>${isAdmin() ? 'Good day, Administrator' : 'Welcome back, ' + first + ' 👋'}</h2><p>Here’s what’s happening with ${isAdmin() ? 'your team' : 'your shifts'} today.</p></div>${messageTicker()}${!isAdmin() ? '<button class="btn btn-primary" data-page="receipts">▶ Start / end shift</button>' : '<button class="btn btn-primary" data-page="receipts">Review submissions →</button>'}</div>${errorWarningPanel()}${noticeBar}<div class="stats">${stat(isAdmin() ? 'Total submissions' : 'My submissions', rows.length, isAdmin() ? 'All recorded shifts' : 'Your recorded shifts', '▤')}${stat('Receipts processed', total.toLocaleString(), `${errTotal.toLocaleString()} with errors (included)`, '▧')}${stat('Pending review', pending.length, 'Awaiting a decision', '◷')}${stat(isAdmin() ? 'This month net pay so far' : 'This month earnings so far', money(earnedMonth), `${esc(monthLabel(curMonth))} · approved only · last month ${money(earnedPrev)}`, '₱')}</div>${monthStats(rows)}<div class="dash-grid"><div class="dash-main">${recentPanel}${performanceSection()}</div><div class="dash-side">${liveChatPanel()}${onlineStrip()}${isAdmin() ? announcementsPanel() : ''}</div></div>`;
+  return `<div class="welcome"><div><h2>${isAdmin() ? 'Good day, Administrator' : 'Welcome back, ' + first + ' 👋'}</h2><p>Here’s what’s happening with ${isAdmin() ? 'your team' : 'your shifts'} today.</p></div>${messageTicker()}${!isAdmin() ? '<button class="btn btn-primary" data-page="receipts">▶ Start / end shift</button>' : '<button class="btn btn-primary" data-page="receipts">Review submissions →</button>'}</div>${errorWarningPanel()}${noticeBar}<div class="stats">${stat(isAdmin() ? 'Total submissions' : 'My submissions', rows.length, isAdmin() ? 'All recorded shifts' : 'Your recorded shifts', '▤')}${stat('Receipts processed', total.toLocaleString(), `${errTotal.toLocaleString()} with errors (included)`, '▧')}${stat('Pending review', pending.length, 'Awaiting a decision', '◷')}${stat(isAdmin() ? 'This month net pay so far' : 'This month earnings so far', money(earnedMonth), `${esc(monthLabel(curMonth))} · approved only · last month ${money(earnedPrev)}${monthBar}`, '₱')}</div>${monthStats(rows)}<div class="dash-grid"><div class="dash-main">${recentPanel}${performanceSection()}</div><div class="dash-side">${liveChatPanel()}${onlineStrip()}${isAdmin() ? announcementsPanel() : ''}</div></div>`;
 }
 
 function filteredSubmissions() {
@@ -2265,6 +2275,7 @@ function wireShell() {
     let el;
     if ((el = t.closest('[data-lb-period]'))) { lbPeriod = el.dataset.lbPeriod; return renderPage(); }
     if ((el = t.closest('[data-perf-view]'))) { perfView = el.dataset.perfView === 'totals' ? 'totals' : 'top'; return renderPage(); }
+    if (t.closest('[data-review-pending]')) { filters.status = 'pending'; filters.q = ''; filters.from = ''; filters.to = ''; subLimit = 50; return go('receipts'); }
     if ((el = t.closest('[data-page]'))) return go(el.dataset.page);
     if ((el = t.closest('[data-start-shift]'))) { if (el.disabled) return; return startShift(el.dataset.startShift); }
     if ((el = t.closest('[data-end-shift]'))) return endShift(el.dataset.endShift);
