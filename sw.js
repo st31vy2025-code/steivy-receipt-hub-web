@@ -5,7 +5,7 @@
      the cached copy is only used when the network is down.
    - Images and icons are stale-while-revalidate.
    Bump VERSION to force every device to drop its old cache. */
-const VERSION = 'steivy-hub-v6';
+const VERSION = 'steivy-hub-v7';
 const SHELL = ['./', 'index.html', 'styles.css', 'app.js', 'firebase-config.js', 'manifest.json',
   'assets/icon-192.png', 'assets/icon-512.png', 'assets/logo.jpg'];
 
