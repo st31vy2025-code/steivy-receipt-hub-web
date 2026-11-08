@@ -37,6 +37,8 @@ let peerConvs = {}, peerUnsubs = {}, peerReady = {}, peerSel = null, peerMsgUnsu
 const filters = { q: '', status: 'all' };
 const DEFAULT_SETTINGS = { grossRateCents: 100, deductionPercent: 10, errorWarnPercent: 5, workUrl: '' };
 const CHAT_LIMIT = 30; // messages loaded per conversation (keeps reads small)
+const WORKER_SUB_MONTHS = 2; // workers load only this many months of their OWN submissions (current + previous); older months of "All time" come from /leaderboard
+let workerSubsWindowed = true; // false if the Firestore index is missing and the full query is used instead
 const SUB_WINDOW_MONTHS = 3; // admin loads only submissions of this many months (current + previous) to save Firestore reads
 let presenceDocs = {}; // worker: one /presence doc listener per co-worker, active only on the Co-workers page
 let shiftDocs = {};    // worker: one /activeShifts doc listener per assigned account
@@ -917,7 +919,7 @@ document.addEventListener('focusout', () => {
   }, 150);
 });
 
-function listen(path, key, queryFn) {
+function listen(path, key, queryFn, fallbackFn) {
   const { collection, onSnapshot, query, where, orderBy, limit } = fb;
   let ref = collection(db, path);
   if (queryFn) ref = queryFn(ref, { query, where, orderBy, limit });
@@ -929,6 +931,13 @@ function listen(path, key, queryFn) {
     if (key === 'accounts') { syncPeerListeners(); syncShiftListeners(); }
     requestRender();
   }, err => {
+    if (fallbackFn && err?.code === 'failed-precondition') {
+      // The composite index is not created yet: keep working with the broader query (more reads) until it exists.
+      console.warn('Create this Firestore index to cut reads:', err.message);
+      try { stop(); } catch {}
+      listen(path, key, fallbackFn);
+      return;
+    }
     console.error(path, err);
     if (err?.code === 'permission-denied' && key !== 'audit') accessErr[key] = true;
     toast('Could not load ' + path + '. Check Firestore rules.');
@@ -960,7 +969,11 @@ async function loadData() {
   } else {
     // Workers only query what they are allowed to read.
     listen('accounts', 'accounts', (ref, q) => q.query(ref, q.where('assignedWorkerIds', 'array-contains', uid)));
-    listen('submissions', 'submissions', (ref, q) => q.query(ref, q.where('workerId', '==', uid)));
+    // Only my recent months (needs the composite index workerId + shiftDate). Without it the full query below is used automatically.
+    workerSubsWindowed = true;
+    listen('submissions', 'submissions',
+      (ref, q) => q.query(ref, q.where('workerId', '==', uid), q.where('shiftDate', '>=', workerWinMonth() + '-01')),
+      (ref, q) => { workerSubsWindowed = false; return q.query(ref, q.where('workerId', '==', uid)); });
     data.users = [];
   }
   setupPrivateChat(uid);
@@ -984,7 +997,7 @@ async function loadData() {
     requestRender();
   }, () => {}));
 
-  unsubs.push(onSnapshot(query(collection(db, 'announcements'), orderBy('createdAt', 'desc'), limit(30)), s => {
+  unsubs.push(onSnapshot(query(collection(db, 'announcements'), orderBy('createdAt', 'desc'), limit(isAdmin() ? 30 : 10)), s => {
     data.announcements = s.docs.map(d => ({ id: d.id, ...d.data() }));
     requestRender();
   }, err => console.warn('announcements listener (check Firestore rules)', err)));
@@ -1075,8 +1088,11 @@ function boardRows(period) {
     const valid = new Set(liveUsers().filter(u => u.role !== 'admin').map(u => u.id)); // deleted workers are not ranked
     return [...map.values()].filter(r => valid.has(r.id));
   }
+  const mineFrom = workerWinMonth();
   data.leaderboard.forEach(d => {
-    if (d.workerId === currentUser.uid || !inPeriod(d.month, period)) return;
+    if (!inPeriod(d.month, period)) return;
+    // my recent months come live from my own submissions below; months older than my loaded window come from /leaderboard
+    if (d.workerId === currentUser.uid && (!workerSubsWindowed || String(d.month || '') >= mineFrom)) return;
     add(d.workerId, d.workerName, num(d.receipts), num(d.errors), num(d.shifts));
   });
   fromSubs(data.submissions.filter(s => s.workerId === currentUser.uid)); // my own numbers always come from live data
@@ -1876,6 +1892,7 @@ function monthKeyOf(offset = 0) {
   const n = new Date();
   return ymUTC(Date.UTC(n.getUTCFullYear(), n.getUTCMonth() + offset, 1));
 }
+const workerWinMonth = () => monthKeyOf(-(WORKER_SUB_MONTHS - 1));
 const subWindowMonth = () => monthKeyOf(-(SUB_WINDOW_MONTHS - 1)); // e.g. '2026-09' in Nov 2026
 const monthLabel = k => {
   const [y, m] = k.split('-').map(Number);
