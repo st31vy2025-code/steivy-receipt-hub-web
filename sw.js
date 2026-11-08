@@ -1,11 +1,15 @@
 /* Steivy Receipt Hub: service worker
    - Makes the Hub installable and gives it a cached app shell for a fast start.
-   - Only touches files from this same site. Firebase, Firestore, Auth and fonts are never cached here.
+   - Same-site files are cached as described below. The ONLY outside files cached are the version-pinned Firebase SDK
+     modules (www.gstatic.com/firebasejs/<version>/...): they never change, so they load instantly and work offline.
+     Firestore data, Auth calls and fonts are never cached here.
    - Code files (html/js/css/json) are NETWORK-FIRST, so a new GitHub deploy shows up on the next load;
      the cached copy is only used when the network is down.
    - Images and icons are stale-while-revalidate.
    Bump VERSION to force every device to drop its old cache. */
-const VERSION = 'steivy-hub-v17';
+const VERSION = 'steivy-hub-v18';
+const SDK_CACHE = 'steivy-sdk-v1'; // separate name on purpose: the cleanup below only deletes 'steivy-hub-*' caches
+const isSdk = url => url.origin === 'https://www.gstatic.com' && url.pathname.startsWith('/firebasejs/');
 const SHELL = ['./', 'index.html', 'styles.css', 'app.js', 'firebase-config.js', 'manifest.json',
   'assets/icon-192.png', 'assets/icon-512.png', 'assets/logo.jpg'];
 
@@ -32,7 +36,21 @@ self.addEventListener('fetch', event => {
   const req = event.request;
   if (req.method !== 'GET') return;
   const url = new URL(req.url);
-  if (url.origin !== self.location.origin) return; // Firebase, Google Fonts etc. go straight to the network
+
+  // Firebase SDK modules: the URL contains the exact version, so cache-first is safe (a new version = a new URL).
+  if (isSdk(url)) {
+    event.respondWith((async () => {
+      const cache = await caches.open(SDK_CACHE);
+      const hit = await cache.match(req);
+      if (hit) return hit;
+      const res = await fetch(req); // if this fails (offline and never cached) the error behaves exactly as before
+      if (res && res.status === 200) cache.put(req, res.clone()).catch(() => {});
+      return res;
+    })());
+    return;
+  }
+
+  if (url.origin !== self.location.origin) return; // Firestore, Auth, Google Fonts etc. go straight to the network
 
   if (req.mode === 'navigate' || isCode(url)) {
     event.respondWith((async () => {
