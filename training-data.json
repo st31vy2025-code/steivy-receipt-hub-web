@@ -1,0 +1,1321 @@
+{
+  "version": "2026-11-14b",
+  "passMark": 80,
+  "coachDailyLimit": 20,
+  "coachModels": [
+    "gemini-3.8-flash",
+    "gemini-3-flash-preview",
+    "gemini-2.5-flash"
+  ],
+  "categories": [
+    "Meals",
+    "Lodging",
+    "Airfare",
+    "Taxi / Rideshare",
+    "Mileage",
+    "Parking",
+    "Fuel",
+    "Tolls",
+    "Supplies",
+    "Other"
+  ],
+  "cardsNote": "Draft reference, last reviewed Nov 2026. Rates change: always copy the VAT/tax amount printed on the receipt and use these cards only as a sanity check.",
+  "modules": [
+    {
+      "id": "vendor",
+      "n": 1,
+      "icon": "🏪",
+      "title": "Vendor",
+      "summary": "Which business name to type, and which names to ignore.",
+      "lesson": [
+        {
+          "h": "What is the vendor?",
+          "p": "The vendor is the business that sold the item or service. It is the name customers see at the top of the receipt.",
+          "ul": [
+            "Use the trading name printed at the top (for example 'Starbucks'), not the card brand (Visa), the payment app, or the cashier's name.",
+            "Do not add store numbers, branch codes or slogans unless they are part of the business name.",
+            "If you only see a logo, look at the footer or website line for the written name.",
+            "Ride-hailing and delivery: the vendor is the platform (Grab, Uber, Careem), not the driver."
+          ]
+        }
+      ],
+      "bis": "The vendor is the business that sold the item. Not the card (Visa), not the cashier, and not the driver.",
+      "quiz": [
+        {
+          "q": "The logo says 'STARBUCKS COFFEE'. The footer says 'Operated by Smith Hospitality LLC · Store #4412'. What is the vendor?",
+          "o": [
+            "Starbucks Coffee",
+            "Smith Hospitality LLC",
+            "Store #4412",
+            "Coffee"
+          ],
+          "a": 0,
+          "why": "Use the trading name customers see at the top. The operator company and store number are extra details."
+        },
+        {
+          "q": "A Grab receipt says 'Thanks for riding with Grab' and shows the driver name 'Juan D.'. What is the vendor?",
+          "o": [
+            "Juan D.",
+            "Grab",
+            "Visa",
+            "Philippines"
+          ],
+          "a": 1,
+          "why": "For ride-hailing the vendor is the platform, not the driver."
+        },
+        {
+          "q": "A card slip shows 'VISA APPROVED' and merchant 'THE LOCAL PUB'. What is the vendor?",
+          "o": [
+            "Visa",
+            "The Local Pub",
+            "Approved",
+            "Card slip"
+          ],
+          "a": 1,
+          "why": "The card brand only shows how it was paid."
+        },
+        {
+          "q": "Should you add the store number (like '#0412') to the vendor name?",
+          "o": [
+            "Yes, always",
+            "No, only if it is part of the business name",
+            "Only for restaurants",
+            "Type only the number"
+          ],
+          "a": 1,
+          "why": "Store numbers are not part of the name unless the business uses them as its name."
+        }
+      ]
+    },
+    {
+      "id": "size",
+      "n": 2,
+      "icon": "📏",
+      "title": "Receipt size",
+      "summary": "Choose Small, Medium or Large.",
+      "rule": "Ask your admin for the exact Small / Medium / Large rule used by Abukai. (Admin: write the rule here in training-data.json, module 'size', field 'rule'.)",
+      "lesson": [
+        {
+          "h": "Choose Small, Medium or Large",
+          "p": "Receipt size is a dropdown with three choices: Small, Medium, Large.",
+          "ul": [
+            "Pick the size that matches the paper or image of the receipt as shown in the portal.",
+            "Always follow the exact rule from Abukai guidelines. When in doubt, ask your admin.",
+            "Do not change the size to match the category or the amount."
+          ]
+        }
+      ],
+      "bis": "Small, Medium or Large: follow Abukai's exact rule. If you are not sure, ask the admin.",
+      "quiz": []
+    },
+    {
+      "id": "category",
+      "n": 3,
+      "icon": "🗂️",
+      "title": "Category",
+      "summary": "Meals, lodging, airfare, parking, supplies and all the others.",
+      "lesson": [
+        {
+          "h": "Choose by what the money was spent on",
+          "p": "Pick the category from the main item bought, not from the type of shop.",
+          "ul": [
+            "Meals: restaurants, cafes, fast food, drinks.",
+            "Lodging: hotel, hostel, apartment stays (a hotel bill is Lodging).",
+            "Airfare: airline tickets.",
+            "Taxi / Rideshare: taxi, Grab, Uber, Lyft, Careem.",
+            "Mileage: distance driven in miles or km, usually from a log or map, not a shop receipt.",
+            "Parking: garages, meters, valet.",
+            "Fuel: gas, petrol, diesel.",
+            "Tolls: toll roads and bridges.",
+            "Supplies: office items, stationery, small purchases for work.",
+            "Other: only when nothing above fits."
+          ]
+        },
+        {
+          "h": "Tricky cases",
+          "ul": [
+            "A gas-station receipt that is mostly fuel is Fuel, even if there is a snack on it.",
+            "A hotel bill with breakfast is Lodging. Split out meals only if your guideline says so.",
+            "Use the category list in the portal. If the portal list differs from this one, the portal wins."
+          ]
+        }
+      ],
+      "bis": "Choose the category by what was bought, not by the type of shop.",
+      "quiz": [
+        {
+          "q": "A receipt from 'Heathrow Airport Car Park' for 3 days. Category?",
+          "o": [
+            "Fuel",
+            "Parking",
+            "Tolls",
+            "Supplies"
+          ],
+          "a": 1,
+          "why": "It is a fee for leaving a car: Parking."
+        },
+        {
+          "q": "A hotel bill shows 2 nights of room and one breakfast. Category?",
+          "o": [
+            "Meals",
+            "Lodging",
+            "Other",
+            "Airfare"
+          ],
+          "a": 1,
+          "why": "A hotel bill is Lodging. Split out meals only if your guideline says so."
+        },
+        {
+          "q": "A gas-station receipt: fuel 40.00 and a bag of chips 2.50. Category?",
+          "o": [
+            "Meals",
+            "Supplies",
+            "Fuel",
+            "Other"
+          ],
+          "a": 2,
+          "why": "Choose by the main item. The fuel is almost the whole amount."
+        },
+        {
+          "q": "An Uber ride receipt. Category?",
+          "o": [
+            "Airfare",
+            "Taxi / Rideshare",
+            "Mileage",
+            "Other"
+          ],
+          "a": 1,
+          "why": "Rides in Uber, Grab, Lyft or Careem are Taxi / Rideshare."
+        },
+        {
+          "q": "A receipt from an office-supply store for paper and pens. Category?",
+          "o": [
+            "Supplies",
+            "Meals",
+            "Other",
+            "Parking"
+          ],
+          "a": 0,
+          "why": "Office items are Supplies."
+        },
+        {
+          "q": "An airline e-ticket receipt Manila to Singapore. Category?",
+          "o": [
+            "Taxi / Rideshare",
+            "Lodging",
+            "Airfare",
+            "Tolls"
+          ],
+          "a": 2,
+          "why": "An airline ticket is Airfare."
+        }
+      ]
+    },
+    {
+      "id": "location",
+      "n": 4,
+      "icon": "📍",
+      "title": "City, State & Country",
+      "summary": "Read addresses from different countries correctly.",
+      "lesson": [
+        {
+          "h": "Find the three parts",
+          "ul": [
+            "City: the town or city printed in the address.",
+            "State: the state, province or region (US: two letters such as IL = Illinois; Canada: ON, BC, QC).",
+            "Country: from the address. If it is missing, combine clues: currency, phone code (+49 Germany, +63 Philippines, +971 UAE), tax words (GST, MwSt, TVA), language."
+          ]
+        },
+        {
+          "h": "Address order is not the same everywhere",
+          "ul": [
+            "Germany, France, Spain, Italy: postal code comes BEFORE the city (10557 Berlin).",
+            "UK: the postcode comes after the city (London SW1E 5DH).",
+            "US: city, state, then ZIP code (Chicago, IL 60603).",
+            "Japan writes the address from the big area to the small one (prefecture, city, ward)."
+          ]
+        },
+        {
+          "h": "Do not guess",
+          "p": "If the clues disagree and you cannot decide, ask your admin. A wrong country also gives a wrong date and amount format."
+        }
+      ],
+      "bis": "Use the postal code, not the city. If there is no address, use the currency, phone code and tax words.",
+      "quiz": [
+        {
+          "q": "Address: '10557 Berlin, Germany'. Which part is the city?",
+          "o": [
+            "10557",
+            "Berlin",
+            "Germany",
+            "Berlin 10557"
+          ],
+          "a": 1,
+          "why": "10557 is the postal code. In Germany it comes before the city."
+        },
+        {
+          "q": "Address: 'Springfield, IL 62704, USA'. What is the state?",
+          "o": [
+            "Springfield",
+            "IL (Illinois)",
+            "62704",
+            "USA"
+          ],
+          "a": 1,
+          "why": "In the US the two letters after the city are the state."
+        },
+        {
+          "q": "A receipt has no address, but shows CAD, a +1 416 phone number and 'HST 13%'. Country?",
+          "o": [
+            "Canada",
+            "USA",
+            "Mexico",
+            "Impossible to know"
+          ],
+          "a": 0,
+          "why": "CAD, HST and a Toronto area code all point to Canada."
+        },
+        {
+          "q": "The address clearly says Madrid, Spain, but you also see a US dollar sign. What do you do?",
+          "o": [
+            "Pick the country at random",
+            "Use the printed address (Spain) and ask admin if still unsure",
+            "Use the currency only",
+            "Leave country empty"
+          ],
+          "a": 1,
+          "why": "The printed address is the strongest clue. Ask instead of guessing."
+        }
+      ]
+    },
+    {
+      "id": "date",
+      "n": 5,
+      "icon": "📅",
+      "title": "Date",
+      "summary": "Read the right date in the right order for each country.",
+      "lesson": [
+        {
+          "h": "Three steps",
+          "ul": [
+            "1) Find the transaction date: purchase, service or invoice date. Not the print date, not the due date, not a loyalty-offer date.",
+            "2) Find the country of the receipt (see module 4).",
+            "3) Read the numbers in that country's order, then enter the date as the portal needs."
+          ]
+        },
+        {
+          "h": "Order by region",
+          "ul": [
+            "US: month / day / year, so 03/04/2026 is 4 March 2026.",
+            "UK, most of Europe, Australia, India, Singapore, UAE: day / month / year, so 03/04/2026 is 3 April 2026.",
+            "Germany, Switzerland, Poland, Turkey use dots: 03.04.2026 is 3 April 2026.",
+            "China, Japan, Korea, Sweden: year first (2026-03-07 or 2026年3月7日).",
+            "Philippines: many receipts use month / day / year, some use day / month / year. Check other clues."
+          ]
+        },
+        {
+          "h": "Clues and special calendars",
+          "ul": [
+            "If the first or second number is bigger than 12 (for example 26/03/2026 or 03/26/2026), it must be the day. That tells you the order.",
+            "Two-digit year: 20.05.26 means 2026.",
+            "Thailand uses the Buddhist Era: subtract 543 (2569 is 2026).",
+            "Taiwan uses the ROC year: add 1911 (115 is 2026).",
+            "Japan may use the Reiwa era: Reiwa 8 is 2026.",
+            "Saudi Arabia may print Hijri dates. Use the Gregorian date.",
+            "Month names change by language: März, mars, marzo, março and maart all mean March; mei means May; ene means January in Spanish."
+          ]
+        }
+      ],
+      "bis": "Find the country first, then follow its date order. If a number is above 12, that number is the day.",
+      "quiz": [
+        {
+          "q": "Receipt from Chicago, USA shows 03/04/2026. Which date is it?",
+          "o": [
+            "3 April 2026",
+            "4 March 2026",
+            "3 March 2026",
+            "4 April 2026"
+          ],
+          "a": 1,
+          "why": "The US uses month / day / year: 03 = March, 04 = day."
+        },
+        {
+          "q": "Receipt from London, UK shows 03/04/2026. Which date is it?",
+          "o": [
+            "3 April 2026",
+            "4 March 2026",
+            "3 March 2026",
+            "4 April 2026"
+          ],
+          "a": 0,
+          "why": "The UK uses day / month / year: 3 April."
+        },
+        {
+          "q": "Receipt from Berlin shows 03.04.2026. Which date is it?",
+          "o": [
+            "4 March 2026",
+            "3 April 2026",
+            "3 March 2026",
+            "4 April 2026"
+          ],
+          "a": 1,
+          "why": "Germany uses day.month.year."
+        },
+        {
+          "q": "A receipt shows 26/03/2026 and you do not know the country. Which date?",
+          "o": [
+            "26 March 2026",
+            "3 June 2026",
+            "Cannot know",
+            "26 February 2026"
+          ],
+          "a": 0,
+          "why": "26 cannot be a month, so the order is day / month."
+        },
+        {
+          "q": "A Tokyo receipt shows 2026年3月7日. Which date?",
+          "o": [
+            "3 July 2026",
+            "7 March 2026",
+            "7 March 2036",
+            "3 March 2007"
+          ],
+          "a": 1,
+          "why": "Japanese dates go year, month (月), day (日): 7 March 2026."
+        },
+        {
+          "q": "A Bangkok receipt shows 12/03/2569. Which date?",
+          "o": [
+            "12 March 2569",
+            "12 March 2026",
+            "3 December 2026",
+            "12 March 2025"
+          ],
+          "a": 1,
+          "why": "Thai Buddhist Era is 543 years ahead: 2569 − 543 = 2026. Thailand uses day / month."
+        },
+        {
+          "q": "A European receipt shows 'Printed: 15/11/2026' and 'Date of service: 12/11/2026'. Which date do you enter?",
+          "o": [
+            "15 November 2026",
+            "12 November 2026",
+            "Today's date",
+            "Either one"
+          ],
+          "a": 1,
+          "why": "Use the transaction date, not the print date, unless your guideline says otherwise."
+        },
+        {
+          "q": "A Manila receipt shows 11/14/2026. Which date?",
+          "o": [
+            "11 April 2026",
+            "14 November 2026",
+            "1 November 2014",
+            "14 January 2026"
+          ],
+          "a": 1,
+          "why": "Many Philippine receipts use month / day / year. 14 cannot be a month, so it confirms the order."
+        }
+      ]
+    },
+    {
+      "id": "amount",
+      "n": 6,
+      "icon": "💰",
+      "title": "Amount & currency",
+      "summary": "Read 1,234.56 and 1.234,56 the right way.",
+      "lesson": [
+        {
+          "h": "Which number to enter",
+          "ul": [
+            "Enter the final total charged (after tax). Not the subtotal, not the cash given, not the change.",
+            "Enter the currency printed on the receipt. A $ sign alone can be USD, CAD, AUD, SGD or MXN: use the country."
+          ]
+        },
+        {
+          "h": "Number formats",
+          "ul": [
+            "1,234.56: US, UK, Philippines, Australia, Singapore, Japan, China, Thailand, UAE.",
+            "1.234,56: Germany, Spain, Italy, Netherlands, Brazil, Turkey, Indonesia.",
+            "1 234,56 (space): France, Sweden, Poland, Czech Republic.",
+            "1'234.56: Switzerland.",
+            "1,23,456.78: India (lakh grouping: the first group has three digits, the next groups two)."
+          ]
+        },
+        {
+          "h": "How to be sure",
+          "ul": [
+            "The LAST separator is usually the decimal one, with 2 digits after it.",
+            "Yen (JPY), Korean won (KRW) and Vietnamese dong (VND) have no decimals. Kuwait, Bahrain and Oman use 3 decimals.",
+            "A German '1.500' with EUR is 1500.00, because euros have only 2 decimals.",
+            "In the practice tool, type the amount with a dot for decimals and no thousand separators, like 1234.56."
+          ]
+        }
+      ],
+      "bis": "The last dot or comma is usually the decimal. In Germany, 1.234,56 = 1234.56.",
+      "quiz": [
+        {
+          "q": "A German receipt shows 1.234,56 €. What is the amount?",
+          "o": [
+            "1.23456",
+            "1234.56",
+            "123456",
+            "12.3456"
+          ],
+          "a": 1,
+          "why": "In Germany the dot groups thousands and the comma is the decimal."
+        },
+        {
+          "q": "A German receipt shows 'EUR 1.500'. What is the amount?",
+          "o": [
+            "1.50",
+            "1500.00",
+            "15.00",
+            "150.00"
+          ],
+          "a": 1,
+          "why": "Euros have 2 decimals, so three digits after the dot means thousands."
+        },
+        {
+          "q": "A French receipt shows 1 234,50 €. What is the amount?",
+          "o": [
+            "1234.50",
+            "1.23450",
+            "123450",
+            "12.3450"
+          ],
+          "a": 0,
+          "why": "France groups thousands with a space and uses a comma for decimals."
+        },
+        {
+          "q": "A Swiss receipt shows CHF 1'250.00. What is the amount?",
+          "o": [
+            "1.25",
+            "12.50",
+            "1250.00",
+            "125000"
+          ],
+          "a": 2,
+          "why": "The apostrophe groups thousands in Switzerland."
+        },
+        {
+          "q": "An Indian receipt shows ₹1,23,456.00. What is the amount?",
+          "o": [
+            "123456.00",
+            "12345.60",
+            "1234.56",
+            "1.23"
+          ],
+          "a": 0,
+          "why": "Indian lakh grouping: 1,23,456 is one hundred twenty-three thousand four hundred fifty-six."
+        },
+        {
+          "q": "A Tokyo receipt shows ¥1,080. What do you enter?",
+          "o": [
+            "1080 JPY",
+            "10.80 JPY",
+            "108.0 JPY",
+            "1.080 JPY"
+          ],
+          "a": 0,
+          "why": "Yen has no decimals. The comma only groups thousands."
+        },
+        {
+          "q": "Subtotal 44.98, tax 4.61, total 49.59, cash 60.00, change 10.41. Which amount?",
+          "o": [
+            "44.98",
+            "49.59",
+            "60.00",
+            "10.41"
+          ],
+          "a": 1,
+          "why": "Enter the final total charged."
+        },
+        {
+          "q": "A receipt from Sydney shows a $ sign. Which currency?",
+          "o": [
+            "USD",
+            "AUD",
+            "CAD",
+            "MXN"
+          ],
+          "a": 1,
+          "why": "The symbol alone is ambiguous. Sydney is in Australia, so AUD."
+        }
+      ]
+    },
+    {
+      "id": "vat",
+      "n": 7,
+      "icon": "🧾",
+      "title": "VAT / tax",
+      "summary": "Find the VAT amount when the country has one.",
+      "lesson": [
+        {
+          "h": "What is VAT?",
+          "p": "VAT (Value Added Tax) is a tax already included in the price in most countries outside the US. It has different names.",
+          "ul": [
+            "VAT, GST, MwSt (Germany), TVA (France), IVA (Spain, Italy), BTW (Netherlands), MOMS (Nordic), PPN (Indonesia), KDV (Turkey), consumption tax (Japan).",
+            "The US and Canada's provinces use sales tax added at checkout. The US has no VAT."
+          ]
+        },
+        {
+          "h": "How to fill the VAT field",
+          "ul": [
+            "Copy the VAT amount printed on the receipt. Do not calculate it from memory.",
+            "If only the rate and the total are shown, VAT included in the total = total × rate ÷ (100 + rate). Example: 18.00 at 20% → 18.00 × 20 ÷ 120 = 3.00.",
+            "If the receipt shows no tax at all, leave VAT empty (or 0 if the portal needs a number). Never invent a number.",
+            "The VAT amount uses the same currency as the total.",
+            "If a receipt has two rates (for example 7% and 19% in Germany), follow your guideline on whether to enter each line or the sum. Ask admin if unsure."
+          ]
+        },
+        {
+          "h": "Use the Country cards",
+          "p": "The Country cards list the usual VAT name and standard rate. Use them to sanity-check what you read, never to replace the amount on the receipt."
+        }
+      ],
+      "bis": "Copy the VAT printed on the receipt. Do not invent it. If there is no tax, leave VAT empty.",
+      "quiz": [
+        {
+          "q": "Which of these is NOT a name for a VAT-style tax?",
+          "o": [
+            "MwSt (Germany)",
+            "IVA (Spain)",
+            "BTW (Netherlands)",
+            "Tip"
+          ],
+          "a": 3,
+          "why": "A tip is a gratuity, not a tax."
+        },
+        {
+          "q": "A German receipt shows 'MwSt 19%  2,00'. What VAT amount do you enter?",
+          "o": [
+            "19",
+            "2.00",
+            "0.19",
+            "12.50"
+          ],
+          "a": 1,
+          "why": "Enter the VAT amount (2.00), not the rate."
+        },
+        {
+          "q": "A UK parking receipt shows Total £18.00 and 'VAT 20%' but no VAT amount. What is the VAT amount?",
+          "o": [
+            "£3.60",
+            "£3.00",
+            "£18.00",
+            "£2.00"
+          ],
+          "a": 1,
+          "why": "The price includes VAT: 18.00 × 20 ÷ 120 = 3.00."
+        },
+        {
+          "q": "A US receipt shows 'Sales tax 4.61'. What about the VAT field?",
+          "o": [
+            "Enter 4.61",
+            "The US has no VAT, so leave it empty unless your guideline says otherwise",
+            "Enter 20% of the total",
+            "Enter the total"
+          ],
+          "a": 1,
+          "why": "The US uses sales tax, not VAT."
+        },
+        {
+          "q": "The receipt shows no tax line at all. What do you do?",
+          "o": [
+            "Estimate from memory",
+            "Leave VAT empty (or 0). Never invent",
+            "Always use 20%",
+            "Copy the total"
+          ],
+          "a": 1,
+          "why": "Only enter VAT you can read or calculate from the receipt."
+        },
+        {
+          "q": "A Japanese receipt shows '内消費税10% ¥98'. What VAT amount do you enter?",
+          "o": [
+            "98",
+            "10",
+            "1,080",
+            "0"
+          ],
+          "a": 0,
+          "why": "Japan's consumption tax is its VAT. The amount included is ¥98."
+        }
+      ]
+    },
+    {
+      "id": "description",
+      "n": 8,
+      "icon": "✍️",
+      "title": "Description",
+      "summary": "Short, factual and clear.",
+      "lesson": [
+        {
+          "h": "Write what you can see",
+          "ul": [
+            "Say what was bought: 'Lunch for 2 people', 'Airport parking, 3 days', 'Taxi from hotel to office'.",
+            "Use details visible on the receipt: number of nights, number of people, route, items.",
+            "Keep it short and factual. No opinions and no business reasons that are not on the receipt.",
+            "Check your spelling. Use English unless the guideline says otherwise."
+          ]
+        }
+      ],
+      "bis": "Keep it short and factual: what was bought. No opinions.",
+      "quiz": [
+        {
+          "q": "A café receipt shows 1 coffee and 2 pretzels. Which description is best?",
+          "o": [
+            "Food",
+            "Coffee and pretzels at café",
+            "Receipt",
+            "Very good café, nice place"
+          ],
+          "a": 1,
+          "why": "It says exactly what was bought."
+        },
+        {
+          "q": "A Careem receipt in Dubai. Which description is best?",
+          "o": [
+            "Ride",
+            "Taxi ride in Dubai (Careem)",
+            "Fun trip",
+            "Careem Dubai paid by card thanks"
+          ],
+          "a": 1,
+          "why": "It is short, factual, and shows type and place."
+        },
+        {
+          "q": "What should a description NOT include?",
+          "o": [
+            "What was purchased",
+            "Details visible on the receipt",
+            "Guesses about the business reason",
+            "Number of nights for a hotel"
+          ],
+          "a": 2,
+          "why": "Do not add information that is not on the receipt."
+        }
+      ]
+    }
+  ],
+  "practice": [
+    {
+      "id": "p1",
+      "place": "Berlin, Germany",
+      "lines": [
+        "CAFÉ HAUPTBAHNHOF",
+        "Europaplatz 1",
+        "10557 Berlin",
+        "",
+        "Datum: 03.04.2026  14:32",
+        "1x Kaffee            3,50",
+        "2x Brezel            9,00",
+        "",
+        "Summe EUR           12,50",
+        "MwSt 19%             2,00",
+        "Vielen Dank!"
+      ],
+      "exp": {
+        "date": "2026-04-03",
+        "amount": 12.5,
+        "currency": "EUR",
+        "vat": 2.0,
+        "category": "Meals",
+        "country": "Germany",
+        "ca": [
+          "germany",
+          "deutschland",
+          "de"
+        ],
+        "va": [
+          "café hauptbahnhof",
+          "cafe hauptbahnhof",
+          "hauptbahnhof"
+        ],
+        "sz": "small",
+        "city": [
+          "berlin"
+        ]
+      },
+      "tip": "Germany: day.month.year, decimal comma. MwSt is VAT, and the printed VAT amount is 2,00."
+    },
+    {
+      "id": "p2",
+      "place": "Chicago, USA",
+      "lines": [
+        "STAPLES #0412",
+        "55 E Monroe St",
+        "Chicago, IL 60603",
+        "",
+        "03/04/2026  10:15 AM",
+        "Printer paper     29.99",
+        "Pens (12)         14.99",
+        "Subtotal          44.98",
+        "Sales tax 10.25%   4.61",
+        "TOTAL USD         49.59",
+        "Cash              60.00",
+        "Change            10.41"
+      ],
+      "exp": {
+        "date": "2026-03-04",
+        "amount": 49.59,
+        "currency": "USD",
+        "vat": null,
+        "category": "Supplies",
+        "country": "USA",
+        "ca": [
+          "usa",
+          "us",
+          "united states",
+          "united states of america",
+          "america"
+        ],
+        "va": [
+          "staples"
+        ],
+        "sz": "small",
+        "city": [
+          "chicago"
+        ],
+        "st": [
+          "il",
+          "illinois"
+        ]
+      },
+      "tip": "US: month/day/year, so 03/04/2026 is 4 March. Sales tax is not VAT, so VAT stays empty. The amount is the total, not the cash."
+    },
+    {
+      "id": "p3",
+      "place": "Paris, France",
+      "lines": [
+        "HÔTEL LUMIÈRE",
+        "12 Rue de Rivoli",
+        "75004 Paris",
+        "",
+        "Facture du 05/11/2026",
+        "3 nuits            1 122,27",
+        "TVA 10%               112,23",
+        "TOTAL TTC EUR       1 234,50"
+      ],
+      "exp": {
+        "date": "2026-11-05",
+        "amount": 1234.5,
+        "currency": "EUR",
+        "vat": 112.23,
+        "category": "Lodging",
+        "country": "France",
+        "ca": [
+          "france",
+          "fr"
+        ],
+        "va": [
+          "hôtel lumière",
+          "hotel lumiere",
+          "lumière",
+          "lumiere"
+        ],
+        "sz": "medium",
+        "city": [
+          "paris"
+        ]
+      },
+      "tip": "France: day/month/year, so 05/11 is 5 November. A space groups thousands. TVA is VAT. A hotel bill is Lodging."
+    },
+    {
+      "id": "p4",
+      "place": "Mumbai, India",
+      "lines": [
+        "TAJ SEA VIEW HOTEL",
+        "Apollo Bunder, Colaba",
+        "Mumbai, Maharashtra 400001",
+        "",
+        "Bill date: 14/02/2026",
+        "Room charges    1,04,623.73",
+        "GST 18%           18,832.27",
+        "Total INR      1,23,456.00"
+      ],
+      "exp": {
+        "date": "2026-02-14",
+        "amount": 123456.0,
+        "currency": "INR",
+        "vat": 18832.27,
+        "category": "Lodging",
+        "country": "India",
+        "ca": [
+          "india",
+          "in",
+          "bharat"
+        ],
+        "va": [
+          "taj sea view"
+        ],
+        "sz": "medium",
+        "city": [
+          "mumbai"
+        ],
+        "st": [
+          "maharashtra",
+          "mh"
+        ]
+      },
+      "tip": "India: lakh grouping, so 1,23,456.00 is 123456.00. GST is the VAT-type tax. 14 cannot be a month, so the date is 14 February."
+    },
+    {
+      "id": "p5",
+      "place": "Tokyo, Japan",
+      "lines": [
+        "LAWSON 渋谷店",
+        "東京都渋谷区道玄坂1-2-3",
+        "",
+        "2026年3月7日 21:05",
+        "おにぎり ×2        360",
+        "お茶                 180",
+        "弁当                 540",
+        "合計          ¥1,080",
+        "(内消費税10%    ¥98)"
+      ],
+      "exp": {
+        "date": "2026-03-07",
+        "amount": 1080,
+        "currency": "JPY",
+        "vat": 98,
+        "category": "Meals",
+        "country": "Japan",
+        "ca": [
+          "japan",
+          "jp",
+          "nippon"
+        ],
+        "va": [
+          "lawson"
+        ],
+        "sz": "small",
+        "city": [
+          "tokyo",
+          "shibuya",
+          "東京"
+        ]
+      },
+      "tip": "Japan: year, month, day. Yen has no decimals. 内消費税 means consumption tax included, ¥98."
+    },
+    {
+      "id": "p6",
+      "place": "Manila, Philippines",
+      "lines": [
+        "JOLLIBEE - SM MEGAMALL",
+        "Mandaluyong City, Metro Manila",
+        "",
+        "11/14/2026  12:20 PM",
+        "VATable Sales     218.75",
+        "VAT 12%            26.25",
+        "TOTAL             ₱245.00"
+      ],
+      "exp": {
+        "date": "2026-11-14",
+        "amount": 245.0,
+        "currency": "PHP",
+        "vat": 26.25,
+        "category": "Meals",
+        "country": "Philippines",
+        "ca": [
+          "philippines",
+          "ph",
+          "pilipinas",
+          "the philippines"
+        ],
+        "va": [
+          "jollibee"
+        ],
+        "sz": "small",
+        "city": [
+          "mandaluyong",
+          "mandaluyong city"
+        ],
+        "st": [
+          "metro manila",
+          "ncr"
+        ]
+      },
+      "tip": "Many Philippine receipts use month/day/year. 14 cannot be a month, so it is 14 November. VAT 12% is 26.25."
+    },
+    {
+      "id": "p7",
+      "place": "London, UK",
+      "lines": [
+        "NCP CAR PARK - VICTORIA",
+        "Bressenden Pl",
+        "London SW1E 5DH",
+        "",
+        "Date: 07/03/2026  09:00-17:00",
+        "Parking fee        £15.00",
+        "VAT 20%             £3.00",
+        "Total paid         £18.00"
+      ],
+      "exp": {
+        "date": "2026-03-07",
+        "amount": 18.0,
+        "currency": "GBP",
+        "vat": 3.0,
+        "category": "Parking",
+        "country": "United Kingdom",
+        "ca": [
+          "united kingdom",
+          "uk",
+          "england",
+          "great britain",
+          "gb"
+        ],
+        "va": [
+          "ncp"
+        ],
+        "sz": "small",
+        "city": [
+          "london"
+        ]
+      },
+      "tip": "UK: day/month/year, so 07/03 is 7 March. The VAT amount printed is £3.00."
+    },
+    {
+      "id": "p8",
+      "place": "Dubai, UAE",
+      "lines": [
+        "CAREEM RIDE RECEIPT",
+        "Dubai, United Arab Emirates",
+        "",
+        "20 May 2026",
+        "Trip fare         AED 42.86",
+        "VAT 5%             AED 2.14",
+        "Total             AED 45.00"
+      ],
+      "exp": {
+        "date": "2026-05-20",
+        "amount": 45.0,
+        "currency": "AED",
+        "vat": 2.14,
+        "category": "Taxi / Rideshare",
+        "country": "United Arab Emirates",
+        "ca": [
+          "united arab emirates",
+          "uae",
+          "ae",
+          "emirates"
+        ],
+        "va": [
+          "careem"
+        ],
+        "sz": "small",
+        "city": [
+          "dubai"
+        ]
+      },
+      "tip": "A written month name removes any confusion. Careem is a ride-hailing platform, so the category is Taxi / Rideshare."
+    },
+    {
+      "id": "p9",
+      "place": "Zurich, Switzerland",
+      "lines": [
+        "HOTEL SEEHOF",
+        "Seestrasse 18",
+        "8002 Zürich",
+        "",
+        "Rechnung 5.11.2026",
+        "Übernachtung    CHF 1'204.24",
+        "MWST 3.8%        CHF    45.76",
+        "Total CHF        1'250.00"
+      ],
+      "exp": {
+        "date": "2026-11-05",
+        "amount": 1250.0,
+        "currency": "CHF",
+        "vat": 45.76,
+        "category": "Lodging",
+        "country": "Switzerland",
+        "ca": [
+          "switzerland",
+          "ch",
+          "schweiz",
+          "suisse"
+        ],
+        "va": [
+          "hotel seehof",
+          "seehof"
+        ],
+        "sz": "medium",
+        "city": [
+          "zurich",
+          "zürich"
+        ]
+      },
+      "tip": "Switzerland: day.month.year, so 5.11 is 5 November. The apostrophe groups thousands. MWST is VAT."
+    },
+    {
+      "id": "p10",
+      "place": "Bangkok, Thailand",
+      "lines": [
+        "7-ELEVEN SUKHUMVIT 21",
+        "Sukhumvit Rd, Bangkok 10110",
+        "",
+        "วันที่ 12/03/2569  18:47",
+        "Sandwich x2         90.00",
+        "Water               20.00",
+        "Total            ฿110.00",
+        "VAT 7% incl.         7.20"
+      ],
+      "exp": {
+        "date": "2026-03-12",
+        "amount": 110.0,
+        "currency": "THB",
+        "vat": 7.2,
+        "category": "Meals",
+        "country": "Thailand",
+        "ca": [
+          "thailand",
+          "th"
+        ],
+        "va": [
+          "7-eleven",
+          "7 eleven",
+          "seven eleven"
+        ],
+        "sz": "small",
+        "city": [
+          "bangkok"
+        ]
+      },
+      "tip": "Thailand uses the Buddhist Era: 2569 − 543 = 2026. Day/month/year, so 12 March 2026."
+    }
+  ],
+  "countries": [
+    {
+      "c": "United States",
+      "d": "MM/DD/YYYY",
+      "n": "1,234.56",
+      "cur": "USD",
+      "tax": "Sales tax (state/local, added at checkout). No VAT."
+    },
+    {
+      "c": "Canada",
+      "d": "DD/MM/YYYY, MM/DD/YYYY or YYYY-MM-DD: check clues",
+      "n": "1,234.56 (English), 1 234,56 (French/Quebec)",
+      "cur": "CAD",
+      "tax": "GST 5%; HST 13-15% in some provinces; PST/QST in others"
+    },
+    {
+      "c": "Mexico",
+      "d": "DD/MM/YYYY",
+      "n": "1,234.56",
+      "cur": "MXN",
+      "tax": "IVA 16%"
+    },
+    {
+      "c": "Brazil",
+      "d": "DD/MM/YYYY",
+      "n": "1.234,56",
+      "cur": "BRL",
+      "tax": "Taxes are built into prices; the receipt may not show a clear VAT line"
+    },
+    {
+      "c": "United Kingdom",
+      "d": "DD/MM/YYYY",
+      "n": "1,234.56",
+      "cur": "GBP",
+      "tax": "VAT 20% standard (5% reduced, 0%)"
+    },
+    {
+      "c": "Ireland",
+      "d": "DD/MM/YYYY",
+      "n": "1,234.56",
+      "cur": "EUR",
+      "tax": "VAT 23% standard"
+    },
+    {
+      "c": "Germany",
+      "d": "DD.MM.YYYY",
+      "n": "1.234,56",
+      "cur": "EUR",
+      "tax": "MwSt 19% (7% reduced)"
+    },
+    {
+      "c": "France",
+      "d": "DD/MM/YYYY",
+      "n": "1 234,56",
+      "cur": "EUR",
+      "tax": "TVA 20% (10%, 5.5%)"
+    },
+    {
+      "c": "Spain",
+      "d": "DD/MM/YYYY",
+      "n": "1.234,56",
+      "cur": "EUR",
+      "tax": "IVA 21% (10%, 4%)"
+    },
+    {
+      "c": "Italy",
+      "d": "DD/MM/YYYY",
+      "n": "1.234,56",
+      "cur": "EUR",
+      "tax": "IVA 22% (10%, 5%, 4%)"
+    },
+    {
+      "c": "Netherlands",
+      "d": "DD-MM-YYYY",
+      "n": "1.234,56",
+      "cur": "EUR",
+      "tax": "BTW 21% (9%)"
+    },
+    {
+      "c": "Switzerland",
+      "d": "DD.MM.YYYY",
+      "n": "1'234.56",
+      "cur": "CHF",
+      "tax": "MWST/TVA/IVA 8.1% (2.6%, 3.8% for lodging)"
+    },
+    {
+      "c": "Sweden",
+      "d": "YYYY-MM-DD",
+      "n": "1 234,56",
+      "cur": "SEK",
+      "tax": "Moms 25% (12%, 6%)"
+    },
+    {
+      "c": "Poland",
+      "d": "DD.MM.YYYY",
+      "n": "1 234,56",
+      "cur": "PLN",
+      "tax": "VAT/PTU 23% (8%, 5%)"
+    },
+    {
+      "c": "Turkey",
+      "d": "DD.MM.YYYY",
+      "n": "1.234,56",
+      "cur": "TRY",
+      "tax": "KDV 20% (10%, 1%)"
+    },
+    {
+      "c": "United Arab Emirates",
+      "d": "DD/MM/YYYY",
+      "n": "1,234.56",
+      "cur": "AED",
+      "tax": "VAT 5%"
+    },
+    {
+      "c": "Saudi Arabia",
+      "d": "DD/MM/YYYY (Gregorian). Hijri dates may also be printed",
+      "n": "1,234.56",
+      "cur": "SAR",
+      "tax": "VAT 15%"
+    },
+    {
+      "c": "Israel",
+      "d": "DD/MM/YYYY",
+      "n": "1,234.56",
+      "cur": "ILS",
+      "tax": "VAT 18%"
+    },
+    {
+      "c": "South Africa",
+      "d": "YYYY/MM/DD or DD/MM/YYYY: check clues",
+      "n": "1 234,56 or 1,234.56",
+      "cur": "ZAR",
+      "tax": "VAT 15%"
+    },
+    {
+      "c": "India",
+      "d": "DD/MM/YYYY",
+      "n": "1,23,456.78 (lakh grouping)",
+      "cur": "INR",
+      "tax": "GST: mostly 5% or 18% slabs (check the receipt)"
+    },
+    {
+      "c": "Philippines",
+      "d": "MM/DD/YYYY is common; DD/MM/YYYY also seen",
+      "n": "1,234.56",
+      "cur": "PHP",
+      "tax": "VAT 12%"
+    },
+    {
+      "c": "Singapore",
+      "d": "DD/MM/YYYY",
+      "n": "1,234.56",
+      "cur": "SGD",
+      "tax": "GST 9%"
+    },
+    {
+      "c": "Malaysia",
+      "d": "DD/MM/YYYY",
+      "n": "1,234.56",
+      "cur": "MYR",
+      "tax": "SST (sales tax 5-10%, service tax 6-8%). Not VAT"
+    },
+    {
+      "c": "Indonesia",
+      "d": "DD/MM/YYYY",
+      "n": "1.234.567 (usually no decimals)",
+      "cur": "IDR",
+      "tax": "PPN 11% (12% on some luxury goods)"
+    },
+    {
+      "c": "Thailand",
+      "d": "DD/MM/YYYY with Buddhist Era year (2569 = 2026)",
+      "n": "1,234.56",
+      "cur": "THB",
+      "tax": "VAT 7%"
+    },
+    {
+      "c": "Vietnam",
+      "d": "DD/MM/YYYY",
+      "n": "1.234.567 (no decimals)",
+      "cur": "VND",
+      "tax": "VAT 10% (temporary reductions can apply)"
+    },
+    {
+      "c": "Japan",
+      "d": "YYYY/MM/DD or YYYY年M月D日; Reiwa era (R8 = 2026) can appear",
+      "n": "1,234 (no decimals)",
+      "cur": "JPY",
+      "tax": "Consumption tax 10% (8% reduced)"
+    },
+    {
+      "c": "South Korea",
+      "d": "YYYY-MM-DD or YYYY.MM.DD",
+      "n": "1,234 (no decimals)",
+      "cur": "KRW",
+      "tax": "VAT 10%"
+    },
+    {
+      "c": "China",
+      "d": "YYYY-MM-DD or YYYY年MM月DD日",
+      "n": "1,234.56",
+      "cur": "CNY",
+      "tax": "VAT 13% (9%, 6%)"
+    },
+    {
+      "c": "Taiwan",
+      "d": "ROC year: 115 = 2026 (YYY/MM/DD)",
+      "n": "1,234 (usually no decimals)",
+      "cur": "TWD",
+      "tax": "Business tax 5%"
+    },
+    {
+      "c": "Hong Kong",
+      "d": "DD/MM/YYYY",
+      "n": "1,234.56",
+      "cur": "HKD",
+      "tax": "No VAT or GST"
+    },
+    {
+      "c": "Australia",
+      "d": "DD/MM/YYYY",
+      "n": "1,234.56",
+      "cur": "AUD",
+      "tax": "GST 10%"
+    },
+    {
+      "c": "New Zealand",
+      "d": "DD/MM/YYYY",
+      "n": "1,234.56",
+      "cur": "NZD",
+      "tax": "GST 15%"
+    }
+  ]
+}
