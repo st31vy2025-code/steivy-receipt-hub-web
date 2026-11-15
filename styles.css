@@ -9,3 +9,19 @@ td,.bar-line b,.alert-rate,.alert-big{font-variant-numeric:tabular-nums}
   .small-btn,.nav button{min-height:44px}
   .field input,.field select,.field textarea{font-size:16px}
 }
+
+/* ---- mobile fixes from phone screenshots ---- */
+@media(max-width:720px){
+  .top-actions #logoutTop,.top-actions>.avatar{display:none}
+  .topbar .right{min-width:0;flex:1}
+  .topbar h1{white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
+  .login-form .brand-mark{display:none}
+  .login-art p{display:none}
+  .sidebar{overflow-y:auto;overscroll-behavior:contain;padding-bottom:calc(16px + env(safe-area-inset-bottom,0px))}
+  .nav{overflow:visible;flex:none}
+  .whats-new-link{display:none}
+  .sidebar-bottom{margin-top:16px;padding-top:12px}
+  .alert-list{max-height:320px;overflow-y:auto;overscroll-behavior:contain}
+  .sidebar.open+.main:before{content:"";position:fixed;inset:0;background:rgba(8,16,12,.55);z-index:4}
+  .toolbar input,.toolbar select{flex:1 1 100%;min-width:0}
+}
