@@ -74,3 +74,19 @@ td,.bar-line b,.alert-rate,.alert-big{font-variant-numeric:tabular-nums}
   .table-wrap table:has(td[data-label]) td[data-label]:before{content:attr(data-label);display:block;font-size:11px;font-weight:600;color:var(--muted);margin-bottom:2px}
   .table-wrap table:has(td[data-label]) .sh-row-actions{display:flex;flex-wrap:wrap;gap:8px}
 }
+
+/* ---- chat fixes: short previews, compact list, warning bubble ---- */
+.chat-list button>div:nth-child(2){min-width:0;flex:1}
+.chat-list strong,.chat-list small{display:block;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
+.chat-list .avatar{flex:none}
+@media(max-width:720px){
+  .chat-list{flex-wrap:nowrap}
+  .chat-list button{flex:0 0 210px;min-width:0;max-width:210px;padding:10px 12px}
+  .chat-list .avatar{width:32px;height:32px}
+  .welcome #cleanChat{margin-top:10px}
+}
+#cleanChat{font-size:12px;font-weight:600;color:var(--muted);padding:6px 10px}
+.bubble.warn,.bubble.mine.warn{background:#fff3d6;color:#4a3708;border:1px solid #f0d9a6;border-left:4px solid #e0a63a}
+.warn-tag{display:block;font-size:11px;font-weight:700;color:#9a6b12;margin-bottom:4px;letter-spacing:.02em}
+[data-theme=dark] .bubble.warn,[data-theme=dark] .bubble.mine.warn{background:#2b2616;color:#f3e6c4;border-color:#4a3d1e;border-left-color:#c9962f}
+[data-theme=dark] .warn-tag{color:#e6bb62}
