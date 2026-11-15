@@ -86,7 +86,27 @@ td,.bar-line b,.alert-rate,.alert-big{font-variant-numeric:tabular-nums}
   .welcome #cleanChat{margin-top:10px}
 }
 #cleanChat{font-size:12px;font-weight:600;color:var(--muted);padding:6px 10px}
-.bubble.warn,.bubble.mine.warn{background:#fff3d6;color:#4a3708;border:1px solid #f0d9a6;border-left:4px solid #e0a63a}
+.chat-messages .bubble.warn,.chat-messages .bubble.mine.warn{background:#fff3d6;color:#4a3708;border:1px solid #f0d9a6;border-left:4px solid #e0a63a}
+.chat-messages .bubble.warn b,.chat-messages .bubble.mine.warn b{color:inherit}
+.chat-messages .bubble.warn small,.chat-messages .bubble.mine.warn small{color:inherit;opacity:.75}
 .warn-tag{display:block;font-size:11px;font-weight:700;color:#9a6b12;margin-bottom:4px;letter-spacing:.02em}
-[data-theme=dark] .bubble.warn,[data-theme=dark] .bubble.mine.warn{background:#2b2616;color:#f3e6c4;border-color:#4a3d1e;border-left-color:#c9962f}
+[data-theme=dark] .chat-messages .bubble.warn,[data-theme=dark] .chat-messages .bubble.mine.warn{background:#2b2616;color:#f3e6c4;border-color:#4a3d1e;border-left-color:#c9962f}
 [data-theme=dark] .warn-tag{color:#e6bb62}
+
+/* ---- phone fixes v4: every table becomes cards, co-worker chats, team performance ---- */
+@media(max-width:720px){
+  .table-wrap table.mcards{display:block;width:100%;min-width:0}
+  .mcards thead{display:none}
+  .mcards tbody{display:block}
+  .mcards tr{display:block;padding:12px 2px;border-bottom:1px solid var(--line)}
+  .mcards td{display:flex;justify-content:space-between;align-items:center;gap:12px;padding:4px 0;border:0;text-align:right;white-space:normal;min-width:0}
+  .mcards td[data-th]:before{content:attr(data-th);flex:none;font-size:12px;font-weight:600;color:var(--muted);text-align:left}
+  .mcards td.mc-title{display:block;text-align:left;font-weight:600;padding-bottom:6px}
+  .mcards td.mc-act{justify-content:flex-start;flex-wrap:wrap;gap:8px;padding-top:8px;text-align:left}
+  .mcards td.mc-full{display:block;text-align:center}
+  .table-wrap.wt-wrap{max-height:none}
+  .perf .panel-head{flex-direction:column;align-items:flex-start}
+  .welcome p{font-size:13.5px;line-height:1.5}
+  .peer-layout .chat-list{display:block;overflow-y:auto;max-height:260px}
+  .peer-layout .chat-list button{display:flex;width:100%;max-width:none;flex:none}
+}
