@@ -1,0 +1,165 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Steivy Receipt Hub: warning flow prototype</title>
+<style>
+:root{--bg:#0e1714;--s1:#16221e;--s2:#1c2b26;--bd:#2a3b35;--tx:#e9f1ed;--mu:#93a79f;--gr:#2f9e6e;--rd:#e24b4a;--or:#d85a30;--am:#ef9f27}
+*{box-sizing:border-box}
+body{margin:0;background:var(--bg);color:var(--tx);font:15px/1.45 system-ui,-apple-system,"Segoe UI",Roboto,sans-serif}
+header{padding:24px 16px 4px;max-width:1200px;margin:0 auto}
+h1{font-size:22px;margin:0 0 4px;font-weight:600}
+header p{margin:0;color:var(--mu);font-size:14px}
+main{display:flex;flex-wrap:wrap;gap:28px;justify-content:center;padding:20px 16px 48px;max-width:1200px;margin:0 auto}
+section{width:100%;max-width:380px}
+h2{font-size:14px;font-weight:500;color:var(--mu);margin:0 0 8px}
+.card{background:var(--s1);border:1px solid var(--bd);border-radius:16px;padding:16px}
+.top{display:flex;align-items:center;gap:10px;margin-bottom:12px}
+.top b{font-size:16px;font-weight:600}
+.top small,small{display:block;color:var(--mu);font-size:12px}
+.g{flex:1;min-width:0}
+.pill{font-size:12px;padding:3px 10px;border-radius:999px;background:#3a2f14;color:var(--am);white-space:nowrap}
+.pill.ok{background:#14382a;color:#5fd6a0}
+.pill.bad{background:#3d1b1b;color:#f08a89}
+.row{display:flex;align-items:center;gap:12px;padding:12px 0;border-top:1px solid var(--bd)}
+.av{width:36px;height:36px;border-radius:50%;background:var(--s2);display:flex;align-items:center;justify-content:center;font-size:12px;font-weight:600;flex:none}
+.row b{font-size:14px;font-weight:500;display:block}
+.pc{font-size:15px;font-weight:600;min-width:52px;text-align:right}
+.bar{height:6px;border-radius:3px;background:var(--s2);position:relative;margin-top:6px}
+.bar i{display:block;height:6px;border-radius:3px}
+.bar u{position:absolute;left:10%;top:-3px;width:2px;height:12px;background:var(--mu)}
+.legend{display:flex;gap:12px;font-size:12px;color:var(--mu);margin-bottom:6px}
+.legend span:before{content:"";display:inline-block;width:8px;height:8px;border-radius:50%;margin-right:5px;background:var(--c)}
+.btn{width:100%;margin-top:10px;padding:10px 14px;border-radius:10px;border:1px solid var(--bd);background:var(--s2);color:var(--tx);font:inherit;font-size:14px;cursor:pointer}
+.btn:hover{border-color:var(--gr)}
+.btn.go{background:var(--gr);border-color:var(--gr);color:#fff}
+.btn.sm{width:auto;margin:0;padding:4px 10px;font-size:12px}
+.two{display:flex;gap:10px}
+.two .btn{margin-top:10px}
+.chips{display:flex;gap:8px;overflow-x:auto;margin:10px 0 4px}
+.chip{font:inherit;font-size:13px;padding:6px 12px;border-radius:999px;border:1px solid var(--bd);background:transparent;color:var(--tx);cursor:pointer;white-space:nowrap}
+.chip.on{background:var(--tx);color:var(--bg);border-color:var(--tx)}
+input,textarea{width:100%;background:var(--s2);border:1px solid var(--bd);border-radius:10px;color:var(--tx);font:inherit;font-size:14px;padding:9px 12px}
+textarea{line-height:1.5;resize:vertical}
+.stat{display:flex;gap:10px;margin-top:12px}
+.stat div{flex:1;background:var(--s2);border-radius:10px;padding:10px 12px}
+.stat small{margin:0}.stat b{font-size:18px;font-weight:600}
+.big{font-size:34px;font-weight:600;line-height:1}
+.box{background:var(--s2);border-radius:10px;padding:12px}
+.tpl{display:block;width:100%;text-align:left;background:transparent;color:var(--tx);font:inherit;border:1px solid var(--bd);border-radius:10px;padding:10px 12px;margin-bottom:8px;cursor:pointer}
+.tpl.on{border-color:var(--gr);background:#14382a}
+.tpl b{font-size:14px;font-weight:500;display:block}
+.err{color:#f08a89;font-size:13px;margin:6px 0 0;display:none}
+.lbl{font-size:13px;color:var(--mu);margin:14px 0 8px}
+.tg{display:flex;align-items:center;gap:10px;margin-top:12px;font-size:13px;color:var(--mu);cursor:pointer}
+.tg input{width:auto}
+.empty{padding:18px 0;text-align:center;color:var(--mu);font-size:13px}
+.done{text-align:center;padding:24px 0}
+.chk{width:44px;height:44px;border-radius:50%;background:#14382a;color:#5fd6a0;display:flex;align-items:center;justify-content:center;margin:0 auto 10px;font-size:22px}
+.note{background:var(--s2);border-radius:10px;padding:12px;font-size:14px;margin-top:12px}
+.mark{border-color:#6b5316}
+:focus-visible{outline:2px solid var(--gr);outline-offset:2px}
+</style>
+</head>
+<body>
+<header>
+  <h1>Steivy Receipt Hub: warning flow</h1>
+  <p>Interactive prototype. Try the filters, send a warning, then tap Got it on the worker dashboard. Names and statuses are sample data.</p>
+</header>
+
+<main>
+  <section><h2>1. Admin dashboard</h2><div class="card" id="s1"></div></section>
+  <section><h2>2. All high error workers</h2><div class="card" id="s2"></div></section>
+  <section><h2>3. Worker profile</h2><div class="card" id="s3"></div></section>
+  <section><h2>4. Send warning</h2><div class="card" id="s4"></div></section>
+  <section><h2>5. Worker dashboard</h2><div class="card" id="s5"></div></section>
+  <section><h2>6. Warning tracking</h2><div class="card" id="s6"></div></section>
+</main>
+
+<script>
+var W=[
+ {n:"June Charlotte C. Lacaya",i:"JC",e:78,r:107,ack:false,sent:null},
+ {n:"Ivy Ochavo",i:"IO",e:128,r:229,ack:false,sent:"Sent yesterday"},
+ {n:"Maria Liza Balaba",i:"ML",e:380,r:948,ack:false,sent:"Sent 3 days ago"},
+ {n:"Lucille Namocatcat Daguplo",i:"LN",e:299,r:832,ack:true,sent:"Sent yesterday"}
+];
+var LIMIT=10, TOTAL=22;
+var $=function(s){return document.querySelector(s)};
+var P=function(w){return w.e/w.r*100};
+var C=function(p){return p>=50?"var(--rd)":p>=25?"var(--or)":"var(--am)"};
+var pc=function(w){return P(w).toFixed(1)};
+var legend='<div class="legend"><span style="--c:var(--am)">10-25%</span><span style="--c:var(--or)">25-50%</span><span style="--c:var(--rd)">50%+</span></div>';
+function row(w){var p=P(w);return '<div class="row"><div class="av">'+w.i+'</div><div class="g"><b>'+w.n+'</b><small>'+w.e+' of '+w.r+' receipts</small><div class="bar"><i style="width:'+p+'%;background:'+C(p)+'"></i><u></u></div></div><span class="pc" style="color:'+C(p)+'">'+pc(w)+'%</span></div>'}
+
+function r1(){
+  $("#s1").innerHTML='<div class="top"><div class="g"><b>High error rate this month</b><small>'+TOTAL+' workers above the '+LIMIT+'% limit</small></div><span class="pill">Limit '+LIMIT+'%</span></div>'+legend+W.map(row).join("")+'<button class="btn" onclick="document.getElementById(\'s2\').scrollIntoView({behavior:\'smooth\'})">View all '+TOTAL+' workers</button>';
+}
+
+var f2={min:0,max:101,q:""};
+function r2(){
+  var list=W.filter(function(w){var p=P(w);return p>=f2.min&&p<f2.max&&w.n.toLowerCase().indexOf(f2.q)>-1});
+  var chips=[["All",0,101],["50%+",50,101],["25-50%",25,50],["10-25%",10,25]].map(function(c){return '<button class="chip'+(c[1]===f2.min&&c[2]===f2.max?' on':'')+'" onclick="f2.min='+c[1]+';f2.max='+c[2]+';r2()">'+c[0]+'</button>'}).join("");
+  $("#s2").innerHTML='<div class="top"><div class="g"><b>High error workers</b><small>'+TOTAL+' above the '+LIMIT+'% limit this month</small></div></div><input id="q" placeholder="Search worker name" value="'+f2.q+'" oninput="f2.q=this.value.toLowerCase();r2(true)"><div class="chips">'+chips+'</div><small>Sorted by highest error rate</small>'+(list.length?list.map(row).join(""):'<div class="empty">No workers match this filter.</div>')+'<small style="margin-top:10px">Showing sample workers. Your app loads the rest.</small>';
+  if(arguments[0]){var q=$("#q");q.focus();q.setSelectionRange(q.value.length,q.value.length)}
+}
+
+function r3(){
+  var w=W[0],p=P(w);
+  $("#s3").innerHTML='<div class="top"><div class="av" style="width:52px;height:52px;font-size:16px;background:#3d1b1b;color:#f08a89">'+w.i+'</div><div class="g"><b>'+w.n+'</b><small>Worker, approved shifts only</small></div></div>'+
+  '<div class="box"><span class="big" style="color:'+C(p)+'">'+pc(w)+'%</span> <small style="display:inline">'+(p-LIMIT).toFixed(1)+'% above the '+LIMIT+'% limit</small><div class="bar" style="margin-top:14px"><i style="width:'+p+'%;background:'+C(p)+'"></i><u></u></div></div>'+
+  '<div class="stat"><div><small>Errors</small><b>'+w.e+'</b></div><div><small>Receipts</small><b>'+w.r+'</b></div></div>'+
+  '<div class="two"><button class="btn" onclick="document.getElementById(\'s4\').scrollIntoView({behavior:\'smooth\'})">Send warning</button><button class="btn">Message</button></div>'+
+  '<div class="top" style="margin:18px 0 0"><b style="font-size:14px;font-weight:500">Recent errors</b><small style="margin-left:auto">Sample data</small></div>'+
+  ["Wrong total amount|Today, 9:12 AM","Wrong date|Yesterday, 4:40 PM","Missing store name|2 days ago, 1:05 PM"].map(function(x){x=x.split("|");return '<div class="row"><div class="g"><b>'+x[0]+'</b><small>'+x[1]+'</small></div><span style="color:var(--mu)">&rsaquo;</span></div>'}).join("")+
+  '<button class="btn">View all '+w.e+' errors</button>';
+}
+
+var T=[["Gentle reminder","Friendly nudge to double-check","Please double-check each receipt before submitting. Let us know if you need help."],
+       ["Formal warning","Clear notice of the limit","This is a formal warning. Please review every receipt carefully before submitting."],
+       ["Final notice","Next step if it does not improve","This is a final notice. If your error rate does not drop below "+LIMIT+"% this month, your account may be reviewed."]];
+var s4={t:0,inc:true,msg:"",sent:false};
+function build(){var w=W[0];s4.msg="Hi June Charlotte, "+(s4.inc?"your error rate this month is "+pc(w)+"% ("+w.e+" of "+w.r+" receipts), above the "+LIMIT+"% limit. ":"")+T[s4.t][2]}
+function r4(){
+  if(s4.sent){$("#s4").innerHTML='<div class="done"><div class="chk">&#10003;</div><b>Warning sent</b><small>June Charlotte will see it on her dashboard.</small><button class="btn" onclick="s4.sent=false;build();r4()">Send another</button></div>';return}
+  $("#s4").innerHTML='<div class="top"><b>Send warning</b></div>'+
+  '<div class="box" style="display:flex;align-items:center;gap:10px"><div class="av">'+W[0].i+'</div><div class="g"><b style="font-size:14px;font-weight:500">'+W[0].n+'</b><small>'+W[0].e+' of '+W[0].r+' receipts</small></div><b style="color:var(--rd)">'+pc(W[0])+'%</b></div>'+
+  '<div class="lbl">Choose a template</div>'+T.map(function(t,i){return '<button class="tpl'+(i===s4.t?' on':'')+'" onclick="s4.t='+i+';build();r4()"><b>'+t[0]+'</b><small>'+t[1]+'</small></button>'}).join("")+
+  '<div class="lbl">Message</div><textarea id="m" rows="6" oninput="s4.msg=this.value;$(\'#e4\').style.display=\'none\'">'+s4.msg+'</textarea><p class="err" id="e4">Enter a message first.</p>'+
+  '<label class="tg"><input type="checkbox" '+(s4.inc?'checked':'')+' onchange="s4.inc=this.checked;build();r4()">Include error stats in message</label>'+
+  '<button class="btn go" onclick="send()">Send warning</button>';
+}
+function send(){
+  if(!s4.msg.trim()){$("#e4").style.display="block";return}
+  s4.sent=true;W[0].sent="Sent just now";W[0].ack=false;W[0].rem=false;r4();r5();r6();
+}
+
+function r5(){
+  var w=W[0],p=P(w),n=s4.sent||W[0].sent;
+  var notice=n?'<div class="card mark" style="margin-bottom:12px;background:var(--s1)"><div class="top"><div class="g"><b>Warning from admin</b><small>'+(w.sent||"")+'</small></div><span class="pill'+(w.ack?' ok':'')+'">'+(w.ack?'Acknowledged':'New')+'</span></div><div class="note" style="margin:0">'+s4.msg+'</div>'+(w.ack?'<small style="margin-top:10px">Admin has been notified that you read this.</small>':'<div class="two"><button class="btn">Reply</button><button class="btn" onclick="ackW()">Got it</button></div>')+'</div>':'<div class="note" style="margin:0 0 12px;color:var(--mu)">No warnings yet. Send one from screen 4 to see it here.</div>';
+  $("#s5").innerHTML='<div class="top"><b>Welcome back, June Charlotte</b></div>'+notice+
+  '<div class="top"><div class="g"><b style="font-size:15px">Your error rate</b></div><span class="pill bad">Above limit</span></div>'+
+  '<span class="big" style="color:'+C(p)+'">'+pc(w)+'%</span> <small style="display:inline">'+(p-LIMIT).toFixed(1)+'% above the '+LIMIT+'% limit</small>'+
+  '<div class="bar" style="margin-top:14px"><i style="width:'+p+'%;background:'+C(p)+'"></i><u></u></div><small style="margin-top:10px">'+w.e+' errors out of '+w.r+' receipts</small>'+
+  '<button class="btn">Review my errors</button>'+
+  '<div class="box" style="margin-top:14px"><div class="top" style="margin:0"><b style="font-size:15px;font-weight:600">Monthly bonus goal</b><small style="margin-left:auto">34.6%</small></div><div class="bar" style="height:8px;margin:10px 0"><i style="width:34.6%;height:8px;background:var(--gr)"></i></div><small>1,728 of 5,000 approved receipts. Reach the goal to earn \u20B11.20 per receipt.</small></div>';
+}
+function ackW(){W[0].ack=true;W[0].sent="Sent just now, read just now";r5();r6()}
+
+var f6="all";
+function r6(){
+  var sent=W.filter(function(w){return w.sent});
+  var d=sent.filter(function(w){return w.ack}).length,p=sent.length-d;
+  var list=sent.filter(function(w){return f6==="all"||(f6==="done")===w.ack});
+  var chips=[["all","All"],["pend","Pending"],["done","Acknowledged"]].map(function(c){return '<button class="chip'+(f6===c[0]?' on':'')+'" onclick="f6=\''+c[0]+'\';r6()">'+c[1]+'</button>'}).join("");
+  $("#s6").innerHTML='<div class="top"><div class="g"><b>Warning tracking</b><small>This month</small></div></div><div class="stat" style="margin-top:0"><div><small>Acknowledged</small><b>'+d+'</b></div><div><small>Pending</small><b>'+p+'</b></div></div><div class="chips">'+chips+'</div>'+
+  (list.length?list.map(function(w){return '<div class="row"><div class="av">'+w.i+'</div><div class="g"><b>'+w.n+'</b><small>'+w.sent+(w.ack?'':', not read')+'</small></div>'+(w.ack?'<span class="pill ok">Acknowledged</span>':w.rem?'<span class="pill">Reminded</span>':'<button class="btn sm" onclick="rem('+W.indexOf(w)+')">Remind</button>')+'</div>'}).join(""):'<div class="empty">No workers in this group.</div>')+
+  (p?'<button class="btn" onclick="remAll()">Remind all pending</button>':'');
+}
+function rem(i){W[i].rem=true;r6()}
+function remAll(){W.forEach(function(w){if(w.sent&&!w.ack)w.rem=true});r6()}
+
+build();r1();r2();r3();r4();r5();r6();
+</script>
+</body>
+</html>
