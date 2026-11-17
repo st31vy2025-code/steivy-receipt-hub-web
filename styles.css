@@ -218,3 +218,37 @@ td,.bar-line b,.alert-rate,.alert-big{font-variant-numeric:tabular-nums}
 [data-theme=dark] .sh-confirm-ico.danger{background:#3a1f1d;color:#f3b9b3}
 @media (max-width:720px){.act-chart{gap:3px;height:120px}.act-col small{font-size:9px}.act-total strong{font-size:20px}}
 @media (prefers-reduced-motion:reduce){.sh-modal,.sh-modal-card,.stat{animation:none;transition:none}}
+
+/* ===== Mobile + Dark mode polish (v28) ===== */
+#themeBtn,.login-theme{display:inline-grid;place-items:center;width:40px;min-width:40px;padding:0}
+.login-form-side{position:relative}
+.login-theme{position:absolute;top:18px;right:18px;z-index:2}
+html.theme-fade *,html.theme-fade *:before,html.theme-fade *:after{transition:background-color .25s ease,color .25s ease,border-color .25s ease,box-shadow .25s ease!important}
+[data-theme=dark]{scrollbar-color:#3a4a41 #121915}
+[data-theme=dark] ::selection{background:#2f6b4d;color:#fff}
+[data-theme=dark] ::placeholder{color:#7f9488}
+[data-theme=dark] .welcome-actions select,[data-theme=dark] .welcome-actions input[type=date]{background:#1a251f;color:#e8efe9;border-color:#34443b}
+[data-theme=dark] .bottom-nav button.active:after{background:#8fd6ac}
+[data-theme=dark] .login-theme{color:#e8efe9}
+button,a,select,[data-nav]{touch-action:manipulation}
+@media (max-width:720px){
+  .btn{min-height:44px}
+  .btn-sm,.small-btn{min-height:36px}
+  .topbar .btn,.topbar .mobile-menu{min-width:44px;min-height:44px}
+  .field input,.field select,.field textarea,.toolbar input,.toolbar select,.welcome-actions select,.welcome-actions input[type=date]{font-size:16px}
+  .nav button{min-height:46px}
+  .welcome .btn{width:100%}
+  .table-wrap{-webkit-overflow-scrolling:touch}
+  .bottom-nav button{-webkit-tap-highlight-color:transparent;transition:color .15s,background-color .15s}
+  .bottom-nav button.active:after{content:"";position:absolute;top:0;left:32%;right:32%;height:3px;border-radius:0 0 3px 3px;background:var(--green)}
+  body:has(.sidebar.open){overflow:hidden}
+  body:has(.sidebar.open):after{content:"";position:fixed;inset:0;background:rgba(10,18,14,.5);backdrop-filter:blur(2px);-webkit-backdrop-filter:blur(2px);z-index:4;animation:shFade .15s ease-out}
+  .sh-modal{align-items:flex-end;padding:0}
+  .sh-modal-card{max-width:none;border-radius:20px 20px 0 0;max-height:92vh;padding-bottom:calc(24px + env(safe-area-inset-bottom,0px));animation:shSheet .24s cubic-bezier(.2,.8,.2,1)}
+  .sh-modal-card:before{content:"";display:block;width:38px;height:4px;border-radius:4px;background:#c9d4cd;margin:-10px auto 14px}
+  [data-theme=dark] .sh-modal-card:before{background:#3a4a41}
+  #toast{bottom:calc(78px + env(safe-area-inset-bottom,0px))}
+  .login-theme{top:12px;right:12px}
+}
+@keyframes shSheet{from{transform:translateY(100%)}to{transform:none}}
+@media (prefers-reduced-motion:reduce){html.theme-fade *{transition:none!important}.sh-modal-card{animation:none}}
