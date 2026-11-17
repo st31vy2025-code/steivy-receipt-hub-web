@@ -252,3 +252,16 @@ button,a,select,[data-nav]{touch-action:manipulation}
 }
 @keyframes shSheet{from{transform:translateY(100%)}to{transform:none}}
 @media (prefers-reduced-motion:reduce){html.theme-fade *{transition:none!important}.sh-modal-card{animation:none}}
+
+/* ===== Accessibility + security UI (v29) ===== */
+.skip-link{position:fixed;left:12px;top:-60px;z-index:2000;background:#173f35;color:#fff;padding:10px 16px;border-radius:10px;font-weight:700;text-decoration:none;transition:top .15s}
+.skip-link:focus{top:12px;outline:3px solid #8fd6ac;outline-offset:2px}
+#pageContent:focus{outline:none}
+.nav-label,.footer-note{color:#5f6d66}
+::placeholder{color:#66746d}
+[data-theme=dark] .nav-label,[data-theme=dark] .footer-note{color:#8fa398}
+.user-mini .last-login{display:block;margin-top:2px;font-size:10.5px;color:var(--muted);line-height:1.3}
+[data-theme=dark] .user-mini .last-login{color:#8fa398}
+.btn:focus-visible,.nav button:focus-visible,.bottom-nav button:focus-visible,.small-btn:focus-visible{outline:3px solid var(--focus);outline-offset:2px}
+[data-theme=dark] :focus-visible{outline-color:#6fd3a0}
+@media (prefers-reduced-motion:reduce){*,*:before,*:after{animation-duration:.01ms!important;animation-iteration-count:1!important;transition-duration:.01ms!important;scroll-behavior:auto!important}}
