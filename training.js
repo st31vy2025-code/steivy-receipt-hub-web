@@ -1,4 +1,4 @@
-/* Steivy Receipt Hub: Training Academy (training.js)
+/* Steivy Hub: Training Academy (training.js)
    Loaded by app.js. All content lives in training-data.json (edit that file to change lessons, quizzes,
    practice receipts, country cards, the Coach model list and the daily Coach limit).
    Progress is saved in Firestore: trainingProgress/{uid}. Lessons and quizzes need no Firestore reads. */

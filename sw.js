@@ -1,4 +1,4 @@
-/* Steivy Receipt Hub: service worker
+/* Steivy Hub: service worker
    - Makes the Hub installable and gives it a cached app shell for a fast start.
    - Same-site files are cached as described below. The ONLY outside files cached are the version-pinned Firebase SDK
      modules (www.gstatic.com/firebasejs/<version>/...): they never change, so they load instantly and work offline.
@@ -7,7 +7,7 @@
      the cached copy is only used when the network is down.
    - Images and icons are stale-while-revalidate.
    Bump VERSION to force every device to drop its old cache. */
-const VERSION = 'steivy-hub-v30';
+const VERSION = 'steivy-hub-v32';
 const SDK_CACHE = 'steivy-sdk-v1'; // separate name on purpose: the cleanup below only deletes 'steivy-hub-*' caches
 const isSdk = url => url.origin === 'https://www.gstatic.com' && url.pathname.startsWith('/firebasejs/');
 const SHELL = ['./', 'index.html', 'styles.css', 'app.js', 'firebase-config.js', 'manifest.json',

@@ -1,13 +1,13 @@
 {
   "id": "./",
-  "name": "Steivy Receipt Hub",
+  "name": "Steivy Hub",
   "short_name": "Steivy Hub",
-  "description": "Receipt shift submissions and team operations.",
+  "description": "Shift and receipt management for your team.",
   "start_url": "./",
   "scope": "./",
   "display": "standalone",
   "orientation": "any",
-  "background_color": "#0a3c79",
+  "background_color": "#173f35",
   "theme_color": "#173f35",
   "lang": "en",
   "categories": [
