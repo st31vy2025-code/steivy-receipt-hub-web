@@ -265,3 +265,29 @@ button,a,select,[data-nav]{touch-action:manipulation}
 .btn:focus-visible,.nav button:focus-visible,.bottom-nav button:focus-visible,.small-btn:focus-visible{outline:3px solid var(--focus);outline-offset:2px}
 [data-theme=dark] :focus-visible{outline-color:#6fd3a0}
 @media (prefers-reduced-motion:reduce){*,*:before,*:after{animation-duration:.01ms!important;animation-iteration-count:1!important;transition-duration:.01ms!important;scroll-behavior:auto!important}}
+
+/* ===== Consistency layer (v30): tables, row actions, chips, panels ===== */
+.panel h2{font:700 17px var(--font-head);letter-spacing:-.01em;margin:0 0 6px}
+.panel>h3{font:700 16px var(--font-head);letter-spacing:-.01em}
+.table-wrap th{background:#f6f9f7;font-size:11px;font-weight:700;letter-spacing:.05em;text-transform:uppercase;color:#5d6b64;padding:11px 12px}
+.table-wrap th:first-child{border-top-left-radius:10px}.table-wrap th:last-child{border-top-right-radius:10px}
+.table-wrap td{font-size:13px;padding:13px 12px}
+.table-wrap tbody tr:hover td{background:#f8fbf9}
+.status:before{content:"";width:6px;height:6px;border-radius:50%;background:currentColor;flex:none}
+.sh-row-actions{display:flex;gap:6px;flex-wrap:wrap;align-items:center}
+td .btn,.sh-row-actions .btn{min-height:32px;padding:0 12px;font-size:12.5px;border-radius:8px;box-shadow:none}
+td .btn:active,.sh-row-actions .btn:active{transform:none}
+td .small-btn,.sh-row-actions .small-btn{min-height:32px;padding:0 12px;font-size:12.5px;border:1px solid var(--line-strong);border-radius:8px;background:#fff;color:var(--green)}
+td .small-btn:hover,.sh-row-actions .small-btn:hover{background:var(--mint);border-color:#9abda8}
+.toolbar .btn{min-height:42px}
+[style*="#c0392b"]{color:#b0392e!important}
+[style*="#8a958e"]{color:#66746d!important}
+[data-theme=dark] .table-wrap th{background:#18211c;color:#9fb3a8}
+[data-theme=dark] .table-wrap td{border-bottom-color:#222d26}
+[data-theme=dark] .table-wrap tbody tr:hover td{background:#1b2620}
+[data-theme=dark] td .small-btn,[data-theme=dark] .sh-row-actions .small-btn{background:#1a251f;border-color:#34443b;color:#c9ebd7}
+[data-theme=dark] td .small-btn:hover,[data-theme=dark] .sh-row-actions .small-btn:hover{background:#243329;border-color:#5b7c69}
+[data-theme=dark] [style*="#c0392b"]{color:#f08f84!important}
+[data-theme=dark] [style*="#8a958e"]{color:#8fa398!important}
+[data-theme=dark] .table-wrap{scrollbar-color:#3a4a41 transparent}
+@media (max-width:720px){td .btn,td .small-btn,.sh-row-actions .btn,.sh-row-actions .small-btn{min-height:40px}}
