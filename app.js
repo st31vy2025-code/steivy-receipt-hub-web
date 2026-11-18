@@ -234,10 +234,10 @@ function startShift(accountId){const a=data.accounts.find(x=>x.id===accountId);i
     <p><b>2. ${esc(A.compensationIntro)}</b></p>
     <ul style="padding-left:22px;line-height:1.55">${A.compensation.map(t=>`<li>${esc(t)}</li>`).join("")}</ul>
     <p style="line-height:1.55">${esc(A.compensationNote)}</p>
-    <p class="muted" style="margin-top:18px">— End of agreement —</p>`}function renderAgreement(){if($("#agreementScreen"))return;$("#app").innerHTML=`<div id="agreementScreen" class="sh-modal" style="z-index:2000;background:#f4f7f5"><div class="sh-modal-card" style="max-width:780px" role="dialog" aria-modal="true">
+    <p style="margin-top:18px;color:#4b5563">— End of agreement —</p>`}function renderAgreement(){if($("#agreementScreen"))return;$("#app").innerHTML=`<div id="agreementScreen" class="sh-modal" style="z-index:2000;background:#f4f7f5"><div class="sh-modal-card" style="max-width:780px" role="dialog" aria-modal="true">
     <h3 style="margin-bottom:6px">User agreement</h3>
     <p class="muted" style="margin:0 0 12px">Please read the whole agreement below. You must accept it before you can use Steivy Hub.</p>
-    <div id="agrBox" tabindex="0" style="height:52vh;overflow:auto;border:1px solid #d5ddd8;border-radius:12px;padding:16px;background:#fff;font-size:14px">${agreementBodyHtml()}</div>
+    <div id="agrBox" tabindex="0" style="height:52vh;overflow:auto;border:1px solid #d5ddd8;border-radius:12px;padding:16px;background:#fff;color:#111827;font-size:14px">${agreementBodyHtml()}</div>
     <div id="agrHint" class="notice warn" style="margin-top:12px">⬇ Scroll to the bottom to continue.</div>
     <label class="sh-check" style="border-bottom:0;opacity:.5" id="agrCheckWrap"><input type="checkbox" id="agrCheck" disabled><span>I have read, understood, and agree to this agreement.</span></label>
     <div class="field"><label>TYPE YOUR FULL NAME AS YOUR SIGNATURE</label><input id="agrName" maxlength="80" autocomplete="name" placeholder="Full name" value="${esc(profile?.displayName||"")}"></div>
